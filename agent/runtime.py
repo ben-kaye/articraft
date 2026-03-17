@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import os
+import platform
 import shutil
+import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -21,15 +24,12 @@ from dotenv import load_dotenv
 from agent.compiler import (
     compile_urdf,
     compile_urdf_report_maybe_timeout,
-    persist_compile_success_artifacts,
-    update_manifest,
 )
 from agent.prompts import (
     DESIGNER_PROMPT_NAME,
     GEMINI_DESIGNER_PROMPT_NAME,
     HYBRID_OPENAI_DESIGNER_PROMPT_NAME,
     HYBRID_GEMINI_DESIGNER_PROMPT_NAME,
-    LEGACY_DESIGNER_PROMPT_NAME,
     OPENAI_DESIGNER_PROMPT_NAME,
     SUPPORTED_SDK_DOCS_MODES,
     load_sdk_docs_reference,
@@ -47,11 +47,50 @@ from agent.tools import (
     provider_system_prompt_suffix,
     resolve_image_path as _resolve_image_path,
 )
+from storage.collections import CollectionStore
+from storage.models import (
+    CompileReport as StorageCompileReport,
+    CompileWarning,
+    DisplayMetadata,
+    EnvironmentSettings,
+    GenerationSettings,
+    MaterializationInputs,
+    PromptingSettings,
+    Provenance,
+    Record,
+    RecordArtifacts,
+    RecordHashes,
+    RunRecord,
+    RunSummary,
+    SdkSettings,
+    SourceRef,
+)
+from storage.records import RecordStore
+from storage.repo import StorageRepo
+from storage.runs import RunStore
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 MAX_SINGLE_RUN_SLUG_LEN = 120
+
+
+@dataclass(slots=True, frozen=True)
+class SingleRunContext:
+    repo_root: Path
+    created_at: str
+    run_id: str
+    record_id: str
+    run_dir: Path
+    staging_dir: Path
+    script_path: Path
+    checkpoint_urdf_path: Path
+    trace_dir: Path
+    cost_path: Path
+    record_dir: Path
+    record_prompt_path: Path
+    record_model_path: Path
+    record_urdf_path: Path
 
 
 def _slugify(text: str) -> str:
@@ -80,11 +119,290 @@ def _build_single_run_slug(prompt: str) -> str:
     return f"{truncated_base}_{digest}"
 
 
-def _append_run_timestamp_to_out_dir(out_dir: Path, now: Optional[datetime] = None) -> Path:
-    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    if out_dir.name:
-        return out_dir.with_name(f"{out_dir.name}_{timestamp}")
-    return out_dir / timestamp
+def _utc_now(now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _timestamp_token(now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _relative_to_repo(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return path.resolve().as_posix()
+
+
+def _prompt_preview(prompt: str, *, max_len: int = 160) -> str:
+    collapsed = " ".join(prompt.split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    return collapsed[: max_len - 3].rstrip() + "..."
+
+
+def _display_title(prompt: str, *, label: str | None = None) -> str:
+    if label and label.strip():
+        return label.strip()
+    first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "")
+    return first_line[:120] if first_line else "Untitled run"
+
+
+def _detect_git_commit(repo_root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _detect_uv_lock_sha256(repo_root: Path) -> str | None:
+    return _sha256_file(repo_root / "uv.lock")
+
+
+def _platform_id() -> str:
+    return f"{platform.system().lower()}-{platform.machine().lower()}"
+
+
+def _default_model_id(
+    *,
+    provider: str,
+    model_id: str | None,
+    thinking_level: str,
+    openai_transport: str,
+    openai_reasoning_summary: str | None,
+) -> str:
+    provider_norm = (provider or "").strip().lower()
+    if model_id:
+        return model_id
+    if provider_norm == "gemini":
+        return GeminiLLM(thinking_level=thinking_level, dry_run=True).model_id
+    if provider_norm == "openai":
+        return OpenAILLM(
+            thinking_level=thinking_level,
+            reasoning_summary=openai_reasoning_summary,
+            transport=openai_transport,
+            dry_run=True,
+        ).model_id
+    raise ValueError(f"Unsupported provider: {provider}")
+
+
+def _build_single_run_context(
+    *,
+    repo_root: Path,
+    prompt: str,
+    storage_repo: StorageRepo,
+    now: datetime | None = None,
+) -> SingleRunContext:
+    created_at = _utc_now(now)
+    token = _timestamp_token(now)
+    prompt_slug = _build_single_run_slug(prompt)[:48]
+    digest = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:8]
+    run_id = f"run_{token}_{digest}"
+    record_id = f"rec_{prompt_slug}_{token}_{digest}"
+    run_dir = storage_repo.layout.run_dir(run_id)
+    staging_dir = storage_repo.layout.run_staging_dir(run_id) / record_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    record_dir = storage_repo.layout.record_dir(record_id)
+    return SingleRunContext(
+        repo_root=repo_root.resolve(),
+        created_at=created_at,
+        run_id=run_id,
+        record_id=record_id,
+        run_dir=run_dir,
+        staging_dir=staging_dir,
+        script_path=staging_dir / "model.py",
+        checkpoint_urdf_path=staging_dir / "model.urdf",
+        trace_dir=staging_dir / "traces",
+        cost_path=staging_dir / "cost.json",
+        record_dir=record_dir,
+        record_prompt_path=record_dir / "prompt.txt",
+        record_model_path=record_dir / "model.py",
+        record_urdf_path=record_dir / "model.urdf",
+    )
+
+
+def _copy_if_exists(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _copytree_if_exists(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+
+
+def _write_success_record(
+    *,
+    repo_root: Path,
+    storage_repo: StorageRepo,
+    record_store: RecordStore,
+    collections: CollectionStore,
+    context: SingleRunContext,
+    prompt_text: str,
+    display_prompt: str,
+    image_path: Path | None,
+    provider: str,
+    model_id: str,
+    openai_transport: str,
+    thinking_level: str,
+    max_turns: int,
+    system_prompt_path: Path,
+    sdk_package: str,
+    sdk_docs_mode: str,
+    openai_reasoning_summary: str | None,
+    final_code: str,
+    urdf_xml: str,
+    compile_warnings: list[str],
+    turn_count: int,
+    tool_call_count: int,
+    compile_attempt_count: int,
+    label: str | None,
+    tags: list[str],
+    category_slug: str | None,
+) -> Path:
+    record_store.ensure_record_dirs(context.record_id)
+    storage_repo.write_text(context.record_prompt_path, prompt_text)
+    storage_repo.write_text(context.record_model_path, final_code)
+    storage_repo.write_text(context.record_urdf_path, urdf_xml)
+
+    if image_path is not None:
+        record_store.copy_input_image(context.record_id, image_path)
+
+    _copy_if_exists(context.cost_path, context.record_dir / "cost.json")
+    _copytree_if_exists(context.staging_dir / "meshes", storage_repo.layout.record_asset_meshes_dir(context.record_id))
+    _copytree_if_exists(context.staging_dir / "glb", storage_repo.layout.record_asset_glb_dir(context.record_id))
+    _copytree_if_exists(context.staging_dir / "viewer", storage_repo.layout.record_asset_viewer_dir(context.record_id))
+
+    compile_report = StorageCompileReport(
+        schema_version=1,
+        record_id=context.record_id,
+        status="success",
+        urdf_path="model.urdf",
+        warnings=[CompileWarning(code="warning", message=warning) for warning in compile_warnings],
+        checks_run=["compile_urdf"],
+        metrics={
+            "turn_count": turn_count,
+            "tool_call_count": tool_call_count,
+            "compile_attempt_count": compile_attempt_count,
+        },
+    )
+    record_store.write_compile_report(context.record_id, compile_report)
+
+    prompt_sha = _sha256_text(prompt_text)
+    model_py_sha = _sha256_file(context.record_model_path)
+    model_urdf_sha = _sha256_file(context.record_urdf_path)
+
+    provenance = Provenance(
+        schema_version=1,
+        record_id=context.record_id,
+        generation=GenerationSettings(
+            provider=provider,
+            model_id=model_id,
+            thinking_level=thinking_level,
+            openai_transport=openai_transport if provider == "openai" else None,
+            openai_reasoning_summary=openai_reasoning_summary if provider == "openai" else None,
+            max_turns=max_turns,
+        ),
+        prompting=PromptingSettings(
+            system_prompt_file=system_prompt_path.name,
+            system_prompt_sha256=_sha256_file(system_prompt_path),
+            sdk_docs_mode=sdk_docs_mode,
+        ),
+        sdk=SdkSettings(
+            sdk_package=sdk_package,
+            sdk_version="workspace",
+            sdk_fingerprint=None,
+        ),
+        environment=EnvironmentSettings(
+            python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            platform=_platform_id(),
+            git_commit=_detect_git_commit(repo_root),
+            uv_lock_sha256=_detect_uv_lock_sha256(repo_root),
+        ),
+        run_summary=RunSummary(
+            turn_count=turn_count,
+            tool_call_count=tool_call_count,
+            compile_attempt_count=compile_attempt_count,
+            final_status="success",
+        ),
+        materialization=MaterializationInputs(
+            model_py_sha256=model_py_sha,
+            model_urdf_sha256=model_urdf_sha,
+            sdk_fingerprint=None,
+        ),
+    )
+    record_store.write_provenance(context.record_id, provenance)
+
+    record = Record(
+        schema_version=1,
+        record_id=context.record_id,
+        created_at=context.created_at,
+        updated_at=_utc_now(),
+        kind="generated_model",
+        prompt_kind="single_prompt",
+        category_slug=category_slug,
+        source=SourceRef(run_id=context.run_id),
+        sdk_package=sdk_package,
+        provider=provider,
+        model_id=model_id,
+        display=DisplayMetadata(
+            title=_display_title(display_prompt, label=label),
+            prompt_preview=_prompt_preview(display_prompt),
+        ),
+        artifacts=RecordArtifacts(
+            prompt_txt="prompt.txt",
+            prompt_series_json=None,
+            model_py="model.py",
+            model_urdf="model.urdf",
+            compile_report_json="compile_report.json",
+            provenance_json="provenance.json",
+            cost_json="cost.json" if (context.record_dir / "cost.json").exists() else None,
+        ),
+        hashes=RecordHashes(
+            prompt_sha256=prompt_sha,
+            model_py_sha256=model_py_sha,
+            model_urdf_sha256=model_urdf_sha,
+        ),
+        collections=["workbench"],
+    )
+    record_store.write_record(record)
+    collections.append_workbench_entry(
+        record_id=context.record_id,
+        added_at=_utc_now(),
+        label=label,
+        tags=tags,
+    )
+    return context.record_dir
 
 
 def build_provider_payload_preview(
@@ -149,9 +467,10 @@ def build_provider_payload_preview(
 async def run_from_input(
     user_content: Any,
     *,
-    script_path: Path,
-    urdf_out: Optional[Path],
-    outputs_root: Optional[Path],
+    prompt_text: str,
+    display_prompt: str | None,
+    repo_root: Path,
+    image_path: Path | None,
     provider: str,
     model_id: Optional[str] = None,
     openai_transport: str = "http",
@@ -163,38 +482,143 @@ async def run_from_input(
     sdk_package: str = "sdk",
     sdk_docs_mode: str = "full",
     openai_reasoning_summary: Optional[str] = "auto",
+    label: str | None = None,
+    tags: Optional[list[str]] = None,
+    category_slug: str | None = None,
 ) -> int:
-    trace_dir = str(script_path.parent / "traces")
-    async with UrdfAgent(
-        file_path=str(script_path),
+    resolved_repo_root = repo_root.resolve()
+    storage_repo = StorageRepo(resolved_repo_root)
+    storage_repo.ensure_layout()
+    record_store = RecordStore(storage_repo)
+    collections = CollectionStore(storage_repo)
+    run_store = RunStore(storage_repo)
+    collections.ensure_workbench()
+
+    context = _build_single_run_context(
+        repo_root=resolved_repo_root,
+        prompt=prompt_text,
+        storage_repo=storage_repo,
+    )
+    selected_model_id = _default_model_id(
         provider=provider,
         model_id=model_id,
-        openai_transport=openai_transport,
         thinking_level=thinking_level,
-        max_turns=max_turns,
-        system_prompt_path=system_prompt_path,
-        trace_dir=trace_dir,
-        display_enabled=display_enabled,
-        on_turn_start=on_turn_start,
-        checkpoint_urdf_path=urdf_out,
-        manifest_outputs_root=outputs_root,
-        sdk_package=sdk_package,
-        sdk_docs_mode=sdk_docs_mode,
+        openai_transport=openai_transport,
         openai_reasoning_summary=openai_reasoning_summary,
-    ) as agent:
-        logger.info("Using system prompt: %s", agent.loaded_system_prompt_path)
-        result = await agent.run(user_content)
+    )
+    run_store.write_run(
+        RunRecord(
+            schema_version=1,
+            run_id=context.run_id,
+            run_mode="workbench_single",
+            collection="workbench",
+            created_at=context.created_at,
+            updated_at=context.created_at,
+            provider=provider,
+            model_id=selected_model_id,
+            sdk_package=sdk_package,
+            status="running",
+            category_slug=category_slug,
+            prompt_count=1,
+        )
+    )
+
+    actual_model_id = selected_model_id
+    loaded_system_prompt_path = resolve_system_prompt_path(
+        system_prompt_path,
+        provider=provider,
+        sdk_package=sdk_package,
+        repo_root=resolved_repo_root,
+    )
+    try:
+        async with UrdfAgent(
+            file_path=str(context.script_path),
+            provider=provider,
+            model_id=model_id,
+            openai_transport=openai_transport,
+            thinking_level=thinking_level,
+            max_turns=max_turns,
+            system_prompt_path=system_prompt_path,
+            trace_dir=str(context.trace_dir),
+            display_enabled=display_enabled,
+            on_turn_start=on_turn_start,
+            checkpoint_urdf_path=context.checkpoint_urdf_path,
+            sdk_package=sdk_package,
+            sdk_docs_mode=sdk_docs_mode,
+            openai_reasoning_summary=openai_reasoning_summary,
+        ) as agent:
+            logger.info("Using system prompt: %s", agent.loaded_system_prompt_path)
+            loaded_system_prompt_path = Path(agent.loaded_system_prompt_path)
+            result = await agent.run(user_content)
+            actual_model_id = agent.llm.model_id
+    except Exception as exc:
+        finished_at = _utc_now()
+        run_store.write_run(
+            RunRecord(
+                schema_version=1,
+                run_id=context.run_id,
+                run_mode="workbench_single",
+                collection="workbench",
+                created_at=context.created_at,
+                updated_at=finished_at,
+                provider=provider,
+                model_id=actual_model_id,
+                sdk_package=sdk_package,
+                status="failed",
+                category_slug=category_slug,
+                prompt_count=1,
+            )
+        )
+        run_store.append_result(
+            context.run_id,
+            {
+                "record_id": context.record_id,
+                "status": "failed",
+                "message": f"Runtime error: {exc}",
+                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+            },
+        )
+        logger.exception("Agent runtime failed")
+        return 2
 
     if not result.success:
+        finished_at = _utc_now()
+        run_store.write_run(
+            RunRecord(
+                schema_version=1,
+                run_id=context.run_id,
+                run_mode="workbench_single",
+                collection="workbench",
+                created_at=context.created_at,
+                updated_at=finished_at,
+                provider=provider,
+                model_id=actual_model_id,
+                sdk_package=sdk_package,
+                status="failed",
+                category_slug=category_slug,
+                prompt_count=1,
+            )
+        )
+        run_store.append_result(
+            context.run_id,
+            {
+                "record_id": context.record_id,
+                "status": "failed",
+                "message": result.message,
+                "turn_count": result.turn_count,
+                "tool_call_count": result.tool_call_count,
+                "compile_attempt_count": result.compile_attempt_count,
+                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+            },
+        )
         logger.error("Agent failed: %s", result.message)
         return 2
 
     if result.usage:
         logger.info("Total tokens: %s", result.usage)
         try:
-            cost_json_path = script_path.parent / "cost.json"
-            if cost_json_path.exists():
-                with open(cost_json_path) as file:
+            if context.cost_path.exists():
+                with open(context.cost_path, encoding="utf-8") as file:
                     cost_data = json.load(file)
                     total_cost = (
                         cost_data.get("total", {}).get("costs_usd", {}).get("total", 0.0)
@@ -205,105 +629,114 @@ async def run_from_input(
 
     if result.urdf_xml is not None:
         urdf_xml = result.urdf_xml
+        compile_warnings = list(result.compile_warnings)
     else:
         try:
             report = await asyncio.to_thread(
                 compile_urdf_report_maybe_timeout,
-                script_path,
+                context.script_path,
                 sdk_package=sdk_package,
             )
             for warning in report.warnings:
                 logger.warning("%s", warning)
             urdf_xml = report.urdf_xml
+            compile_warnings = list(report.warnings)
         except Exception as exc:
+            finished_at = _utc_now()
+            run_store.write_run(
+                RunRecord(
+                    schema_version=1,
+                    run_id=context.run_id,
+                    run_mode="workbench_single",
+                    collection="workbench",
+                    created_at=context.created_at,
+                    updated_at=finished_at,
+                    provider=provider,
+                    model_id=actual_model_id,
+                    sdk_package=sdk_package,
+                    status="failed",
+                    category_slug=category_slug,
+                    prompt_count=1,
+                )
+            )
+            run_store.append_result(
+                context.run_id,
+                {
+                    "record_id": context.record_id,
+                    "status": "failed",
+                    "message": f"Failed to compile URDF: {exc}",
+                    "turn_count": result.turn_count,
+                    "tool_call_count": result.tool_call_count,
+                    "compile_attempt_count": result.compile_attempt_count,
+                    "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+                },
+            )
             logger.error("Failed to compile URDF: %s", exc)
             return 3
+    final_code = result.final_code
+    if final_code is None:
+        final_code = context.script_path.read_text(encoding="utf-8")
 
-    if urdf_out:
-        await asyncio.to_thread(
-            persist_compile_success_artifacts,
-            urdf_xml=urdf_xml,
-            urdf_out=urdf_out,
-            outputs_root=None,
-        )
-        logger.info("Wrote URDF to %s", urdf_out)
-    else:
-        print(urdf_xml)
-
-    if outputs_root:
-        try:
-            update_manifest(outputs_root)
-        except Exception as exc:
-            logger.warning("Failed to update manifest: %s", exc)
-
-    return 0
-
-
-async def run_from_prompt(
-    prompt: str,
-    *,
-    script_path: Path,
-    urdf_out: Optional[Path],
-    outputs_root: Optional[Path],
-    provider: str,
-    model_id: Optional[str] = None,
-    openai_transport: str = "http",
-    thinking_level: str,
-    max_turns: int,
-    system_prompt_path: str,
-    display_enabled: Optional[bool] = None,
-    on_turn_start: Optional[Callable[[int], None]] = None,
-    sdk_package: str = "sdk",
-    sdk_docs_mode: str = "full",
-    openai_reasoning_summary: Optional[str] = "auto",
-) -> int:
-    return await run_from_input(
-        prompt,
-        script_path=script_path,
-        urdf_out=urdf_out,
-        outputs_root=outputs_root,
+    record_dir = _write_success_record(
+        repo_root=resolved_repo_root,
+        storage_repo=storage_repo,
+        record_store=record_store,
+        collections=collections,
+        context=context,
+        prompt_text=prompt_text,
+        display_prompt=display_prompt or prompt_text,
+        image_path=image_path,
         provider=provider,
-        model_id=model_id,
+        model_id=actual_model_id,
         openai_transport=openai_transport,
         thinking_level=thinking_level,
         max_turns=max_turns,
-        system_prompt_path=system_prompt_path,
-        display_enabled=display_enabled,
-        on_turn_start=on_turn_start,
+        system_prompt_path=loaded_system_prompt_path,
         sdk_package=sdk_package,
         sdk_docs_mode=sdk_docs_mode,
         openai_reasoning_summary=openai_reasoning_summary,
+        final_code=final_code,
+        urdf_xml=urdf_xml,
+        compile_warnings=compile_warnings,
+        turn_count=result.turn_count,
+        tool_call_count=result.tool_call_count,
+        compile_attempt_count=result.compile_attempt_count,
+        label=label,
+        tags=list(tags or []),
+        category_slug=category_slug,
     )
+    finished_at = _utc_now()
+    run_store.write_run(
+        RunRecord(
+            schema_version=1,
+            run_id=context.run_id,
+            run_mode="workbench_single",
+            collection="workbench",
+            created_at=context.created_at,
+            updated_at=finished_at,
+            provider=provider,
+            model_id=actual_model_id,
+            sdk_package=sdk_package,
+            status="success",
+            category_slug=category_slug,
+            prompt_count=1,
+        )
+    )
+    run_store.append_result(
+        context.run_id,
+        {
+            "record_id": context.record_id,
+            "status": "success",
+            "record_dir": _relative_to_repo(record_dir, resolved_repo_root),
+            "turn_count": result.turn_count,
+            "tool_call_count": result.tool_call_count,
+            "compile_attempt_count": result.compile_attempt_count,
+        },
+    )
+    logger.info("Wrote record to %s", record_dir)
+    logger.info("Wrote URDF to %s", context.record_urdf_path)
 
-
-def _prepare_out_dir(
-    out_dir: Path,
-    *,
-    outputs_root: Path,
-    overwrite: bool,
-    in_outputs: bool,
-) -> None:
-    out_dir_abs = out_dir.resolve()
-    outputs_root_abs = outputs_root.resolve()
-
-    if not overwrite:
-        out_dir_abs.mkdir(parents=True, exist_ok=True)
-        return
-
-    if not in_outputs:
-        out_dir_abs.mkdir(parents=True, exist_ok=True)
-        return
-
-    if out_dir_abs == outputs_root_abs:
-        raise ValueError(f"Refusing to overwrite outputs root: {outputs_root_abs}")
-
-    if out_dir_abs.exists() and not out_dir_abs.is_dir():
-        raise ValueError(f"Output path exists and is not a directory: {out_dir_abs}")
-
-    if out_dir_abs.exists():
-        shutil.rmtree(out_dir_abs)
-
-    out_dir_abs.mkdir(parents=True, exist_ok=True)
+    return 0
 
 
 def _load_qc_blurb_text(qc_blurb_path: Optional[str], *, repo_root: Path) -> Optional[str]:
@@ -334,44 +767,19 @@ def _build_prompt_with_qc(prompt: str, qc_blurb_text: Optional[str]) -> str:
     )
 
 
-def _load_plan_text(plan_path: str, *, repo_root: Path) -> str:
-    path = Path(plan_path)
-    if not path.is_absolute():
-        path = (repo_root / path).resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Plan file not found: {path}")
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
-    if not text:
-        raise ValueError(f"Plan file is empty: {path}")
-    return text
-
-
-def _build_prompt_from_plan(plan_markdown: str) -> str:
-    return (
-        "Implement the object described in the following markdown plan.\n\n"
-        f"{plan_markdown.strip()}"
-    )
-
-
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     load_dotenv()
 
     parser = argparse.ArgumentParser(
-        description="Generate an articulated object from a prompt or markdown plan."
+        description="Generate an articulated object and persist it as a workbench record."
     )
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument("--prompt", help="Text prompt for the object.")
-    input_group.add_argument(
-        "--plan",
-        default=None,
-        help="Path to a markdown planning brief to use instead of --prompt.",
-    )
+    parser.add_argument("--prompt", required=True, help="Text prompt for the object.")
     parser.add_argument(
         "--image",
         default=None,
         help=(
-            "Optional reference image to augment --prompt or --plan. "
+            "Optional reference image to augment --prompt. "
             "Currently supported only with --provider openai."
         ),
     )
@@ -382,32 +790,14 @@ def main() -> int:
         help="LLM provider.",
     )
     parser.add_argument(
-        "--out-dir",
-        default=None,
-        help=(
-            "Directory to write outputs. Defaults to outputs/<slug>_YYYYMMDD_HHMMSS for --prompt, "
-            "or the plan file's parent directory for --plan."
-        ),
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+        help="Repository root where data/records and data/cache/runs will be written.",
     )
-    parser.add_argument(
-        "--timestamp-out-dir",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Append a timestamp suffix to the output directory name. "
-            "Default: enabled for --prompt runs, disabled when --plan infers an existing output directory."
-        ),
-    )
-    parser.add_argument(
-        "--script",
-        default=None,
-        help="Path to write the generated Python script (default: <out-dir>/<run-stem>.py).",
-    )
-    parser.add_argument(
-        "--urdf",
-        default=None,
-        help="Path to write the URDF XML output (default: <out-dir>/<run-stem>.urdf).",
-    )
+    parser.add_argument("--label", default=None, help="Optional workbench label for the saved record.")
+    parser.add_argument("--tag", action="append", default=[], help="Optional workbench tag. Repeatable.")
+    parser.add_argument("--category", default=None, help="Optional category slug to attach to the record.")
     parser.add_argument("--model", default=None, help="Model id (provider-specific).")
     parser.add_argument(
         "--openai-transport",
@@ -465,15 +855,6 @@ def main() -> int:
         default=2,
         help="JSON indent for --dump-provider-payload (default: 2).",
     )
-    parser.add_argument(
-        "--overwrite",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "If true, clear <out-dir> before generating outputs (only applies when <out-dir> is inside outputs/). "
-            "Default: true for new prompt-based outputs inside outputs/*, false for --plan runs."
-        ),
-    )
     sdk_group = parser.add_mutually_exclusive_group()
     sdk_group.add_argument(
         "--hybrid-sdk",
@@ -498,7 +879,7 @@ def main() -> int:
         print("--openai-transport is only supported for --provider openai.", file=sys.stderr)
         return 1
 
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = args.repo_root.resolve()
     try:
         qc_blurb_text = _load_qc_blurb_text(args.qc_blurb, repo_root=repo_root)
     except Exception as exc:
@@ -511,22 +892,7 @@ def main() -> int:
         print(f"Failed to load image: {exc}", file=sys.stderr)
         return 1
 
-    plan_path: Optional[Path] = None
-    if args.plan:
-        try:
-            plan_path = Path(args.plan)
-            if not plan_path.is_absolute():
-                plan_path = (repo_root / plan_path).resolve()
-            base_prompt = _build_prompt_from_plan(
-                _load_plan_text(str(plan_path), repo_root=repo_root)
-            )
-        except Exception as exc:
-            print(f"Failed to load plan: {exc}", file=sys.stderr)
-            return 1
-    else:
-        base_prompt = args.prompt
-
-    prompt_with_qc = _build_prompt_with_qc(base_prompt, qc_blurb_text)
+    prompt_with_qc = _build_prompt_with_qc(args.prompt, qc_blurb_text)
     user_content = _build_initial_user_content(prompt_with_qc, image_path=image_path)
 
     if args.dump_provider_payload:
@@ -562,46 +928,6 @@ def main() -> int:
             print(text)
         return 0
 
-    outputs_root = Path("outputs").resolve()
-    if args.out_dir:
-        out_dir = Path(args.out_dir).resolve()
-    elif plan_path is not None:
-        out_dir = plan_path.parent.resolve()
-    else:
-        out_dir = (outputs_root / _build_single_run_slug(args.prompt)).resolve()
-
-    use_timestamp_out_dir = args.timestamp_out_dir
-    if plan_path is not None and not args.out_dir:
-        use_timestamp_out_dir = False
-    if use_timestamp_out_dir:
-        out_dir = _append_run_timestamp_to_out_dir(out_dir)
-
-    in_outputs = out_dir.is_relative_to(outputs_root)
-    overwrite_default = False if plan_path is not None else in_outputs
-    overwrite = args.overwrite if args.overwrite is not None else overwrite_default
-    try:
-        _prepare_out_dir(
-            out_dir,
-            outputs_root=outputs_root,
-            overwrite=overwrite,
-            in_outputs=in_outputs,
-        )
-    except Exception as exc:
-        print(f"Failed to prepare output directory: {exc}", file=sys.stderr)
-        return 1
-
-    if args.prompt:
-        run_stem = _build_single_run_slug(args.prompt)
-    elif out_dir.name:
-        run_stem = out_dir.name
-    elif plan_path is not None:
-        run_stem = plan_path.parent.name or plan_path.stem
-    else:
-        run_stem = "object"
-
-    script_path = Path(args.script).resolve() if args.script else out_dir / f"{run_stem}.py"
-    urdf_out = Path(args.urdf).resolve() if args.urdf else out_dir / f"{run_stem}.urdf"
-
     if args.provider == "gemini":
         if not gemini_api_keys_from_env():
             print("GEMINI_API_KEYS environment variable is required.", file=sys.stderr)
@@ -619,9 +945,10 @@ def main() -> int:
     return asyncio.run(
         run_from_input(
             user_content,
-            script_path=script_path,
-            urdf_out=urdf_out,
-            outputs_root=outputs_root if in_outputs else None,
+            prompt_text=prompt_with_qc,
+            display_prompt=args.prompt,
+            repo_root=args.repo_root.resolve(),
+            image_path=image_path,
             provider=args.provider,
             model_id=model_id,
             openai_transport=args.openai_transport,
@@ -631,6 +958,9 @@ def main() -> int:
             sdk_package=sdk_package,
             sdk_docs_mode=args.sdk_docs_mode,
             openai_reasoning_summary=args.openai_reasoning_summary,
+            label=args.label,
+            tags=list(args.tag or []),
+            category_slug=args.category,
         )
     )
 

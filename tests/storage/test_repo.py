@@ -19,6 +19,7 @@ from storage.models import (
     Provenance,
     Record,
     RecordArtifacts,
+    RunRecord,
     RunSummary,
     SdkSettings,
     SourceRef,
@@ -28,6 +29,7 @@ from storage.models import (
 )
 from storage.records import RecordStore
 from storage.repo import StorageRepo
+from storage.runs import RunStore
 
 
 def main() -> None:
@@ -40,6 +42,15 @@ def main() -> None:
             DatasetCollection(schema_version=1, collection="dataset", updated_at="2026-03-18T00:00:00Z")
         )
         assert repo.layout.dataset_collection_path().exists()
+        collections.append_workbench_entry(
+            record_id="rec_123",
+            added_at="2026-03-18T00:00:00Z",
+            label="trial",
+            tags=["hinge"],
+        )
+        workbench = collections.load_workbench()
+        assert workbench is not None
+        assert workbench["entries"][0]["record_id"] == "rec_123"
 
         record_store = RecordStore(repo)
         record = Record(
@@ -113,6 +124,27 @@ def main() -> None:
             sdk_fingerprint="sdk-hash",
         )
         assert len(fingerprint) == 64
+
+        runs = RunStore(repo)
+        runs.write_run(
+            RunRecord(
+                schema_version=1,
+                run_id="run_123",
+                run_mode="workbench_single",
+                collection="workbench",
+                created_at="2026-03-18T00:00:00Z",
+                updated_at="2026-03-18T00:00:01Z",
+                provider="openai",
+                model_id="gpt-5.4",
+                sdk_package="sdk",
+                status="success",
+                prompt_count=1,
+            )
+        )
+        assert repo.layout.run_metadata_path("run_123").exists()
+        runs.append_result("run_123", {"record_id": "rec_123", "status": "success"})
+        results = repo.layout.run_results_path("run_123").read_text(encoding="utf-8")
+        assert '"record_id": "rec_123"' in results
 
 
 if __name__ == "__main__":

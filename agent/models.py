@@ -25,7 +25,10 @@ class AgentResult:
     conversation: list[dict[str, Any]]
     final_code: str | None = None
     urdf_xml: str | None = None
+    compile_warnings: list[str] = field(default_factory=list)
     turn_count: int = 0
+    tool_call_count: int = 0
+    compile_attempt_count: int = 0
     usage: dict[str, int] | None = None
 
 
@@ -60,4 +63,3 @@ class SessionPaths:
     script_path: Path
     trace_dir: Path
     checkpoint_urdf_path: Path | None = None
-    manifest_outputs_root: Path | None = None

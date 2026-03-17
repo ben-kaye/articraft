@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+
+from agent import runtime
+from agent.models import AgentResult, TerminateReason
+
+
+class FakeAgent:
+    def __init__(
+        self,
+        *,
+        file_path: str,
+        provider: str = "openai",
+        model_id: str | None = None,
+        **_: object,
+    ) -> None:
+        self.file_path = Path(file_path)
+        self.provider = provider
+        self.loaded_system_prompt_path = str(
+            runtime.resolve_system_prompt_path(
+                runtime.DESIGNER_PROMPT_NAME,
+                provider=provider,
+                repo_root=Path(__file__).resolve().parents[2],
+            )
+        )
+        self.llm = SimpleNamespace(model_id=model_id or "gpt-5.4")
+
+    async def __aenter__(self) -> "FakeAgent":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    async def run(self, user_content: object) -> AgentResult:
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file_path.write_text(
+            "from __future__ import annotations\n\nobject_model = None\n",
+            encoding="utf-8",
+        )
+        meshes_dir = self.file_path.parent / "meshes"
+        meshes_dir.mkdir(parents=True, exist_ok=True)
+        (meshes_dir / "part.obj").write_text("# mesh\n", encoding="utf-8")
+        cost_path = self.file_path.parent / "cost.json"
+        cost_path.write_text(
+            json.dumps({"total": {"costs_usd": {"total": 0.123456}}}, indent=2),
+            encoding="utf-8",
+        )
+        return AgentResult(
+            success=True,
+            reason=TerminateReason.CODE_VALID,
+            message="done",
+            conversation=[{"role": "user", "content": user_content}],
+            final_code=self.file_path.read_text(encoding="utf-8"),
+            urdf_xml="<robot name='test'/>",
+            compile_warnings=["warning: test"],
+            turn_count=3,
+            tool_call_count=5,
+            compile_attempt_count=2,
+            usage={"prompt_tokens": 10, "candidates_tokens": 5, "total_tokens": 15},
+        )
+
+
+def main() -> None:
+    original_agent = runtime.UrdfAgent
+    runtime.UrdfAgent = FakeAgent
+    try:
+        with TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+            exit_code = asyncio.run(
+                runtime.run_from_input(
+                    "make a gearbox",
+                    prompt_text="make a gearbox",
+                    display_prompt="make a gearbox",
+                    repo_root=repo_root,
+                    image_path=None,
+                    provider="openai",
+                    thinking_level="high",
+                    max_turns=30,
+                    system_prompt_path=runtime.DESIGNER_PROMPT_NAME,
+                    sdk_package="sdk",
+                    sdk_docs_mode="full",
+                    label="gearbox try",
+                    tags=["gear", "test"],
+                )
+            )
+            assert exit_code == 0
+
+            records_root = repo_root / "data" / "records"
+            record_dirs = [path for path in records_root.iterdir() if path.is_dir()]
+            assert len(record_dirs) == 1
+            record_dir = record_dirs[0]
+
+            assert (record_dir / "prompt.txt").read_text(encoding="utf-8") == "make a gearbox"
+            assert (record_dir / "model.py").exists()
+            assert (record_dir / "model.urdf").read_text(encoding="utf-8") == "<robot name='test'/>"
+            assert (record_dir / "compile_report.json").exists()
+            assert (record_dir / "provenance.json").exists()
+            assert (record_dir / "cost.json").exists()
+            assert (record_dir / "assets" / "meshes" / "part.obj").exists()
+
+            workbench = json.loads(
+                (repo_root / "data" / "collections" / "workbench.json").read_text(encoding="utf-8")
+            )
+            assert len(workbench["entries"]) == 1
+            assert workbench["entries"][0]["record_id"] == record_dir.name
+            assert workbench["entries"][0]["label"] == "gearbox try"
+
+            runs_root = repo_root / "data" / "cache" / "runs"
+            run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
+            assert len(run_dirs) == 1
+            run_metadata = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+            assert run_metadata["status"] == "success"
+            results_lines = (run_dirs[0] / "results.jsonl").read_text(encoding="utf-8").splitlines()
+            assert len(results_lines) == 1
+            assert json.loads(results_lines[0])["record_id"] == record_dir.name
+
+            assert not (repo_root / "outputs").exists()
+    finally:
+        runtime.UrdfAgent = original_agent
+
+
+if __name__ == "__main__":
+    main()

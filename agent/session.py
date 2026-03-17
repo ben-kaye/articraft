@@ -71,7 +71,6 @@ class UrdfAgent:
         display_enabled: Optional[bool] = None,
         on_turn_start: Optional[Callable[[int], None]] = None,
         checkpoint_urdf_path: Optional[Path] = None,
-        manifest_outputs_root: Optional[Path] = None,
         sdk_package: str = "sdk",
         sdk_docs_mode: str = "full",
         openai_reasoning_summary: Optional[str] = "auto",
@@ -86,9 +85,6 @@ class UrdfAgent:
         self._last_compile_error_sig: Optional[str] = None
         self.checkpoint_urdf_path = (
             Path(checkpoint_urdf_path).resolve() if checkpoint_urdf_path else None
-        )
-        self.manifest_outputs_root = (
-            Path(manifest_outputs_root).resolve() if manifest_outputs_root else None
         )
         self._last_checkpoint_urdf_sig: Optional[str] = None
         self.trace_writer: Optional[TraceWriter] = (
@@ -290,7 +286,7 @@ class UrdfAgent:
                 persist_compile_success_artifacts,
                 urdf_xml=urdf_xml,
                 urdf_out=self.checkpoint_urdf_path,
-                outputs_root=self.manifest_outputs_root,
+                outputs_root=None,
                 previous_sig=self._last_checkpoint_urdf_sig,
             )
         except Exception as exc:
@@ -645,8 +641,11 @@ class UrdfAgent:
         usage_totals: dict[str, int] = {}
         completed_turns = 0
         llm_calls = 0
+        tool_call_count = 0
+        compile_attempt_count = 0
         had_successful_compile = False
         last_successful_urdf_xml: Optional[str] = None
+        last_compile_warnings: list[str] = []
 
         while completed_turns < self.max_turns:
             turn = completed_turns + 1
@@ -681,7 +680,10 @@ class UrdfAgent:
                     reason=TerminateReason.ERROR,
                     message=f"LLM error: {str(exc)}",
                     conversation=conversation,
+                    compile_warnings=list(last_compile_warnings),
                     turn_count=completed_turns,
+                    tool_call_count=tool_call_count,
+                    compile_attempt_count=compile_attempt_count,
                 )
             finally:
                 self.display.stop_llm_wait()
@@ -752,7 +754,10 @@ class UrdfAgent:
                         conversation=conversation,
                         final_code=final_code,
                         urdf_xml=last_successful_urdf_xml,
+                        compile_warnings=list(last_compile_warnings),
                         turn_count=completed_turns,
+                        tool_call_count=tool_call_count,
+                        compile_attempt_count=compile_attempt_count,
                         usage=usage_totals or None,
                     )
 
@@ -789,6 +794,7 @@ class UrdfAgent:
             should_stop, reason, msg = self._should_terminate(text, tool_calls, turn)
             if should_stop:
                 try:
+                    compile_attempt_count += 1
                     compile_start = time.monotonic()
                     logger.info("Running URDF compile checks...")
                     report = await self._compile_urdf_report_async()
@@ -796,6 +802,7 @@ class UrdfAgent:
                         "URDF compile passed in %.2fs",
                         time.monotonic() - compile_start,
                     )
+                    last_compile_warnings = list(report.warnings)
                     await self._persist_compile_success_checkpoint_async(report.urdf_xml)
                     had_successful_compile = True
                     last_successful_urdf_xml = report.urdf_xml
@@ -857,11 +864,15 @@ class UrdfAgent:
                     conversation=conversation,
                     final_code=final_code,
                     urdf_xml=report.urdf_xml,
+                    compile_warnings=list(last_compile_warnings),
                     turn_count=completed_turns,
+                    tool_call_count=tool_call_count,
+                    compile_attempt_count=compile_attempt_count,
                     usage=usage_totals or None,
                 )
 
             turn_tool_results: list[ToolResult] = []
+            tool_call_count += len(tool_calls)
             for tool_call in tool_calls:
                 func_name = self._tool_call_name(tool_call)
                 func_args = self._tool_call_display_args(tool_call)
@@ -897,11 +908,13 @@ class UrdfAgent:
 
             if self._is_code_valid(turn_tool_results):
                 try:
+                    compile_attempt_count += 1
                     compile_start = time.monotonic()
                     logger.info("Running URDF compile checks...")
                     report = await self._compile_urdf_report_async()
                     compile_duration = time.monotonic() - compile_start
                     logger.info("URDF compile passed in %.2fs", compile_duration)
+                    last_compile_warnings = list(report.warnings)
                     await self._persist_compile_success_checkpoint_async(report.urdf_xml)
                     had_successful_compile = True
                     last_successful_urdf_xml = report.urdf_xml
@@ -967,7 +980,10 @@ class UrdfAgent:
             message="Agent hit max turns limit",
             conversation=conversation,
             final_code=final_code,
+            compile_warnings=list(last_compile_warnings),
             turn_count=completed_turns,
+            tool_call_count=tool_call_count,
+            compile_attempt_count=compile_attempt_count,
             usage=usage_totals or None,
         )
 
