@@ -203,6 +203,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Articraft record-local derived assets and transient run state
+data/cache/
+data/records/*/assets/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

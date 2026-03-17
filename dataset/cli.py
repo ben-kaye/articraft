@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent.runtime import main as runtime_main
+from cli.dataset import main as dataset_main
 
 
-def main() -> int:
-    return runtime_main()
+def main(argv: list[str] | None = None) -> int:
+    return dataset_main(argv)

@@ -9,13 +9,15 @@ if __package__ in {None, ""}:
 
 
 from workbench.cli import main as workbench_main
-from workbench.models import WorkbenchRun
+from cli.workbench import main as workbench_cli_main
+from store.repo import StoreRepo
 
 
 def main() -> None:
     assert callable(workbench_main)
-    run = WorkbenchRun(prompt="pliers", output_dir=Path("outputs/pliers"))
-    assert run.status == "pending"
+    assert callable(workbench_cli_main)
+    repo = StoreRepo(Path.cwd())
+    assert repo.layout.runs_root.name == "runs"
 
 
 if __name__ == "__main__":

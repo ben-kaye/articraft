@@ -9,13 +9,15 @@ if __package__ in {None, ""}:
 
 
 from dataset.cli import main as dataset_main
-from dataset.models import DatasetRun
+from cli.dataset import main as dataset_cli_main
+from store.repo import StoreRepo
 
 
 def main() -> None:
     assert callable(dataset_main)
-    run = DatasetRun(category="tools", prompt="pliers", output_dir=Path("outputs/pliers"))
-    assert run.status == "pending"
+    assert callable(dataset_cli_main)
+    repo = StoreRepo(Path.cwd())
+    assert repo.layout.records_root.name == "records"
 
 
 if __name__ == "__main__":

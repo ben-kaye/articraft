@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent.runtime import main as runtime_main
+from cli.workbench import main as workbench_main
 
 
-def main() -> int:
-    return runtime_main()
+def main(argv: list[str] | None = None) -> int:
+    return workbench_main(argv)
