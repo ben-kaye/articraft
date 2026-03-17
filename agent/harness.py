@@ -57,7 +57,7 @@ object_model = build_object_model()
 """
 
 
-class UrdfAgent:
+class ArticraftAgent:
     def __init__(
         self,
         file_path: str,
@@ -993,7 +993,7 @@ class UrdfAgent:
             self.trace_writer.close()
         await self.llm.close()
 
-    async def __aenter__(self) -> UrdfAgent:
+    async def __aenter__(self) -> ArticraftAgent:
         return self
 
     async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:

@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
-from agent import runtime
+from agent import runner
 from agent.models import AgentResult, TerminateReason
 
 
@@ -28,8 +28,8 @@ class FakeAgent:
         self.file_path = Path(file_path)
         self.provider = provider
         self.loaded_system_prompt_path = str(
-            runtime.resolve_system_prompt_path(
-                runtime.DESIGNER_PROMPT_NAME,
+            runner.resolve_system_prompt_path(
+                runner.DESIGNER_PROMPT_NAME,
                 provider=provider,
                 repo_root=Path(__file__).resolve().parents[2],
             )
@@ -72,13 +72,13 @@ class FakeAgent:
 
 
 def main() -> None:
-    original_agent = runtime.UrdfAgent
-    runtime.UrdfAgent = FakeAgent
+    original_agent = runner.ArticraftAgent
+    runner.ArticraftAgent = FakeAgent
     try:
         with TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir)
             exit_code = asyncio.run(
-                runtime.run_from_input(
+                runner.run_from_input(
                     "make a gearbox",
                     prompt_text="make a gearbox",
                     display_prompt="make a gearbox",
@@ -87,7 +87,7 @@ def main() -> None:
                     provider="openai",
                     thinking_level="high",
                     max_turns=30,
-                    system_prompt_path=runtime.DESIGNER_PROMPT_NAME,
+                    system_prompt_path=runner.DESIGNER_PROMPT_NAME,
                     sdk_package="sdk",
                     sdk_docs_mode="full",
                     label="gearbox try",
@@ -127,7 +127,7 @@ def main() -> None:
 
             assert not (repo_root / "outputs").exists()
     finally:
-        runtime.UrdfAgent = original_agent
+        runner.ArticraftAgent = original_agent
 
 
 if __name__ == "__main__":

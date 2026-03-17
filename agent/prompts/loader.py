@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sdk._profiles import SUPPORTED_SDK_PACKAGES, get_sdk_profile
+from sdk._profiles import get_sdk_profile
 
 
 LEGACY_DESIGNER_PROMPT_NAME = "system_prompt.txt"
@@ -14,8 +14,10 @@ GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini.txt"
 HYBRID_GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini_hybrid.txt"
 
 SUPPORTED_SDK_DOCS_MODES = {"full", "core", "none"}
-PROMPTING_ROOT = Path(__file__).resolve().parent / "prompting"
-GENERATED_PROMPTS_DIR = PROMPTING_ROOT / "generated"
+PROMPTS_ROOT = Path(__file__).resolve().parent
+GENERATED_PROMPTS_DIR = PROMPTS_ROOT / "generated"
+# Back-compat alias for older references.
+PROMPTING_ROOT = PROMPTS_ROOT
 
 
 def normalize_sdk_package(sdk_package: str) -> str:

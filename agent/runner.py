@@ -39,7 +39,7 @@ from agent.prompts import (
 )
 from agent.providers.gemini import GeminiLLM, gemini_api_keys_from_env
 from agent.providers.openai import OpenAILLM
-from agent.session import UrdfAgent
+from agent.harness import ArticraftAgent
 from agent.tools import (
     build_first_turn_messages as _build_first_turn_messages,
     build_initial_user_content as _build_initial_user_content,
@@ -531,7 +531,7 @@ async def run_from_input(
         repo_root=resolved_repo_root,
     )
     try:
-        async with UrdfAgent(
+        async with ArticraftAgent(
             file_path=str(context.script_path),
             provider=provider,
             model_id=model_id,

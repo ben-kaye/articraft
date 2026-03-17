@@ -11,7 +11,7 @@ if __package__ in {None, ""}:
 
 
 from agent.compiler import persist_compile_success_artifacts, update_manifest
-from agent.runtime import compile_urdf
+from agent.runner import compile_urdf
 
 
 def main() -> None:
