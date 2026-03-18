@@ -22,6 +22,9 @@ from typing import Any, Callable, Optional
 from dotenv import load_dotenv
 
 from agent.compiler import (
+    compile_urdf as _compile_urdf,
+)
+from agent.compiler import (
     compile_urdf_report_maybe_timeout,
 )
 from agent.harness import ArticraftAgent
@@ -75,6 +78,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 MAX_SINGLE_RUN_SLUG_LEN = 120
+
+
+def compile_urdf(script_path: Path, *, sdk_package: str = "sdk") -> str:
+    """Compatibility export for legacy imports from agent.runner."""
+    return _compile_urdf(script_path, sdk_package=sdk_package)
 
 
 @dataclass(slots=True, frozen=True)
