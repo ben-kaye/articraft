@@ -12,6 +12,7 @@ mode := "prod"
 api_host := host
 api_port := port
 sdk_package := "sdk"
+viewer_target := "/"
 
 setup:
     # Create a local env template once; never overwrite an existing secrets file.
@@ -226,6 +227,7 @@ rerun record:
 viewer:
     #!/usr/bin/env bash
     set -euo pipefail
+    viewer_target={{ quote(viewer_target) }}
     if ! command -v npm >/dev/null 2>&1; then
       echo "npm is required for viewer/web. Install Node.js and npm first."
       exit 1
@@ -242,7 +244,7 @@ viewer:
         (
           for _ in {1..60}; do
             if curl -fsS http://{{api_host}}:{{api_port}}/health >/dev/null; then
-              open http://{{api_host}}:{{api_port}}/ >/dev/null 2>&1 || uv run python -m webbrowser http://{{api_host}}:{{api_port}}/ >/dev/null 2>&1 || true
+              open "http://{{api_host}}:{{api_port}}${viewer_target}" >/dev/null 2>&1 || uv run python -m webbrowser "http://{{api_host}}:{{api_port}}${viewer_target}" >/dev/null 2>&1 || true
               exit 0
             fi
             sleep 0.25
@@ -254,7 +256,7 @@ viewer:
         (
           for _ in {1..60}; do
             if curl -fsS http://127.0.0.1:5173 >/dev/null; then
-              open http://127.0.0.1:5173/ >/dev/null 2>&1 || uv run python -m webbrowser http://127.0.0.1:5173/ >/dev/null 2>&1 || true
+              open "http://127.0.0.1:5173${viewer_target}" >/dev/null 2>&1 || uv run python -m webbrowser "http://127.0.0.1:5173${viewer_target}" >/dev/null 2>&1 || true
               exit 0
             fi
             sleep 0.25
@@ -273,6 +275,61 @@ viewer:
 
 viewer-dev:
     exec just mode=dev api_host={{ quote(api_host) }} api_port={{ quote(api_port) }} viewer
+
+view record:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    record_ref={{ quote(record) }}
+    record_id="$(
+      RECORD_REF="$record_ref" uv run python - <<'PY'
+    import os
+    from pathlib import Path
+
+    from storage.repo import StorageRepo
+
+    repo = StorageRepo(Path(".").resolve())
+    candidate = Path(os.environ["RECORD_REF"]).expanduser()
+    if candidate.exists():
+        resolved = candidate.resolve()
+        records_root = repo.layout.records_root.resolve()
+        try:
+            relative = resolved.relative_to(records_root)
+        except ValueError as exc:
+            raise SystemExit(f"Record path must be inside {records_root}") from exc
+        if len(relative.parts) != 1 or not resolved.is_dir():
+            raise SystemExit(f"Record path must point to a direct child of {records_root}")
+        print(relative.parts[0])
+        raise SystemExit(0)
+
+    record_id = os.environ["RECORD_REF"].strip()
+    if not record_id:
+        raise SystemExit("Record reference is required.")
+    if repo.layout.record_metadata_path(record_id).exists():
+        print(record_id)
+        raise SystemExit(0)
+    raise SystemExit(f"Record not found: {os.environ['RECORD_REF']}")
+    PY
+    )"
+    viewer_target="/?record=${record_id}"
+    case "{{mode}}" in
+      prod)
+        viewer_url="http://{{api_host}}:{{api_port}}${viewer_target}"
+        health_url="http://{{api_host}}:{{api_port}}/health"
+        ;;
+      dev)
+        viewer_url="http://127.0.0.1:5173${viewer_target}"
+        health_url="http://127.0.0.1:5173"
+        ;;
+      *)
+        echo "Unknown viewer mode: {{mode}}. Expected 'prod' or 'dev'." >&2
+        exit 1
+        ;;
+    esac
+    if curl -fsS "$health_url" >/dev/null 2>&1; then
+      open "$viewer_url" >/dev/null 2>&1 || uv run python -m webbrowser "$viewer_url" >/dev/null 2>&1 || true
+      exit 0
+    fi
+    exec just mode={{ quote(mode) }} api_host={{ quote(api_host) }} api_port={{ quote(api_port) }} viewer_target="$viewer_target" viewer
 
 viewer-api:
     uv run articraft-workbench --repo-root . rebuild-search-index
