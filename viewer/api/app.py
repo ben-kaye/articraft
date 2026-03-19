@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from viewer.api.schemas import (
     RecordRatingRequest,
     RecordRatingResponse,
     RecordSummaryResponse,
+    RecordTextFileResponse,
     RunDetailResponse,
     RunSummaryResponse,
     ViewerBootstrapResponse,
@@ -65,6 +67,73 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    text_media_types = {
+        ".urdf": "application/xml",
+        ".xml": "application/xml",
+        ".py": "text/x-python",
+        ".txt": "text/plain",
+        ".json": "application/json",
+        ".md": "text/markdown",
+        ".yaml": "application/yaml",
+        ".yml": "application/yaml",
+    }
+
+    media_type_map = {
+        **text_media_types,
+        ".glb": "model/gltf-binary",
+        ".gltf": "model/gltf+json",
+        ".stl": "model/stl",
+        ".obj": "model/obj",
+    }
+
+    def resolve_record_target(record_id: str, file_path: str) -> tuple[Path, Path]:
+        if not record_id.startswith("rec_"):
+            raise HTTPException(status_code=400, detail="Invalid record ID format")
+
+        from storage.repo import StorageRepo
+
+        repo = StorageRepo(app.state.repo_root)
+        record_dir = repo.layout.record_dir(record_id)
+
+        if not record_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+
+        requested_path = Path(file_path)
+        if requested_path.is_absolute() or ".." in requested_path.parts:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        direct_target = (record_dir / requested_path).resolve()
+        if direct_target.exists():
+            target = direct_target
+        elif requested_path.parts and requested_path.parts[0] == "meshes":
+            target = (record_dir / "assets" / requested_path).resolve()
+        else:
+            target = direct_target
+
+        try:
+            target.relative_to(record_dir.resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Access denied") from exc
+
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+        return record_dir, target
+
+    def read_text_file_payload(
+        target: Path, *, preview_bytes: int, full: bool
+    ) -> tuple[str, bool, int]:
+        byte_count = target.stat().st_size
+        truncated = False
+        if full or byte_count <= preview_bytes:
+            raw = target.read_bytes()
+        else:
+            with target.open("rb") as handle:
+                raw = handle.read(preview_bytes + 1)
+            truncated = byte_count > preview_bytes
+            raw = raw[:preview_bytes]
+        return raw.decode("utf-8", errors="replace"), truncated, byte_count
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -178,65 +247,40 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
             updated_at=updated.get("updated_at"),
         )
 
+    @app.get(
+        "/api/records/{record_id}/text/{file_path:path}", response_model=RecordTextFileResponse
+    )
+    async def record_text_file(
+        record_id: str,
+        file_path: str,
+        preview_bytes: int = Query(default=131072, ge=4096, le=1048576),
+        full: bool = False,
+    ) -> RecordTextFileResponse:
+        _, target = resolve_record_target(record_id, file_path)
+        if target.suffix.lower() not in text_media_types:
+            raise HTTPException(
+                status_code=400, detail="Text preview is only supported for text files"
+            )
+
+        content, truncated, byte_count = await asyncio.to_thread(
+            read_text_file_payload,
+            target,
+            preview_bytes=preview_bytes,
+            full=full,
+        )
+        return RecordTextFileResponse(
+            record_id=record_id,
+            file_path=file_path,
+            content=content,
+            truncated=truncated,
+            byte_count=byte_count,
+            preview_byte_limit=None if full else preview_bytes,
+        )
+
     @app.get("/api/records/{record_id}/files/{file_path:path}")
     async def record_file(record_id: str, file_path: str) -> FileResponse:
         """Serve files from a record directory (URDF, meshes, code, etc.)"""
-        # Validate record_id format (should start with rec_)
-        if not record_id.startswith("rec_"):
-            raise HTTPException(status_code=400, detail="Invalid record ID format")
-
-        # Get record directory
-        from storage.repo import StorageRepo
-
-        repo = StorageRepo(app.state.repo_root)
-        record_dir = repo.layout.record_dir(record_id)
-
-        if not record_dir.exists():
-            raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
-
-        # Prevent path traversal attacks
-        requested_path = Path(file_path)
-        if requested_path.is_absolute() or ".." in requested_path.parts:
-            raise HTTPException(status_code=400, detail="Invalid file path")
-
-        def resolve_target(path: Path) -> Path:
-            direct_target = (record_dir / path).resolve()
-            if direct_target.exists():
-                return direct_target
-
-            if path.parts and path.parts[0] == "meshes":
-                asset_relative = Path("assets") / path
-                asset_target = (record_dir / asset_relative).resolve()
-                if asset_target.exists():
-                    return asset_target
-
-            return direct_target
-
-        # Resolve the target file
-        target = resolve_target(requested_path)
-
-        # Ensure target is within record directory
-        try:
-            target.relative_to(record_dir.resolve())
-        except ValueError as exc:
-            raise HTTPException(status_code=403, detail="Access denied") from exc
-
-        # Check if file exists
-        if not target.exists() or not target.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-
-        # Determine media type based on extension
-        media_type_map = {
-            ".urdf": "application/xml",
-            ".xml": "application/xml",
-            ".glb": "model/gltf-binary",
-            ".gltf": "model/gltf+json",
-            ".stl": "model/stl",
-            ".obj": "model/obj",
-            ".py": "text/x-python",
-            ".txt": "text/plain",
-            ".json": "application/json",
-        }
+        _, target = resolve_record_target(record_id, file_path)
         suffix = target.suffix.lower()
         media_type = media_type_map.get(suffix, "application/octet-stream")
 

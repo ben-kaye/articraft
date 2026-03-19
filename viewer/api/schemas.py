@@ -104,6 +104,15 @@ class RecordRatingResponse(BaseModel):
     updated_at: str | None = None
 
 
+class RecordTextFileResponse(BaseModel):
+    record_id: str
+    file_path: str
+    content: str
+    truncated: bool = False
+    byte_count: int
+    preview_byte_limit: int | None = None
+
+
 class RunDetailResponse(BaseModel):
     run: RunSummaryResponse
     run_metadata: dict[str, Any]
