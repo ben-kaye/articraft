@@ -90,6 +90,14 @@ just viewer
 
 This starts the local API, builds the web app if needed, and opens the viewer.
 
+If you just cloned the repo and want to avoid first-click compile pauses in the viewer, precompile saved records first:
+
+```bash
+just compile-all
+```
+
+This walks the saved records, recompiles the ones that still need generated artifacts, and shows a progress bar while it runs.
+
 For live frontend development:
 
 ```bash
@@ -114,4 +122,10 @@ Recompile a saved record:
 
 ```bash
 just compile data/records/<record-id>
+```
+
+Precompile all saved records that are still missing generated artifacts:
+
+```bash
+just compile-all
 ```

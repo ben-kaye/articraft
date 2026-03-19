@@ -330,7 +330,12 @@ class ViewerStore:
 
         return materialization_status
 
-    def ensure_record_assets(self, record_id: str) -> EnsureRecordAssetsResult:
+    def ensure_record_assets(
+        self,
+        record_id: str,
+        *,
+        force: bool = False,
+    ) -> EnsureRecordAssetsResult:
         record = self.records.load_record(record_id)
         if not isinstance(record, dict):
             raise FileNotFoundError(f"Record not found: {record_id}")
@@ -345,7 +350,7 @@ class ViewerStore:
             if isinstance(compile_report, dict) and isinstance(compile_report.get("status"), str)
             else None
         )
-        if urdf_path.exists():
+        if urdf_path.exists() and not force and existing_compile_status == "success":
             return EnsureRecordAssetsResult(
                 record_id=record_id,
                 status="available",
@@ -374,7 +379,7 @@ class ViewerStore:
                 and isinstance(compile_report.get("status"), str)
                 else None
             )
-            if urdf_path.exists():
+            if urdf_path.exists() and not force and existing_compile_status == "success":
                 return EnsureRecordAssetsResult(
                     record_id=record_id,
                     status="available",

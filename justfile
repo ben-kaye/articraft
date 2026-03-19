@@ -274,6 +274,9 @@ compile record_dir sdk_package="sdk":
         print("Warnings: 0")
     PY
 
+compile-all:
+    uv run python scripts/compile_all_records.py --repo-root .
+
 viewer-web-install:
     npm --prefix viewer/web install
 
