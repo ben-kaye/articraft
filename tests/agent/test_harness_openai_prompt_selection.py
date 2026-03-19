@@ -50,12 +50,17 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     instructions = payload["instructions"]
     docs_message = payload["input"][0]["content"][0]["text"]
 
+    assert "<tool_contract>" in instructions
+    assert "<feedback_strategy>" in instructions
+    assert "<failure_diagnosis>" in instructions
+    assert "<modeling_priority>" in instructions
     assert "Use ONLY `read_file` and `apply_patch`" in instructions
     assert "FREEFORM tool" in instructions
     assert "write_code" not in instructions
     assert "Do NOT provide `file_path`" in instructions
+    assert "<compile_signals>" in instructions
     assert "wrong geometric representation" in instructions
-    assert "named hero features" in instructions
+    assert "prompt-named visible features" in instructions
     assert "silhouette-critical visible forms" in instructions
     assert "## sdk/_docs/common/00_quickstart.md" in docs_message
     assert "## sdk/_docs/common/80_testing.md" in docs_message
@@ -102,9 +107,12 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
         system_prompt_path=DESIGNER_PROMPT_NAME,
     )
     gemini_instructions = gemini_payload["config"]["system_instruction"]
+    assert "<tool_contract>" in gemini_instructions
+    assert "<feedback_strategy>" in gemini_instructions
+    assert "<compile_signals>" in gemini_instructions
     assert "Use ONLY `read_code` and `edit_code`" in gemini_instructions
     assert 'old_string=""' in gemini_instructions
     assert "write_code" not in gemini_instructions
     assert "wrong geometric representation" in gemini_instructions
-    assert "named hero features" in gemini_instructions
+    assert "prompt-named visible features" in gemini_instructions
     assert "silhouette-critical visible forms" in gemini_instructions

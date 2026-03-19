@@ -14,8 +14,13 @@ def test_prompt_outputs_are_current() -> None:
 
     assert "apply_patch" in compiled_by_name["designer_system_prompt_openai.txt"]
     assert "write_code" not in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "<tool_contract>" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "<feedback_strategy>" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "<failure_diagnosis>" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "<compile_signals>" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "<modeling_priority>" in compiled_by_name["designer_system_prompt_openai.txt"]
     assert "wrong geometric representation" in compiled_by_name["designer_system_prompt_openai.txt"]
-    assert "named hero features" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert "prompt-named visible features" in compiled_by_name["designer_system_prompt_openai.txt"]
     assert (
         "silhouette-critical visible forms" in compiled_by_name["designer_system_prompt_openai.txt"]
     )
@@ -27,8 +32,10 @@ def test_prompt_outputs_are_current() -> None:
     assert "edit_code" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert "read_code" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert "write_code" not in compiled_by_name["designer_system_prompt_gemini.txt"]
+    assert "<feedback_strategy>" in compiled_by_name["designer_system_prompt_gemini.txt"]
+    assert "<compile_signals>" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert "wrong geometric representation" in compiled_by_name["designer_system_prompt_gemini.txt"]
-    assert "named hero features" in compiled_by_name["designer_system_prompt_gemini.txt"]
+    assert "prompt-named visible features" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert (
         "silhouette-critical visible forms" in compiled_by_name["designer_system_prompt_gemini.txt"]
     )
