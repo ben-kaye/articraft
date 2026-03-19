@@ -75,6 +75,16 @@ function categoryTriggerLabel(options: CategoryOption[], selectedValues: string[
   return `${selectedValues.length} categories`;
 }
 
+function filterTriggerClass(active: boolean, className?: string): string {
+  return cn(
+    "h-7 w-auto min-w-0 rounded-full px-2.5 text-[10px]",
+    active
+      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-hover)] focus-visible:border-[var(--accent)] data-[placeholder]:text-[var(--accent)]/80 [&_svg]:text-[var(--accent)]"
+      : "border-[var(--border-default)] bg-[var(--surface-1)] text-[var(--text-primary)]",
+    className,
+  );
+}
+
 function CategoryMultiSelect({
   options,
   selectedValues,
@@ -86,6 +96,7 @@ function CategoryMultiSelect({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const hasActiveFilter = selectedValues.length > 0;
 
   useEffect(() => {
     if (!open) {
@@ -134,10 +145,20 @@ function CategoryMultiSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         onClick={() => setOpen((current) => !current)}
-        className="flex h-7 w-auto min-w-0 max-w-[14rem] items-center justify-between gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-1)] px-2.5 text-[10px] text-[var(--text-primary)] outline-none transition-all duration-150 hover:border-[var(--border-strong)] focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]"
+        className={cn(
+          "flex max-w-[14rem] items-center justify-between gap-2 border outline-none transition-all duration-150 hover:border-[var(--border-strong)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
+          filterTriggerClass(hasActiveFilter),
+          !hasActiveFilter && "focus-visible:border-[var(--accent)]",
+        )}
       >
         <span className="truncate">{triggerLabel}</span>
-        <ChevronDown className={cn("size-3 text-[var(--text-tertiary)] transition-transform duration-150", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "size-3 transition-transform duration-150",
+            hasActiveFilter ? "text-[var(--accent)]" : "text-[var(--text-tertiary)]",
+            open && "rotate-180",
+          )}
+        />
       </button>
 
       {open ? (
@@ -346,14 +367,22 @@ function CostRangeFilter({
           setOpen((current) => !current);
         }}
         className={cn(
-          "flex h-7 w-auto min-w-0 max-w-[16rem] items-center justify-between gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-1)] px-2.5 text-[10px] text-[var(--text-primary)] outline-none transition-all duration-150",
+          "flex max-w-[16rem] items-center justify-between gap-2 border outline-none transition-all duration-150",
+          filterTriggerClass(hasActiveFilter),
           bounds
-            ? "hover:border-[var(--border-strong)] focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]"
+            ? "focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]"
             : "cursor-not-allowed opacity-60",
+          !hasActiveFilter && bounds && "hover:border-[var(--border-strong)] focus-visible:border-[var(--accent)]",
         )}
       >
         <span className="truncate">{costTriggerLabel(bounds, costFilter)}</span>
-        <ChevronDown className={cn("size-3 text-[var(--text-tertiary)] transition-transform duration-150", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "size-3 transition-transform duration-150",
+            hasActiveFilter ? "text-[var(--accent)]" : "text-[var(--text-tertiary)]",
+            open && "rotate-180",
+          )}
+        />
       </button>
 
       {open && bounds && popoverPosition
@@ -439,6 +468,10 @@ export function ExplorerFilters(): JSX.Element | null {
   );
 
   const costFilterActive = costFilter.min != null || costFilter.max != null;
+  const timeFilterActive = timeFilter !== "any";
+  const ratingFilterActive = ratingFilter !== "any";
+  const modelFilterActive = modelFilter !== null;
+  const categoryFilterActive = sourceFilter === "dataset" && categoryFilters.length > 0;
 
   const availableCategories = useMemo(() => {
     if (!bootstrap) return [];
@@ -471,11 +504,11 @@ export function ExplorerFilters(): JSX.Element | null {
   if (!bootstrap) return null;
 
   const filtersActive =
-    timeFilter !== "any" ||
+    timeFilterActive ||
     costFilterActive ||
-    ratingFilter !== "any" ||
-    modelFilter !== null ||
-    (sourceFilter === "dataset" && categoryFilters.length > 0);
+    ratingFilterActive ||
+    modelFilterActive ||
+    categoryFilterActive;
 
   return (
     <div className="space-y-2">
@@ -502,7 +535,7 @@ export function ExplorerFilters(): JSX.Element | null {
 
       <div className="flex flex-wrap gap-1.5">
         <Select value={timeFilter} onValueChange={(value) => dispatch({ type: "SET_TIME_FILTER", payload: value as TimeFilter })}>
-          <SelectTrigger size="sm" className="h-7 w-auto min-w-0 rounded-full border-[var(--border-default)] bg-[var(--surface-1)] px-2.5 text-[10px]">
+          <SelectTrigger size="sm" className={filterTriggerClass(timeFilterActive)}>
             <SelectValue placeholder="Any time" />
           </SelectTrigger>
           <SelectContent>
@@ -521,7 +554,7 @@ export function ExplorerFilters(): JSX.Element | null {
         />
 
         <Select value={ratingFilter} onValueChange={(value) => dispatch({ type: "SET_RATING_FILTER", payload: value as RatingFilter })}>
-          <SelectTrigger size="sm" className="h-7 w-auto min-w-0 rounded-full border-[var(--border-default)] bg-[var(--surface-1)] px-2.5 text-[10px]">
+          <SelectTrigger size="sm" className={filterTriggerClass(ratingFilterActive)}>
             <SelectValue placeholder="Any rating" />
           </SelectTrigger>
           <SelectContent>
@@ -542,7 +575,7 @@ export function ExplorerFilters(): JSX.Element | null {
             })
           }
         >
-          <SelectTrigger size="sm" className="h-7 w-auto min-w-0 max-w-full rounded-full border-[var(--border-default)] bg-[var(--surface-1)] px-2.5 text-[10px]">
+          <SelectTrigger size="sm" className={filterTriggerClass(modelFilterActive, "max-w-full")}>
             <SelectValue placeholder="All models" />
           </SelectTrigger>
           <SelectContent>
