@@ -1,5 +1,6 @@
-import { useRef, useEffect, type JSX } from 'react';
+import { useRef, useEffect, useMemo, useState, type JSX } from 'react';
 import * as THREE from 'three';
+import { PartLegend, type PartLegendItem } from './PartLegend';
 import { useThreeScene } from './useThreeScene';
 import { useUrdfLoader } from './useUrdfLoader';
 import { createEdgeLines } from './materials';
@@ -10,6 +11,8 @@ import { updateUrlSearchParams } from '@/lib/url';
 import type { UrdfSpec } from './urdf-parser';
 
 const CAMERA_QUERY_PARAM = 'cam';
+const ROBOT_GROUP_NAME = '__articraft_robot__';
+const CLICK_MOVE_THRESHOLD_PX = 5;
 const SEGMENTATION_PALETTE = [
   '#ff5a36',
   '#00b3ff',
@@ -33,6 +36,7 @@ type MaterialWithColor = THREE.Material & {
   emissiveMap?: THREE.Texture | null;
   metalness?: number;
   roughness?: number;
+  depthWrite?: boolean;
 };
 
 type SegmentMaterialSnapshot = {
@@ -44,7 +48,10 @@ type SegmentMaterialSnapshot = {
   roughness?: number;
   transparent: boolean;
   opacity: number;
+  depthWrite?: boolean;
 };
+
+type SegmentEmphasis = 'default' | 'selected' | 'dimmed';
 
 function segmentColorForIndex(index: number): THREE.Color {
   const base = new THREE.Color(SEGMENTATION_PALETTE[index % SEGMENTATION_PALETTE.length]);
@@ -66,17 +73,29 @@ function storeSegmentMaterialSnapshot(material: MaterialWithColor): void {
     roughness: material.roughness,
     transparent: material.transparent,
     opacity: material.opacity,
+    depthWrite: material.depthWrite,
   } satisfies SegmentMaterialSnapshot;
 }
 
-function applySegmentColor(material: MaterialWithColor, color: THREE.Color): void {
+function applySegmentColor(material: MaterialWithColor, color: THREE.Color, emphasis: SegmentEmphasis): void {
   storeSegmentMaterialSnapshot(material);
+  const tint = color.clone();
+
+  if (emphasis === 'dimmed') {
+    tint.lerp(new THREE.Color('#d8d8d8'), 0.72);
+  }
 
   if (material.color) {
-    material.color.copy(color);
+    material.color.copy(tint);
   }
   if (material.emissive) {
-    material.emissive.setRGB(0.06, 0.06, 0.06);
+    if (emphasis === 'selected') {
+      material.emissive.setRGB(0.09, 0.09, 0.09);
+    } else if (emphasis === 'dimmed') {
+      material.emissive.setRGB(0.018, 0.018, 0.018);
+    } else {
+      material.emissive.setRGB(0.06, 0.06, 0.06);
+    }
   }
   if ('map' in material) {
     material.map = null;
@@ -85,13 +104,16 @@ function applySegmentColor(material: MaterialWithColor, color: THREE.Color): voi
     material.emissiveMap = null;
   }
   if ('metalness' in material && typeof material.metalness === 'number') {
-    material.metalness = 0.14;
+    material.metalness = emphasis === 'dimmed' ? 0.02 : 0.14;
   }
   if ('roughness' in material && typeof material.roughness === 'number') {
-    material.roughness = 0.72;
+    material.roughness = emphasis === 'dimmed' ? 0.9 : 0.72;
   }
-  material.transparent = false;
-  material.opacity = 1;
+  material.transparent = emphasis === 'dimmed';
+  material.opacity = emphasis === 'dimmed' ? 0.1 : 1;
+  if ('depthWrite' in material) {
+    material.depthWrite = emphasis !== 'dimmed';
+  }
   material.needsUpdate = true;
 }
 
@@ -125,6 +147,9 @@ function restoreSegmentMaterial(material: MaterialWithColor): void {
   }
   material.transparent = snapshot.transparent;
   material.opacity = snapshot.opacity;
+  if ('depthWrite' in material && typeof snapshot.depthWrite === 'boolean') {
+    material.depthWrite = snapshot.depthWrite;
+  }
   material.needsUpdate = true;
   delete material.userData[SEGMENTATION_SNAPSHOT_KEY];
 }
@@ -141,24 +166,56 @@ function withMeshMaterials(
   }
 }
 
+function findLinkName(object: THREE.Object3D | null): string | null {
+  let current = object;
+
+  while (current) {
+    if (current.name.startsWith('link:')) {
+      return current.name.slice(5);
+    }
+    current = current.parent;
+  }
+
+  return null;
+}
+
 export interface SceneCanvasProps {
   baseFileUrl: string | null;
-  persistedRecordId: string | null;
+  persistedRecordId?: string | null;
   assetRevisionKey: string | null;
   selectionKey: string | null;
   renderOptions: RenderOptions;
   onUrdfSpecChange?: (spec: UrdfSpec | null, jointNodes: Map<string, THREE.Object3D> | null) => void;
+  onLoadStateChange?: (state: {
+    loading: boolean;
+    error: string | null;
+    missingArtifacts: boolean;
+  }) => void;
+}
+
+function isMissingArtifactsError(error: string | null): boolean {
+  if (!error) {
+    return false;
+  }
+  return /404|not found|file not found/i.test(error);
 }
 
 export function SceneCanvas({
   baseFileUrl,
-  persistedRecordId,
+  persistedRecordId = null,
   assetRevisionKey,
   selectionKey,
   renderOptions,
   onUrdfSpecChange,
+  onLoadStateChange,
 }: SceneCanvasProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const edgeLinesRef = useRef<THREE.LineSegments[]>([]);
+  const envMapRef = useRef<THREE.Texture | null>(null);
+  const jointOverlayRef = useRef<THREE.Object3D[]>([]);
+  const partHighlightRef = useRef<THREE.LineSegments[]>([]);
+  const pointerDownRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const [selectedPartName, setSelectedPartName] = useState<string | null>(null);
   const isStagingSelection = selectionKey?.startsWith("staging:") ?? false;
 
   const { scene, camera, renderer, controls, gridGroup, axisGroup, sceneReady } = useThreeScene(containerRef);
@@ -173,9 +230,41 @@ export function SceneCanvas({
     axisGroup,
   );
 
+  const partLegendItems = useMemo<PartLegendItem[]>(
+    () => (
+      urdfSpec
+        ? urdfSpec.links
+            .map((link, index) => ({
+              name: link.name,
+              color: `#${segmentColorForIndex(index).getHexString()}`,
+              visualCount: link.visuals.length,
+            }))
+            .filter((item) => item.visualCount > 0)
+            .map(({ name, color }) => ({ name, color }))
+        : []
+    ),
+    [urdfSpec],
+  );
+  const shouldShowPartLegend =
+    Boolean(selectionKey) &&
+    renderOptions.showSegmentColors &&
+    !renderOptions.showCollisions &&
+    partLegendItems.length > 0 &&
+    !loading &&
+    !error;
+  const isStagingBuffering = isStagingSelection && error?.startsWith("Failed to fetch URDF: 404");
+
   useEffect(() => {
     onUrdfSpecChange?.(urdfSpec, jointNodes);
   }, [urdfSpec, jointNodes, onUrdfSpecChange]);
+
+  useEffect(() => {
+    onLoadStateChange?.({
+      loading,
+      error,
+      missingArtifacts: isMissingArtifactsError(error),
+    });
+  }, [error, loading, onLoadStateChange]);
 
   useEffect(() => {
     updateUrlSearchParams((params) => {
@@ -183,10 +272,23 @@ export function SceneCanvas({
     });
   }, []);
 
-  const edgeLinesRef = useRef<THREE.LineSegments[]>([]);
-  const envMapRef = useRef<THREE.Texture | null>(null);
-  const jointOverlayRef = useRef<THREE.Object3D[]>([]);
-  const isStagingBuffering = isStagingSelection && error?.startsWith("Failed to fetch URDF: 404");
+  useEffect(() => {
+    setSelectedPartName(null);
+  }, [selectionKey]);
+
+  useEffect(() => {
+    if (selectedPartName && !partLegendItems.some((item) => item.name === selectedPartName)) {
+      setSelectedPartName(null);
+    }
+  }, [partLegendItems, selectedPartName]);
+
+  useEffect(() => {
+    if (renderOptions.showSegmentColors && !renderOptions.showCollisions) {
+      return;
+    }
+
+    setSelectedPartName(null);
+  }, [renderOptions.showCollisions, renderOptions.showSegmentColors]);
 
   // Show/hide grid
   useEffect(() => {
@@ -208,7 +310,7 @@ export function SceneCanvas({
 
     if (!renderOptions.showEdges || renderOptions.showCollisions) return;
 
-    const robot = scene.getObjectByName('__articraft_robot__');
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
     if (!robot) return;
 
     const newLines: THREE.LineSegments[] = [];
@@ -225,7 +327,7 @@ export function SceneCanvas({
   // Double-sided materials
   useEffect(() => {
     if (!scene) return;
-    const robot = scene.getObjectByName('__articraft_robot__');
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
     if (!robot) return;
 
     robot.traverse((obj) => {
@@ -264,7 +366,7 @@ export function SceneCanvas({
   // Show collisions
   useEffect(() => {
     if (!scene) return;
-    const robot = scene.getObjectByName('__articraft_robot__');
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
     if (!robot) return;
 
     robot.traverse((obj) => {
@@ -282,7 +384,7 @@ export function SceneCanvas({
       return;
     }
 
-    const robot = scene.getObjectByName('__articraft_robot__');
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
     if (!robot) {
       return;
     }
@@ -299,9 +401,16 @@ export function SceneCanvas({
           return;
         }
 
+        const emphasis: SegmentEmphasis =
+          selectedPartName == null
+            ? 'default'
+            : link.name === selectedPartName
+              ? 'selected'
+              : 'dimmed';
+
         withMeshMaterials(obj, (material) => {
           if (renderOptions.showSegmentColors) {
-            applySegmentColor(material, linkColor);
+            applySegmentColor(material, linkColor, emphasis);
           } else {
             restoreSegmentMaterial(material);
           }
@@ -327,7 +436,124 @@ export function SceneCanvas({
         });
       }
     };
-  }, [scene, renderOptions.showSegmentColors, urdfSpec]);
+  }, [scene, renderOptions.showSegmentColors, selectedPartName, urdfSpec]);
+
+  useEffect(() => {
+    for (const highlight of partHighlightRef.current) {
+      highlight.parent?.remove(highlight);
+      highlight.geometry.dispose();
+      (highlight.material as THREE.Material).dispose();
+    }
+    partHighlightRef.current = [];
+
+    if (!scene || !selectedPartName || !shouldShowPartLegend) {
+      return;
+    }
+
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
+    const linkGroup = robot?.getObjectByName(`link:${selectedPartName}`);
+    if (!linkGroup) {
+      return;
+    }
+
+    const nextHighlights: THREE.LineSegments[] = [];
+    linkGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || obj.userData.articraftVisual !== true || !obj.visible) {
+        return;
+      }
+
+      const highlight = createEdgeLines(obj.geometry, 0xffffff);
+      const material = highlight.material as THREE.LineBasicMaterial;
+      material.opacity = 0.72;
+      highlight.renderOrder = 20;
+      obj.add(highlight);
+      nextHighlights.push(highlight);
+    });
+
+    partHighlightRef.current = nextHighlights;
+
+    return () => {
+      for (const highlight of nextHighlights) {
+        highlight.parent?.remove(highlight);
+        highlight.geometry.dispose();
+        (highlight.material as THREE.Material).dispose();
+      }
+      if (partHighlightRef.current === nextHighlights) {
+        partHighlightRef.current = [];
+      }
+    };
+  }, [scene, selectedPartName, shouldShowPartLegend, urdfSpec]);
+
+  useEffect(() => {
+    if (!scene || !camera || !renderer || !shouldShowPartLegend) {
+      return;
+    }
+
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
+    if (!robot) {
+      return;
+    }
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      pointerDownRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        pointerId: event.pointerId,
+      };
+    };
+
+    const clearPointerDown = (): void => {
+      pointerDownRef.current = null;
+    };
+
+    const handlePointerUp = (event: PointerEvent): void => {
+      const start = pointerDownRef.current;
+      pointerDownRef.current = null;
+
+      if (!start || start.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const movement = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+      if (movement > CLICK_MOVE_THRESHOLD_PX) {
+        return;
+      }
+
+      const bounds = renderer.domElement.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) {
+        return;
+      }
+
+      pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1;
+      pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const intersections = raycaster.intersectObject(robot, true);
+      const hit = intersections.find(
+        ({ object }) => object instanceof THREE.Mesh && object.userData.articraftVisual === true && object.visible,
+      );
+      const linkName = hit ? findLinkName(hit.object) : null;
+      if (!linkName) {
+        return;
+      }
+
+      setSelectedPartName((current) => (current === linkName ? null : linkName));
+    };
+
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown);
+    renderer.domElement.addEventListener('pointerup', handlePointerUp);
+    renderer.domElement.addEventListener('pointercancel', clearPointerDown);
+    renderer.domElement.addEventListener('pointerleave', clearPointerDown);
+    return () => {
+      renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
+      renderer.domElement.removeEventListener('pointerup', handlePointerUp);
+      renderer.domElement.removeEventListener('pointercancel', clearPointerDown);
+      renderer.domElement.removeEventListener('pointerleave', clearPointerDown);
+    };
+  }, [camera, renderer, scene, shouldShowPartLegend]);
 
   useEffect(() => {
     disposeOverlayObjects(jointOverlayRef.current);
@@ -337,7 +563,7 @@ export function SceneCanvas({
       return;
     }
 
-    const robot = scene.getObjectByName('__articraft_robot__');
+    const robot = scene.getObjectByName(ROBOT_GROUP_NAME);
     if (!robot) {
       return;
     }
@@ -355,6 +581,14 @@ export function SceneCanvas({
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+
+      {shouldShowPartLegend ? (
+        <PartLegend
+          items={partLegendItems}
+          selectedPartName={selectedPartName}
+          onSelectPart={setSelectedPartName}
+        />
+      ) : null}
 
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#f3f3f3]/70">
@@ -378,7 +612,7 @@ export function SceneCanvas({
       )}
 
       {!selectionKey && sceneReady && !loading && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <p className="text-[11px] text-[#bbb]">
             Select a record to view its 3D model
           </p>
