@@ -182,6 +182,22 @@ dataset-delete-record record_path:
       --execute \
       --confirm-record-id "$confirm_record_id"
 
+dataset-promote record_ref category_title dataset_id="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    record_ref={{ quote(record_ref) }}
+    category_title={{ quote(category_title) }}
+    dataset_id={{ quote(dataset_id) }}
+    if [ -n "$dataset_id" ]; then
+      exec uv run articraft-dataset --repo-root . promote-record \
+        "$record_ref" \
+        "$category_title" \
+        --dataset-id "$dataset_id"
+    fi
+    exec uv run articraft-dataset --repo-root . promote-record \
+      "$record_ref" \
+      "$category_title"
+
 search-index:
     uv run articraft-workbench --repo-root . rebuild-search-index
 

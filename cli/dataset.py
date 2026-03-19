@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from cli.common import add_data_root_argument
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
 from storage.datasets import DatasetStore
+from storage.models import CategoryRecord
 from storage.queries import StorageQueries
 from storage.records import RecordStore
 from storage.repo import StorageRepo
@@ -44,6 +46,9 @@ class DeleteRecordPreview:
 class PruneCachePreview:
     failed_staging_dirs: list[Path]
     empty_dirs: list[Path]
+
+
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _build_delete_category_preview(
@@ -87,6 +92,228 @@ def _resolve_record_path(repo: StorageRepo, record_path: str) -> Path:
     if not resolved.is_dir():
         raise ValueError(f"Record directory not found: {resolved}")
     return resolved
+
+
+def _resolve_record_reference(repo: StorageRepo, record_ref: str) -> str:
+    candidate = Path(record_ref).expanduser()
+    if candidate.exists():
+        return _resolve_record_path(repo, str(candidate)).name
+
+    record_id = record_ref.strip()
+    if not record_id:
+        raise ValueError("Record reference is required.")
+    if repo.layout.record_dir(record_id).is_dir():
+        return record_id
+    raise ValueError(f"Record not found: {record_ref}")
+
+
+def _slugify_category_title(title: str) -> str:
+    slug = _NON_ALNUM_RE.sub("_", title.strip().lower()).strip("_")
+    if not slug:
+        raise ValueError(f"Could not derive category slug from {title!r}")
+    return slug
+
+
+def _sdk_package_to_target_sdk_version(sdk_package: str) -> str | None:
+    if sdk_package == "sdk":
+        return "base"
+    if sdk_package == "sdk_hybrid":
+        return "hybrid_cad"
+    return None
+
+
+def _parse_canonical_dataset_sequence(dataset_id: str, category_slug: str) -> int | None:
+    match = re.fullmatch(rf"ds_{re.escape(category_slug)}_(\d{{4}})", dataset_id)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _next_dataset_id(
+    datasets: DatasetStore,
+    *,
+    category_slug: str,
+    category: dict | None,
+) -> tuple[str, int]:
+    seen_dataset_ids = {
+        str(entry.get("dataset_id") or "")
+        for entry in datasets.list_entries()
+        if isinstance(entry, dict)
+    }
+    highest_sequence = 0
+    for dataset_id in seen_dataset_ids:
+        sequence = _parse_canonical_dataset_sequence(dataset_id, category_slug)
+        if sequence is not None:
+            highest_sequence = max(highest_sequence, sequence)
+
+    if isinstance(category, dict):
+        for key in ("last_item_index", "current_count"):
+            value = category.get(key)
+            if isinstance(value, int):
+                highest_sequence = max(highest_sequence, value)
+
+    sequence = highest_sequence + 1
+    dataset_id = f"ds_{category_slug}_{sequence:04d}"
+    while dataset_id in seen_dataset_ids:
+        sequence += 1
+        dataset_id = f"ds_{category_slug}_{sequence:04d}"
+    return dataset_id, sequence
+
+
+def _upsert_category_metadata(
+    repo: StorageRepo,
+    queries: StorageQueries,
+    *,
+    record: dict,
+    category_title: str,
+    category_slug: str,
+    now: str,
+    sequence: int | None,
+) -> dict:
+    categories = CategoryStore(repo)
+    existing = categories.load(category_slug)
+    record_category_count = len(queries.list_record_ids_for_category(category_slug))
+    run_count = len(queries.list_run_ids_for_category(category_slug))
+
+    if isinstance(existing, dict):
+        category = CategoryRecord(
+            schema_version=int(existing.get("schema_version", 1)),
+            slug=category_slug,
+            title=str(existing.get("title") or category_title),
+            description=str(existing.get("description") or ""),
+            prompt_batch_ids=[
+                str(batch_id)
+                for batch_id in existing.get("prompt_batch_ids", [])
+                if str(batch_id).strip()
+            ],
+            target_sdk_version=(
+                str(existing.get("target_sdk_version"))
+                if existing.get("target_sdk_version") is not None
+                else _sdk_package_to_target_sdk_version(str(record.get("sdk_package") or ""))
+            ),
+            current_count=record_category_count,
+            last_item_index=max(
+                [
+                    value
+                    for value in (
+                        sequence,
+                        existing.get("last_item_index")
+                        if isinstance(existing.get("last_item_index"), int)
+                        else None,
+                    )
+                    if isinstance(value, int)
+                ],
+                default=None,
+            ),
+            created_at=str(existing.get("created_at") or now),
+            updated_at=now,
+            run_count=run_count,
+        )
+    else:
+        category = CategoryRecord(
+            schema_version=1,
+            slug=category_slug,
+            title=category_title,
+            description="",
+            prompt_batch_ids=[],
+            target_sdk_version=_sdk_package_to_target_sdk_version(
+                str(record.get("sdk_package") or "")
+            ),
+            current_count=record_category_count,
+            last_item_index=sequence,
+            created_at=now,
+            updated_at=now,
+            run_count=run_count,
+        )
+    categories.save(category)
+    return category.to_dict()
+
+
+def _promote_record_workflow(
+    repo: StorageRepo,
+    datasets: DatasetStore,
+    queries: StorageQueries,
+    *,
+    record_ref: str,
+    category_title: str,
+    dataset_id: str | None,
+    promoted_at: str,
+) -> tuple[dict, dict, dict, object]:
+    record_store = RecordStore(repo)
+    collections = CollectionStore(repo)
+
+    record_id = _resolve_record_reference(repo, record_ref)
+    record = record_store.load_record(record_id)
+    if not isinstance(record, dict):
+        raise ValueError(f"Missing record.json for {record_id}")
+
+    category_slug = _slugify_category_title(category_title)
+    existing_entry = datasets.load_entry(record_id)
+    used_sequence: int | None = None
+    resolved_dataset_id = dataset_id
+
+    if isinstance(existing_entry, dict):
+        existing_category_slug = str(existing_entry.get("category_slug") or "")
+        if existing_category_slug and existing_category_slug != category_slug:
+            raise ValueError(
+                f"Record already promoted under category {existing_category_slug}: {record_id}"
+            )
+        resolved_dataset_id = str(existing_entry.get("dataset_id") or "")
+        used_sequence = _parse_canonical_dataset_sequence(resolved_dataset_id, category_slug)
+        if not resolved_dataset_id:
+            raise ValueError(f"Existing dataset entry missing dataset_id for {record_id}")
+    else:
+        if not resolved_dataset_id:
+            category = CategoryStore(repo).load(category_slug)
+            resolved_dataset_id, used_sequence = _next_dataset_id(
+                datasets,
+                category_slug=category_slug,
+                category=category,
+            )
+        else:
+            if datasets.find_record_id_by_dataset_id(resolved_dataset_id) is not None:
+                raise ValueError(f"Dataset ID already exists: {resolved_dataset_id}")
+            used_sequence = _parse_canonical_dataset_sequence(resolved_dataset_id, category_slug)
+
+    record["category_slug"] = category_slug
+    record["collections"] = ["dataset"]
+    record["updated_at"] = promoted_at
+    record_store.repo.write_json(repo.layout.record_metadata_path(record_id), record)
+
+    source = record.get("source")
+    run_id = str(source.get("run_id") or "") if isinstance(source, dict) else ""
+    if run_id:
+        run_path = repo.layout.run_metadata_path(run_id)
+        run_metadata = repo.read_json(run_path)
+        if isinstance(run_metadata, dict):
+            run_metadata["category_slug"] = category_slug
+            run_metadata["updated_at"] = promoted_at
+            repo.write_json(run_path, run_metadata)
+
+    if not isinstance(existing_entry, dict):
+        datasets.promote_record(
+            record_id=record_id,
+            dataset_id=resolved_dataset_id,
+            category_slug=category_slug,
+            promoted_at=promoted_at,
+        )
+
+    collections.remove_workbench_entries(record_id)
+    category = _upsert_category_metadata(
+        repo,
+        queries,
+        record=record,
+        category_title=category_title,
+        category_slug=category_slug,
+        now=promoted_at,
+        sequence=used_sequence,
+    )
+    manifest = datasets.write_dataset_manifest()
+    search_stats = SearchIndex(repo).rebuild()
+    entry = datasets.load_entry(record_id)
+    if not isinstance(entry, dict):
+        raise ValueError(f"Failed to load dataset entry for {record_id}")
+    return entry, category, manifest, search_stats
 
 
 def _build_delete_record_preview(
@@ -320,6 +547,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--promoted-at",
         help="UTC timestamp for promotion. Defaults to the current time.",
     )
+    promote_record = subparsers.add_parser(
+        "promote-record",
+        help="Promote a saved record into the dataset, creating the category when needed.",
+    )
+    promote_record.add_argument(
+        "record",
+        help="Record ID or canonical record directory path under data/records/.",
+    )
+    promote_record.add_argument(
+        "category_title",
+        help="Category title to assign. The dataset slug is derived automatically.",
+    )
+    promote_record.add_argument(
+        "--dataset-id",
+        help="Optional dataset ID override. Defaults to the next canonical ds_<slug>_<NNNN> ID.",
+    )
+    promote_record.add_argument(
+        "--promoted-at",
+        help="UTC timestamp for promotion. Defaults to the current time.",
+    )
     delete_category = subparsers.add_parser(
         "delete-category",
         help="Preview or delete an entire category and all records assigned to it.",
@@ -413,6 +660,41 @@ def main(argv: list[str] | None = None) -> int:
             "Promoted "
             f"record_id={entry['record_id']} dataset_id={entry['dataset_id']} "
             f"at {repo.layout.record_dataset_entry_path(entry['record_id'])}"
+        )
+        return 0
+
+    if args.command == "promote-record":
+        repo.ensure_layout()
+        try:
+            entry, category, manifest, search_stats = _promote_record_workflow(
+                repo,
+                datasets,
+                queries,
+                record_ref=args.record,
+                category_title=args.category_title,
+                dataset_id=args.dataset_id,
+                promoted_at=args.promoted_at or _utc_now(),
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        print(
+            f"Promoted record_id={entry['record_id']} "
+            f"category_slug={entry['category_slug']} "
+            f"dataset_id={entry['dataset_id']}"
+        )
+        print(
+            f"Category title={category.get('title') or '(untitled)'} "
+            f"path={repo.layout.category_metadata_path(entry['category_slug'])}"
+        )
+        print(
+            f"Wrote dataset manifest to {repo.layout.dataset_manifest_path()} "
+            f"entries={len(manifest['generated'])}"
+        )
+        print(
+            f"Rebuilt search index at {search_stats.path} "
+            f"records={search_stats.record_count} "
+            f"categories={search_stats.category_count}"
         )
         return 0
 
