@@ -34,7 +34,6 @@ from agent.mp_utils import (
     resolve_mp_start_method,
 )
 from storage.materialize import (
-    canonical_record_paths,
     infer_materialization_status,
     materialization_paths,
     urdf_references_external_meshes,
@@ -180,6 +179,21 @@ def _normalize_sdk_package(value: object) -> str:
     return normalized or "sdk"
 
 
+def _record_model_script_path(
+    repo: StorageRepo,
+    record_id: str,
+    record: object,
+) -> Path:
+    record_dir = repo.layout.record_dir(record_id)
+    artifacts = record.get("artifacts") if isinstance(record, dict) else None
+    model_name = (
+        str(artifacts.get("model_py"))
+        if isinstance(artifacts, dict) and artifacts.get("model_py")
+        else "model.py"
+    )
+    return record_dir / model_name
+
+
 def _artifact_materialization_status(
     repo: StorageRepo,
     record_id: str,
@@ -215,7 +229,7 @@ def _collect_candidates(
         sdk_package = _normalize_sdk_package(
             record.get("sdk_package") if isinstance(record, dict) else "sdk"
         )
-        script_path = canonical_record_paths(repo, record_id)["model_py"]
+        script_path = _record_model_script_path(repo, record_id, record)
         urdf_path = materialization_paths(repo, record_id)["model_urdf"]
         compile_report_path = materialization_paths(repo, record_id)["compile_report_json"]
         compile_report = repo.read_json(compile_report_path)

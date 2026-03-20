@@ -469,25 +469,19 @@ def test_collect_candidates_skips_primitive_only_success_records_without_assets(
     record_id = "rec_primitive"
     record_dir = repo.layout.record_dir(record_id)
     record_dir.mkdir(parents=True, exist_ok=True)
+    materialization_dir = repo.layout.record_materialization_dir(record_id)
+    materialization_dir.mkdir(parents=True, exist_ok=True)
     (record_dir / "model.py").write_text("object_model = None\n", encoding="utf-8")
-    (record_dir / "model.urdf").write_text(
+    (materialization_dir / "model.urdf").write_text(
         "<robot name='primitive'><link name='base'><visual><geometry><box size='1 1 1'/></geometry></visual></link></robot>",
         encoding="utf-8",
     )
     (record_dir / "record.json").write_text(
-        json.dumps(
-            {
-                "artifacts": {
-                    "model_py": "model.py",
-                    "model_urdf": "model.urdf",
-                    "compile_report_json": "compile_report.json",
-                }
-            }
-        ),
+        json.dumps({"artifacts": {"model_py": "model.py"}}),
         encoding="utf-8",
     )
-    (record_dir / "compile_report.json").write_text(
-        json.dumps({"status": "success"}),
+    (materialization_dir / "compile_report.json").write_text(
+        json.dumps({"status": "success", "metrics": {"compile_level": "full"}}),
         encoding="utf-8",
     )
 
@@ -504,24 +498,18 @@ def test_collect_candidates_queues_mesh_backed_records_missing_assets(tmp_path) 
     record_id = "rec_mesh_missing_assets"
     record_dir = repo.layout.record_dir(record_id)
     record_dir.mkdir(parents=True, exist_ok=True)
+    materialization_dir = repo.layout.record_materialization_dir(record_id)
+    materialization_dir.mkdir(parents=True, exist_ok=True)
     (record_dir / "model.py").write_text("object_model = None\n", encoding="utf-8")
-    (record_dir / "model.urdf").write_text(
+    (materialization_dir / "model.urdf").write_text(
         "<robot name='mesh'><link name='base'><visual><geometry><mesh filename='assets/meshes/part.obj'/></geometry></visual></link></robot>",
         encoding="utf-8",
     )
     (record_dir / "record.json").write_text(
-        json.dumps(
-            {
-                "artifacts": {
-                    "model_py": "model.py",
-                    "model_urdf": "model.urdf",
-                    "compile_report_json": "compile_report.json",
-                }
-            }
-        ),
+        json.dumps({"artifacts": {"model_py": "model.py"}}),
         encoding="utf-8",
     )
-    (record_dir / "compile_report.json").write_text(
+    (materialization_dir / "compile_report.json").write_text(
         json.dumps({"status": "success"}),
         encoding="utf-8",
     )
@@ -565,6 +553,29 @@ def test_collect_candidates_queues_broken_success_records_missing_model_script(t
     assert candidates[0].reason == "missing model.py"
 
 
+def test_collect_candidates_uses_record_artifacts_model_py_path(tmp_path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+
+    record_id = "rec_custom_model_path"
+    record_dir = repo.layout.record_dir(record_id)
+    record_dir.mkdir(parents=True, exist_ok=True)
+    materialization_dir = repo.layout.record_materialization_dir(record_id)
+    materialization_dir.mkdir(parents=True, exist_ok=True)
+    (record_dir / "generated_model.py").write_text("object_model = None\n", encoding="utf-8")
+    (record_dir / "record.json").write_text(
+        json.dumps({"artifacts": {"model_py": "generated_model.py"}}),
+        encoding="utf-8",
+    )
+
+    candidates, skipped_missing_script = _collect_candidates(tmp_path, force=False)
+
+    assert skipped_missing_script == 0
+    assert len(candidates) == 1
+    assert candidates[0].record_id == record_id
+    assert candidates[0].reason == "missing model.urdf"
+
+
 def test_collect_candidates_visual_target_skips_legacy_full_compile_reports(tmp_path) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()
@@ -572,24 +583,18 @@ def test_collect_candidates_visual_target_skips_legacy_full_compile_reports(tmp_
     record_id = "rec_visual_skip"
     record_dir = repo.layout.record_dir(record_id)
     record_dir.mkdir(parents=True, exist_ok=True)
+    materialization_dir = repo.layout.record_materialization_dir(record_id)
+    materialization_dir.mkdir(parents=True, exist_ok=True)
     (record_dir / "model.py").write_text("object_model = None\n", encoding="utf-8")
-    (record_dir / "model.urdf").write_text(
+    (materialization_dir / "model.urdf").write_text(
         "<robot name='primitive'><link name='base'><visual><geometry><box size='1 1 1'/></geometry></visual></link></robot>",
         encoding="utf-8",
     )
     (record_dir / "record.json").write_text(
-        json.dumps(
-            {
-                "artifacts": {
-                    "model_py": "model.py",
-                    "model_urdf": "model.urdf",
-                    "compile_report_json": "compile_report.json",
-                }
-            }
-        ),
+        json.dumps({"artifacts": {"model_py": "model.py"}}),
         encoding="utf-8",
     )
-    (record_dir / "compile_report.json").write_text(
+    (materialization_dir / "compile_report.json").write_text(
         json.dumps({"status": "success"}),
         encoding="utf-8",
     )
@@ -611,24 +616,18 @@ def test_collect_candidates_full_target_queues_visual_only_reports_for_upgrade(t
     record_id = "rec_visual_upgrade"
     record_dir = repo.layout.record_dir(record_id)
     record_dir.mkdir(parents=True, exist_ok=True)
+    materialization_dir = repo.layout.record_materialization_dir(record_id)
+    materialization_dir.mkdir(parents=True, exist_ok=True)
     (record_dir / "model.py").write_text("object_model = None\n", encoding="utf-8")
-    (record_dir / "model.urdf").write_text(
+    (materialization_dir / "model.urdf").write_text(
         "<robot name='primitive'><link name='base'><visual><geometry><box size='1 1 1'/></geometry></visual></link></robot>",
         encoding="utf-8",
     )
     (record_dir / "record.json").write_text(
-        json.dumps(
-            {
-                "artifacts": {
-                    "model_py": "model.py",
-                    "model_urdf": "model.urdf",
-                    "compile_report_json": "compile_report.json",
-                }
-            }
-        ),
+        json.dumps({"artifacts": {"model_py": "model.py"}}),
         encoding="utf-8",
     )
-    (record_dir / "compile_report.json").write_text(
+    (materialization_dir / "compile_report.json").write_text(
         json.dumps({"status": "success", "metrics": {"compile_level": "visual"}}),
         encoding="utf-8",
     )
