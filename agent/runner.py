@@ -27,7 +27,11 @@ from agent.compiler import (
 from agent.compiler import (
     compile_urdf_report,
 )
+from agent.compiler import (
+    compile_urdf_report_maybe_timeout as _compile_urdf_report_maybe_timeout,
+)
 from agent.harness import ArticraftAgent
+from agent.models import CompileReport as AgentCompileReport
 from agent.prompts import (
     SUPPORTED_SDK_DOCS_MODES,
     load_sdk_docs_reference,
@@ -99,6 +103,24 @@ object_model = None
 def compile_urdf(script_path: Path, *, sdk_package: str = "sdk") -> str:
     """Compatibility export for legacy imports from agent.runner."""
     return _compile_urdf(script_path, sdk_package=sdk_package)
+
+
+def compile_urdf_report_maybe_timeout(
+    script_path: Path,
+    *,
+    sdk_package: str = "sdk",
+    run_checks: bool = True,
+    ignore_geom_qc: bool = False,
+    target: str = "full",
+) -> AgentCompileReport:
+    """Compatibility export for legacy imports from agent.runner."""
+    return _compile_urdf_report_maybe_timeout(
+        script_path,
+        sdk_package=sdk_package,
+        run_checks=run_checks,
+        ignore_geom_qc=ignore_geom_qc,
+        target=target,
+    )
 
 
 @dataclass(slots=True, frozen=True)
