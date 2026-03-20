@@ -14,7 +14,7 @@ api_port := port
 sdk_package := "sdk"
 viewer_target := "/"
 spec := ""
-concurrency := "5"
+concurrency := "auto"
 limit := ""
 name := ""
 
@@ -410,6 +410,39 @@ compile-visual record_dir:
       exit 1
     fi
     uv run python scripts/materialize_record.py --repo-root . --target visual "$record_dir"
+
+profile-compile-visual record_dir sort='cumtime' rows='40' out='' timeout='0':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    record_dir={{ quote(record_dir) }}
+    sort_key={{ quote(sort) }}
+    rows={{ quote(rows) }}
+    out_path={{ quote(out) }}
+    timeout_seconds={{ quote(timeout) }}
+    if [ ! -f "$record_dir/model.py" ]; then
+      echo "Record model not found: $record_dir/model.py" >&2
+      exit 1
+    fi
+    if [ -z "$out_path" ]; then
+      out_path="$record_dir/traces/compile_visual.prof"
+    fi
+    mkdir -p "$(dirname "$out_path")"
+    echo "Profiling visual compile for $record_dir"
+    echo "Profile output: $out_path"
+    echo "Timeout wrapper seconds: $timeout_seconds"
+    URDF_COMPILE_TIMEOUT_SECONDS="$timeout_seconds" uv run python -m cProfile -o "$out_path" \
+      scripts/materialize_record.py --repo-root . --target visual "$record_dir"
+    echo ""
+    echo "Top $rows functions sorted by $sort_key"
+    PROFILE_PATH="$out_path" PROFILE_SORT="$sort_key" PROFILE_ROWS="$rows" uv run python - <<'PY'
+    import os
+    import pstats
+
+    profile_path = os.environ["PROFILE_PATH"]
+    sort_key = os.environ["PROFILE_SORT"]
+    rows = int(os.environ["PROFILE_ROWS"])
+    pstats.Stats(profile_path).sort_stats(sort_key).print_stats(rows)
+    PY
 
 compile-strict record_dir:
     #!/usr/bin/env bash

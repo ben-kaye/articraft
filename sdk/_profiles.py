@@ -49,7 +49,7 @@ _COMMON_DOCS = (
 _BASE_DOCS = (
     Path("sdk/_docs/base/40_mesh_geometry.md"),
     Path("sdk/_docs/base/45_wires.md"),
-    # Path("sdk/_docs/base/46_section_lofts.md"),
+    Path("sdk/_docs/base/46_section_lofts.md"),
 )
 
 _CADQUERY_DOCS = (

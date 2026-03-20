@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from viewer.api.store import ViewerStore
@@ -49,6 +50,7 @@ def main() -> int:
         parser.error(f"Record model not found: {model_path}")
 
     viewer_store = ViewerStore(repo_root)
+    started_at = time.perf_counter()
     result = viewer_store.materialize_record_assets(
         record_dir.name,
         force=True,
@@ -56,6 +58,7 @@ def main() -> int:
         ignore_geom_qc=not bool(args.strict_geom_qc),
         target=str(args.target),
     )
+    elapsed_seconds = time.perf_counter() - started_at
 
     urdf_path = record_dir / "model.urdf"
     action = "Compiled visuals for" if args.target == "visual" else "Recompiled"
@@ -67,6 +70,7 @@ def main() -> int:
             print(f"- {warning.splitlines()[0]}")
     else:
         print("Warnings: 0")
+    print(f"Elapsed: {elapsed_seconds:.2f}s")
     return 0
 
 

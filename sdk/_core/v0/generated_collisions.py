@@ -6,8 +6,7 @@ import json
 import math
 import os
 import re
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Optional
 
@@ -116,7 +115,9 @@ def compile_object_model_with_generated_collisions(
         assets=assets,
     )
     compiled.materials = [copy.deepcopy(material) for material in object_model.materials]
-    compiled.articulations = [copy.deepcopy(articulation) for articulation in object_model.articulations]
+    compiled.articulations = [
+        copy.deepcopy(articulation) for articulation in object_model.articulations
+    ]
 
     for source_part in object_model.parts:
         compiled_part = Part(
@@ -224,10 +225,20 @@ def _collisions_from_visual(
     if primitive_collision is not None:
         return [primitive_collision]
 
+    recipe_collisions = _collisions_from_recipe_backed_mesh(
+        geometry=geometry,
+        visual_origin=visual.origin,
+        name_prefix=f"{name_prefix}__{visual_key}",
+    )
+    if recipe_collisions is not None:
+        return recipe_collisions
+
     try:
         loaded = trimesh.load_mesh(mesh_path, force="mesh")
     except Exception as exc:
-        raise ValidationError(f"Failed to load mesh for collision generation: {mesh_path} ({exc})") from exc
+        raise ValidationError(
+            f"Failed to load mesh for collision generation: {mesh_path} ({exc})"
+        ) from exc
     if not isinstance(loaded, trimesh.Trimesh):
         raise ValidationError(f"Expected mesh geometry at {mesh_path}, got {type(loaded).__name__}")
 
@@ -287,6 +298,66 @@ def _collision_from_primitive_backed_mesh(
     )
 
 
+def _collisions_from_recipe_backed_mesh(
+    *,
+    geometry: Mesh,
+    visual_origin: Origin,
+    name_prefix: str,
+) -> Optional[list[Collision]]:
+    source = geometry.source_collisions
+    if not source:
+        return None
+
+    scale = geometry.scale
+    if scale is not None:
+        sx, sy, sz = (float(v) for v in scale)
+        if not (_approx_equal(sx, sy) and _approx_equal(sx, sz)):
+            return None
+        uniform_scale = (sx + sy + sz) / 3.0
+    else:
+        uniform_scale = 1.0
+
+    base_tf = _origin_to_mat4(visual_origin)
+    collisions: list[Collision] = []
+    for index, source_collision in enumerate(source, start=1):
+        primitive = source_collision.geometry
+        collision_tf = _origin_to_mat4(source_collision.origin)
+        if scale is not None:
+            scaled_xyz = (
+                float(source_collision.origin.xyz[0]) * sx,
+                float(source_collision.origin.xyz[1]) * sy,
+                float(source_collision.origin.xyz[2]) * sz,
+            )
+            collision_tf = _origin_to_mat4(
+                Origin(xyz=scaled_xyz, rpy=tuple(source_collision.origin.rpy))
+            )
+            if isinstance(primitive, Box):
+                primitive = Box(
+                    (
+                        float(primitive.size[0]) * uniform_scale,
+                        float(primitive.size[1]) * uniform_scale,
+                        float(primitive.size[2]) * uniform_scale,
+                    )
+                )
+            elif isinstance(primitive, Cylinder):
+                primitive = Cylinder(
+                    radius=float(primitive.radius) * uniform_scale,
+                    length=float(primitive.length) * uniform_scale,
+                )
+            elif isinstance(primitive, Sphere):
+                primitive = Sphere(radius=float(primitive.radius) * uniform_scale)
+        final_tf = _mat4_mul(base_tf, collision_tf)
+        source_name = _safe_name(source_collision.name or f"recipe_{index:03d}")
+        collisions.append(
+            Collision(
+                geometry=copy.deepcopy(primitive),
+                origin=_origin_from_mat4(final_tf),
+                name=f"{name_prefix}__{source_name}",
+            )
+        )
+    return collisions
+
+
 def _mesh_source_affine(geometry: Mesh) -> Mat4:
     base = _coerce_mat4(geometry.source_transform) or _identity4()
     if geometry.scale is None:
@@ -305,19 +376,13 @@ def _decompose_primitive_affine(
     primitive: Box | Cylinder | Sphere,
     affine: Mat4,
 ) -> Optional[tuple[Box | Cylinder | Sphere, Mat4]]:
-    linear = tuple(
-        tuple(float(affine[row][col]) for col in range(3))
-        for row in range(3)
-    )
+    linear = tuple(tuple(float(affine[row][col]) for col in range(3)) for row in range(3))
     translation = (
         float(affine[0][3]),
         float(affine[1][3]),
         float(affine[2][3]),
     )
-    columns = [
-        (linear[0][col], linear[1][col], linear[2][col])
-        for col in range(3)
-    ]
+    columns = [(linear[0][col], linear[1][col], linear[2][col]) for col in range(3)]
     scales = [math.sqrt(sum(component * component for component in col)) for col in columns]
     if any(scale <= _AFFINE_TOL for scale in scales):
         return None
@@ -329,23 +394,14 @@ def _decompose_primitive_affine(
             if abs(dot) > limit:
                 return None
 
-    rot_cols = [
-        tuple(component / scales[idx] for component in columns[idx])
-        for idx in range(3)
-    ]
-    rotation = tuple(
-        tuple(rot_cols[col][row] for col in range(3))
-        for row in range(3)
-    )
+    rot_cols = [tuple(component / scales[idx] for component in columns[idx]) for idx in range(3)]
+    rotation = tuple(tuple(rot_cols[col][row] for col in range(3)) for row in range(3))
     det = _mat3_det(rotation)
     if abs(det) <= _AFFINE_TOL:
         return None
     if det < 0.0:
         rot_cols[0] = tuple(-component for component in rot_cols[0])
-        rotation = tuple(
-            tuple(rot_cols[col][row] for col in range(3))
-            for row in range(3)
-        )
+        rotation = tuple(tuple(rot_cols[col][row] for col in range(3)) for row in range(3))
 
     sx, sy, sz = (float(scale) for scale in scales)
     if isinstance(primitive, Box):
@@ -366,9 +422,7 @@ def _decompose_primitive_affine(
     else:
         if not (_approx_equal(sx, sy) and _approx_equal(sx, sz)):
             return None
-        collision_geometry = Sphere(
-            radius=float(primitive.radius) * ((sx + sy + sz) / 3.0)
-        )
+        collision_geometry = Sphere(radius=float(primitive.radius) * ((sx + sy + sz) / 3.0))
 
     rigid_tf: Mat4 = (
         (rotation[0][0], rotation[0][1], rotation[0][2], translation[0]),
@@ -598,7 +652,9 @@ def _compiled_model_cache_key(
         "settings": asdict(settings),
         "model": _serialize_object_model(object_model),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=_json_default).encode("utf-8")
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=_json_default
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -611,18 +667,45 @@ def _mesh_collision_cache_key(
     digest = hashlib.sha256()
     digest.update(f"v{_CACHE_VERSION}".encode("utf-8"))
     digest.update(mesh_path.read_bytes())
-    digest.update(json.dumps(asdict(settings), sort_keys=True, separators=(",", ":")).encode("utf-8"))
-    digest.update(json.dumps(list(geometry.scale) if geometry.scale is not None else None).encode("utf-8"))
+    digest.update(
+        json.dumps(asdict(settings), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    digest.update(
+        json.dumps(list(geometry.scale) if geometry.scale is not None else None).encode("utf-8")
+    )
     digest.update(
         json.dumps(
-            _serialize_geometry(geometry.source_geometry) if geometry.source_geometry is not None else None,
+            _serialize_geometry(geometry.source_geometry)
+            if geometry.source_geometry is not None
+            else None,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     )
     digest.update(
         json.dumps(
-            None if geometry.source_transform is None else [list(row) for row in geometry.source_transform],
+            None
+            if geometry.source_transform is None
+            else [list(row) for row in geometry.source_transform],
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    digest.update(
+        json.dumps(
+            None
+            if geometry.source_collisions is None
+            else [
+                {
+                    "geometry": _serialize_geometry(collision.geometry),
+                    "origin": {
+                        "xyz": tuple(collision.origin.xyz),
+                        "rpy": tuple(collision.origin.rpy),
+                    },
+                    "name": collision.name,
+                }
+                for collision in geometry.source_collisions
+            ],
+            sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     )
@@ -719,6 +802,21 @@ def _serialize_geometry(geometry: Box | Cylinder | Sphere | Mesh) -> dict[str, o
             None
             if geometry.source_transform is None
             else tuple(tuple(row) for row in geometry.source_transform)
+        ),
+        "source_collisions": (
+            None
+            if geometry.source_collisions is None
+            else [
+                {
+                    "geometry": _serialize_geometry(collision.geometry),
+                    "origin": {
+                        "xyz": tuple(collision.origin.xyz),
+                        "rpy": tuple(collision.origin.rpy),
+                    },
+                    "name": collision.name,
+                }
+                for collision in geometry.source_collisions
+            ]
         ),
     }
 

@@ -253,6 +253,54 @@ def test_build_batch_config_validates_csv_rows(tmp_path: Path) -> None:
             )
 
 
+def test_build_batch_config_resolves_auto_concurrency_to_logical_cpu_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "auto_batch.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": f"row_{index}",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": f"make hinge {index}",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+            }
+            for index in range(1, 9)
+        ],
+    )
+    monkeypatch.setattr(batch_runner, "_logical_cpu_count", lambda: 6)
+
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency="auto",
+        system_prompt_path="designer_system_prompt.txt",
+        sdk_docs_mode="full",
+        qc_blurb_path=None,
+        resume=False,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    assert config.concurrency == 6
+
+
 def test_run_batch_persists_records_and_batch_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

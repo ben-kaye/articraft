@@ -537,9 +537,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run_batch.add_argument("spec", help="CSV spec path, typically under data/batch_specs/.")
     run_batch.add_argument(
         "--concurrency",
-        type=int,
-        default=5,
-        help="Maximum number of batch rows to run concurrently.",
+        default="auto",
+        help="Maximum number of batch rows to run concurrently: auto, max, or a positive integer.",
     )
     run_batch.add_argument(
         "--system-prompt-path",

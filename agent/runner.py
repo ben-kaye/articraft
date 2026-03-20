@@ -25,7 +25,7 @@ from agent.compiler import (
     compile_urdf as _compile_urdf,
 )
 from agent.compiler import (
-    compile_urdf_report_maybe_timeout,
+    compile_urdf_report,
 )
 from agent.harness import ArticraftAgent
 from agent.prompts import (
@@ -1197,7 +1197,7 @@ async def _run_from_input_impl(
     else:
         try:
             report = await asyncio.to_thread(
-                compile_urdf_report_maybe_timeout,
+                compile_urdf_report,
                 context.script_path,
                 sdk_package=sdk_package,
             )
@@ -1634,7 +1634,7 @@ async def rerun_record_in_place(
     else:
         try:
             report = await asyncio.to_thread(
-                compile_urdf_report_maybe_timeout,
+                compile_urdf_report,
                 context.script_path,
                 sdk_package=sdk_package,
             )

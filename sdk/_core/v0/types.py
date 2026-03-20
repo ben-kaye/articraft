@@ -64,6 +64,7 @@ class Mesh:
     scale: Optional[Vec3] = None
     source_geometry: Optional[PrimitiveGeometry] = None
     source_transform: Optional[Mat4] = None
+    source_collisions: Optional[Tuple["Collision", ...]] = None
 
     def __post_init__(self) -> None:
         filename = os.fspath(self.filename)
@@ -84,6 +85,23 @@ class Mesh:
                 "source_transform",
                 _as_mat4(self.source_transform, name="mesh.source_transform"),
             )
+        if self.source_collisions is not None:
+            normalized: list["Collision"] = []
+            for index, collision in enumerate(self.source_collisions):
+                if not isinstance(collision, Collision):
+                    raise ValidationError(f"mesh.source_collisions[{index}] must be a Collision")
+                if not isinstance(collision.geometry, (Box, Cylinder, Sphere)):
+                    raise ValidationError(
+                        "mesh.source_collisions only supports Box, Cylinder, and Sphere geometry"
+                    )
+                normalized.append(
+                    Collision(
+                        geometry=collision.geometry,
+                        origin=collision.origin,
+                        name=collision.name,
+                    )
+                )
+            object.__setattr__(self, "source_collisions", tuple(normalized))
 
 
 Geometry = Union[Box, Cylinder, Sphere, Mesh]

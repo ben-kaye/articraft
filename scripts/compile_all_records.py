@@ -420,15 +420,7 @@ def _resolve_worker_count(
         return max(1, min(candidate_count, cpu_count))
 
     if normalized == "auto":
-        budget_bytes = _memory_budget_bytes()
-        if budget_bytes is None:
-            return max(1, min(candidate_count, cpu_count))
-
-        reserve_bytes = max(int(reserve_mem_gb * _GIB), 0)
-        worker_bytes = max(int(mem_per_worker_gb * _GIB), 1)
-        usable_bytes = max(budget_bytes - reserve_bytes, worker_bytes)
-        memory_limited_workers = max(1, usable_bytes // worker_bytes)
-        return max(1, min(candidate_count, cpu_count, int(memory_limited_workers)))
+        return max(1, min(candidate_count, cpu_count))
 
     try:
         requested = int(normalized)

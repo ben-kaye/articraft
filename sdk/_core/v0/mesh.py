@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from math import acos, atan2, cos, isfinite, pi, sin, sqrt, tan
+from math import acos, asin, atan2, cos, isfinite, pi, sin, sqrt, tan
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -86,6 +86,191 @@ def _primitive_source_transform(geometry: "MeshGeometry") -> Mat4 | None:
     if isinstance(transform, tuple) and len(transform) == 4:
         return transform  # type: ignore[return-value]
     return None
+
+
+def _clone_primitive_geometry(geometry: Box | Cylinder | Sphere) -> Box | Cylinder | Sphere:
+    if isinstance(geometry, Box):
+        return Box(tuple(float(v) for v in geometry.size))
+    if isinstance(geometry, Cylinder):
+        return Cylinder(radius=float(geometry.radius), length=float(geometry.length))
+    return Sphere(radius=float(geometry.radius))
+
+
+def _clone_collision(collision: Collision) -> Collision:
+    geometry = collision.geometry
+    if not isinstance(geometry, (Box, Cylinder, Sphere)):
+        raise TypeError("collision provenance only supports primitive geometry")
+    return Collision(
+        geometry=_clone_primitive_geometry(geometry),
+        origin=Origin(
+            xyz=tuple(float(v) for v in collision.origin.xyz),
+            rpy=tuple(float(v) for v in collision.origin.rpy),
+        ),
+        name=collision.name,
+    )
+
+
+def _set_collision_provenance(geometry: "MeshGeometry", collisions: Sequence[Collision]) -> None:
+    setattr(
+        geometry,
+        "_collision_source",
+        tuple(_clone_collision(collision) for collision in collisions),
+    )
+
+
+def _clear_collision_provenance(geometry: "MeshGeometry") -> None:
+    if hasattr(geometry, "_collision_source"):
+        delattr(geometry, "_collision_source")
+
+
+def _copy_collision_provenance(src: "MeshGeometry", dst: "MeshGeometry") -> None:
+    collisions = _collision_source_collisions(src)
+    if collisions is None:
+        return
+    setattr(
+        dst, "_collision_source", tuple(_clone_collision(collision) for collision in collisions)
+    )
+
+
+def _collision_source_collisions(geometry: "MeshGeometry") -> Optional[Tuple[Collision, ...]]:
+    value = getattr(geometry, "_collision_source", None)
+    if not isinstance(value, tuple):
+        return None
+    collisions: list[Collision] = []
+    for collision in value:
+        if not isinstance(collision, Collision):
+            return None
+        if not isinstance(collision.geometry, (Box, Cylinder, Sphere)):
+            return None
+        collisions.append(collision)
+    return tuple(collisions)
+
+
+def _mat4_vec3(mat: Mat4, vec: Vec3) -> Vec3:
+    x, y, z = vec
+    return (
+        float(mat[0][0]) * x + float(mat[0][1]) * y + float(mat[0][2]) * z + float(mat[0][3]),
+        float(mat[1][0]) * x + float(mat[1][1]) * y + float(mat[1][2]) * z + float(mat[1][3]),
+        float(mat[2][0]) * x + float(mat[2][1]) * y + float(mat[2][2]) * z + float(mat[2][3]),
+    )
+
+
+def _origin_to_mat4(origin: Origin) -> Mat4:
+    roll, pitch, yaw = (float(v) for v in origin.rpy)
+    cr = cos(roll)
+    sr = sin(roll)
+    cp = cos(pitch)
+    sp = sin(pitch)
+    cy = cos(yaw)
+    sy = sin(yaw)
+    return (
+        (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr, float(origin.xyz[0])),
+        (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr, float(origin.xyz[1])),
+        (-sp, cp * sr, cp * cr, float(origin.xyz[2])),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+
+def _rpy_from_matrix(
+    mat: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]],
+) -> Vec3:
+    pitch = asin(max(-1.0, min(1.0, -float(mat[2][0]))))
+    cp = cos(pitch)
+    if abs(cp) > 1e-6:
+        roll = atan2(float(mat[2][1]), float(mat[2][2]))
+        yaw = atan2(float(mat[1][0]), float(mat[0][0]))
+    else:
+        roll = 0.0
+        yaw = atan2(-float(mat[0][1]), float(mat[1][1]))
+    return (roll, pitch, yaw)
+
+
+def _origin_from_mat4(mat: Mat4) -> Origin:
+    rotation = (
+        (float(mat[0][0]), float(mat[0][1]), float(mat[0][2])),
+        (float(mat[1][0]), float(mat[1][1]), float(mat[1][2])),
+        (float(mat[2][0]), float(mat[2][1]), float(mat[2][2])),
+    )
+    return Origin(
+        xyz=(float(mat[0][3]), float(mat[1][3]), float(mat[2][3])),
+        rpy=_rpy_from_matrix(rotation),
+    )
+
+
+def _transform_collision_recipe_rigid(geometry: "MeshGeometry", transform: Mat4) -> None:
+    collisions = _collision_source_collisions(geometry)
+    if collisions is None:
+        return
+    transformed = []
+    for collision in collisions:
+        collision_tf = _mat4_mul(transform, _origin_to_mat4(collision.origin))
+        transformed.append(
+            Collision(
+                geometry=_clone_primitive_geometry(collision.geometry),
+                origin=_origin_from_mat4(collision_tf),
+                name=collision.name,
+            )
+        )
+    _set_collision_provenance(geometry, transformed)
+
+
+def _approx_equal(a: float, b: float, *, tol: float = 1e-6) -> bool:
+    return abs(float(a) - float(b)) <= float(tol) * max(1.0, abs(float(a)), abs(float(b)))
+
+
+def _uniform_scale_collision_recipe(
+    geometry: "MeshGeometry",
+    *,
+    sx: float,
+    sy: float,
+    sz: float,
+) -> bool:
+    collisions = _collision_source_collisions(geometry)
+    if collisions is None:
+        return True
+    if not (_approx_equal(sx, sy) and _approx_equal(sx, sz)):
+        _clear_collision_provenance(geometry)
+        return False
+
+    scale = float((sx + sy + sz) / 3.0)
+    scaled: list[Collision] = []
+    for collision in collisions:
+        origin = Origin(
+            xyz=(
+                float(collision.origin.xyz[0]) * sx,
+                float(collision.origin.xyz[1]) * sy,
+                float(collision.origin.xyz[2]) * sz,
+            ),
+            rpy=collision.origin.rpy,
+        )
+        primitive = collision.geometry
+        if isinstance(primitive, Box):
+            scaled_geometry: Box | Cylinder | Sphere = Box(
+                (
+                    float(primitive.size[0]) * scale,
+                    float(primitive.size[1]) * scale,
+                    float(primitive.size[2]) * scale,
+                )
+            )
+        elif isinstance(primitive, Cylinder):
+            scaled_geometry = Cylinder(
+                radius=float(primitive.radius) * scale,
+                length=float(primitive.length) * scale,
+            )
+        else:
+            scaled_geometry = Sphere(radius=float(primitive.radius) * scale)
+        scaled.append(Collision(geometry=scaled_geometry, origin=origin, name=collision.name))
+    _set_collision_provenance(geometry, scaled)
+    return True
+
+
+def _primitive_collision_recipe(geometry: Box | Cylinder | Sphere) -> Tuple[Collision, ...]:
+    return (
+        Collision(
+            geometry=_clone_primitive_geometry(geometry),
+            origin=Origin(),
+        ),
+    )
 
 
 def sample_cubic_bezier_spline_2d(
@@ -1273,6 +1458,7 @@ class MeshGeometry:
             faces=[tuple(face) for face in self.faces],
         )
         _copy_primitive_provenance(self, copied)
+        _copy_collision_provenance(self, copied)
         return copied
 
     def clone(self) -> "MeshGeometry":
@@ -1286,23 +1472,33 @@ class MeshGeometry:
         self.faces.append((int(a), int(b), int(c)))
 
     def merge(self, other: "MeshGeometry") -> "MeshGeometry":
+        self_recipe = _collision_source_collisions(self)
+        other_recipe = _collision_source_collisions(other)
+        self_was_empty = not self.vertices and not self.faces
         offset = len(self.vertices)
         self.vertices.extend(other.vertices)
         self.faces.extend((a + offset, b + offset, c + offset) for (a, b, c) in other.faces)
         _clear_primitive_provenance(self)
+        if other_recipe is None and not other.vertices and not other.faces:
+            pass
+        elif self_recipe is None and self_was_empty and other_recipe is not None:
+            _set_collision_provenance(self, other_recipe)
+        elif self_recipe is not None and other_recipe is not None:
+            _set_collision_provenance(self, self_recipe + other_recipe)
+        else:
+            _clear_collision_provenance(self)
         return self
 
     def translate(self, dx: float, dy: float, dz: float) -> "MeshGeometry":
         self.vertices = [(x + dx, y + dy, z + dz) for (x, y, z) in self.vertices]
-        _prepend_primitive_transform(
-            self,
-            (
-                (1.0, 0.0, 0.0, float(dx)),
-                (0.0, 1.0, 0.0, float(dy)),
-                (0.0, 0.0, 1.0, float(dz)),
-                (0.0, 0.0, 0.0, 1.0),
-            ),
+        transform: Mat4 = (
+            (1.0, 0.0, 0.0, float(dx)),
+            (0.0, 1.0, 0.0, float(dy)),
+            (0.0, 0.0, 1.0, float(dz)),
+            (0.0, 0.0, 0.0, 1.0),
         )
+        _prepend_primitive_transform(self, transform)
+        _transform_collision_recipe_rigid(self, transform)
         return self
 
     def scale(
@@ -1322,6 +1518,7 @@ class MeshGeometry:
                 (0.0, 0.0, 0.0, 1.0),
             ),
         )
+        _uniform_scale_collision_recipe(self, sx=float(sx), sy=float(sy), sz=float(sz))
         return self
 
     def rotate(
@@ -1350,6 +1547,12 @@ class MeshGeometry:
         tx = ox - (r00 * ox + r01 * oy + r02 * oz)
         ty = oy - (r10 * ox + r11 * oy + r12 * oz)
         tz = oz - (r20 * ox + r21 * oy + r22 * oz)
+        transform: Mat4 = (
+            (float(r00), float(r01), float(r02), float(tx)),
+            (float(r10), float(r11), float(r12), float(ty)),
+            (float(r20), float(r21), float(r22), float(tz)),
+            (0.0, 0.0, 0.0, 1.0),
+        )
 
         self.vertices = [
             (
@@ -1359,15 +1562,8 @@ class MeshGeometry:
             )
             for (x, y, z) in self.vertices
         ]
-        _prepend_primitive_transform(
-            self,
-            (
-                (float(r00), float(r01), float(r02), float(tx)),
-                (float(r10), float(r11), float(r12), float(ty)),
-                (float(r20), float(r21), float(r22), float(tz)),
-                (0.0, 0.0, 0.0, 1.0),
-            ),
-        )
+        _prepend_primitive_transform(self, transform)
+        _transform_collision_recipe_rigid(self, transform)
         return self
 
     def rotate_x(self, angle: float) -> "MeshGeometry":
@@ -1423,7 +1619,9 @@ class BoxGeometry(MeshGeometry):
     def __init__(self, size: Sequence[float]):
         super().__init__()
         x, y, z = (float(size[0]), float(size[1]), float(size[2]))
-        _set_primitive_provenance(self, Box((x, y, z)))
+        primitive = Box((x, y, z))
+        _set_primitive_provenance(self, primitive)
+        _set_collision_provenance(self, _primitive_collision_recipe(primitive))
         hx, hy, hz = x / 2.0, y / 2.0, z / 2.0
         verts = [
             (-hx, -hy, -hz),
@@ -1466,7 +1664,9 @@ class CylinderGeometry(MeshGeometry):
         radius = float(radius)
         height = float(height)
         radial_segments = max(3, int(radial_segments))
-        _set_primitive_provenance(self, Cylinder(radius=radius, length=height))
+        primitive = Cylinder(radius=radius, length=height)
+        _set_primitive_provenance(self, primitive)
+        _set_collision_provenance(self, _primitive_collision_recipe(primitive))
         half = height / 2.0
 
         top_indices = []
@@ -1541,7 +1741,9 @@ class SphereGeometry(MeshGeometry):
         radius = float(radius)
         width_segments = max(3, int(width_segments))
         height_segments = max(2, int(height_segments))
-        _set_primitive_provenance(self, Sphere(radius=radius))
+        primitive = Sphere(radius=radius)
+        _set_primitive_provenance(self, primitive)
+        _set_collision_provenance(self, _primitive_collision_recipe(primitive))
 
         for iy in range(height_segments + 1):
             v = iy / height_segments
@@ -1642,6 +1844,27 @@ class CapsuleGeometry(MeshGeometry):
             )
             return
 
+        _set_collision_provenance(
+            self,
+            (
+                Collision(
+                    geometry=Cylinder(radius=radius, length=length),
+                    origin=Origin(),
+                    name="capsule_cyl",
+                ),
+                Collision(
+                    geometry=Sphere(radius=radius),
+                    origin=Origin(xyz=(0.0, 0.0, length * 0.5)),
+                    name="capsule_top",
+                ),
+                Collision(
+                    geometry=Sphere(radius=radius),
+                    origin=Origin(xyz=(0.0, 0.0, -length * 0.5)),
+                    name="capsule_bottom",
+                ),
+            ),
+        )
+
         half = length * 0.5
         rows: List[Tuple[float, float]] = []
 
@@ -1691,6 +1914,25 @@ class TorusGeometry(MeshGeometry):
         tube = float(tube)
         radial_segments = max(3, int(radial_segments))
         tubular_segments = max(3, int(tubular_segments))
+
+        collision_segments = max(8, min(16, max(8, tubular_segments // 4)))
+        ring_points = [
+            (
+                radius * cos(2.0 * pi * i / collision_segments),
+                radius * sin(2.0 * pi * i / collision_segments),
+                0.0,
+            )
+            for i in range(collision_segments)
+        ]
+        _set_collision_provenance(
+            self,
+            wire_capsules_from_points(
+                ring_points,
+                radius=tube,
+                closed_path=True,
+                corner_mode="miter",
+            ),
+        )
 
         for j in range(radial_segments + 1):
             v = 2 * pi * j / radial_segments
@@ -2572,6 +2814,17 @@ class WirePolylineGeometry(MeshGeometry):
                 up_hint=up_hint_v,
             )
         )
+        _set_collision_provenance(
+            self,
+            wire_capsules_from_points(
+                centerline,
+                radius=radius,
+                closed_path=closed_path,
+                corner_mode=corner_mode,
+                corner_radius=corner_radius,
+                min_segment_length=min_segment_length,
+            ),
+        )
 
 
 def wire_from_points(
@@ -3016,9 +3269,9 @@ def tube_network_from_paths(
         raise ValueError("tube_network_from_paths produced no solid segments")
 
     try:
-        return _boolean_union_many(solids)
+        out = _boolean_union_many(solids)
     except Exception:
-        return _tube_network_visual_mesh_from_paths(
+        out = _tube_network_visual_mesh_from_paths(
             path_list,
             radius=radius,
             radial_segments=radial_segments,
@@ -3030,6 +3283,17 @@ def tube_network_from_paths(
             min_segment_length=min_segment_length,
             shared_node_radius=node_radius if cap_ends else 0.0,
         )
+    _set_collision_provenance(
+        out,
+        tube_network_capsules_from_paths(
+            path_list,
+            radius=radius,
+            corner_mode=corner_mode,
+            corner_radius=corner_radius,
+            min_segment_length=min_segment_length,
+        ),
+    )
+    return out
 
 
 def tube_network_capsules_from_paths(
@@ -3235,6 +3499,7 @@ def mesh_from_geometry(
         filename=_export_friendly_mesh_filename(filename_s),
         source_geometry=_primitive_source_geometry(geometry),
         source_transform=_primitive_source_transform(geometry),
+        source_collisions=_collision_source_collisions(geometry),
     )
 
 

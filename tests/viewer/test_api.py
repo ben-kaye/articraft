@@ -687,6 +687,10 @@ def test_viewer_api_ensures_record_assets_on_demand(
         )
 
     monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
+    monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
     )
@@ -797,6 +801,10 @@ def test_viewer_api_persists_compiled_urdf_for_nonblocking_geometry_qc(
             ],
         )
 
+    monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
     monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
@@ -1002,6 +1010,10 @@ def test_viewer_api_rebuilds_missing_assets_even_with_successful_urdf(
         )
 
     monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
+    monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
     )
@@ -1120,6 +1132,10 @@ def test_viewer_api_rebuilds_missing_assets_for_assets_prefixed_mesh_paths(
             warnings=[],
         )
 
+    monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
     monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
@@ -1244,6 +1260,10 @@ def test_viewer_store_force_materialize_clears_stale_derived_outputs(
         )
 
     monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
+    monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
     )
@@ -1356,6 +1376,10 @@ def test_viewer_store_visual_materialize_can_be_upgraded_to_full(
         )
 
     monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
+    monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,
     )
@@ -1460,6 +1484,10 @@ def test_viewer_store_full_materialize_can_enable_validation(
             warnings=[],
         )
 
+    monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_compile,
+    )
     monkeypatch.setattr(
         "agent.compiler.compile_urdf_report_maybe_timeout",
         fake_compile,

@@ -142,7 +142,7 @@ def test_limit_candidates_applies_after_heavy_first_sort() -> None:
     ]
 
 
-def test_resolve_worker_count_auto_respects_memory_budget(monkeypatch) -> None:
+def test_resolve_worker_count_auto_uses_logical_cpu_floor(monkeypatch) -> None:
     monkeypatch.setattr(
         "scripts.compile_all_records._logical_cpu_count",
         lambda: 12,
@@ -163,7 +163,7 @@ def test_resolve_worker_count_auto_respects_memory_budget(monkeypatch) -> None:
         mem_per_worker_gb=2.0,
     )
 
-    assert resolved == 4
+    assert resolved == 12
 
 
 def test_collect_candidates_skips_primitive_only_success_records_without_assets(tmp_path) -> None:

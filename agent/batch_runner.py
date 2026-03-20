@@ -113,6 +113,30 @@ def _summary_value(values: set[str]) -> str:
     return "mixed"
 
 
+def _logical_cpu_count() -> int:
+    return max(int(os.cpu_count() or 1), 1)
+
+
+def _resolve_batch_concurrency(raw_value: str | int, *, candidate_count: int) -> int:
+    if candidate_count <= 0:
+        return 1
+
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"auto", "max"}:
+        return max(1, min(candidate_count, _logical_cpu_count()))
+
+    try:
+        requested = int(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported concurrency value {raw_value!r}. Expected auto, max, or a positive integer."
+        ) from exc
+
+    if requested <= 0:
+        raise ValueError("Concurrency must be a positive integer, or one of: auto, max.")
+    return min(candidate_count, requested)
+
+
 def _build_batch_run_id(batch_id: str) -> str:
     token = _timestamp_token()
     slug = _slugify(batch_id)[:48]
@@ -1091,7 +1115,7 @@ def build_batch_config(
     *,
     repo_root: Path,
     spec_arg: str,
-    concurrency: int,
+    concurrency: str | int,
     system_prompt_path: str,
     sdk_docs_mode: str,
     qc_blurb_path: str | None,
@@ -1106,8 +1130,7 @@ def build_batch_config(
     repo.ensure_layout()
     spec_path, batch_spec_id = _resolve_spec_path(repo, spec_arg)
     rows = _load_batch_rows(spec_path, repo)
-    if concurrency <= 0:
-        raise ValueError("--concurrency must be greater than 0")
+    resolved_concurrency = _resolve_batch_concurrency(concurrency, candidate_count=len(rows))
     if resume_policy not in RESUME_POLICIES:
         raise ValueError(f"Unsupported resume policy: {resume_policy}")
 
@@ -1142,7 +1165,7 @@ def build_batch_config(
         run_id=run_id,
         rows=rows,
         allocations=allocations,
-        concurrency=concurrency,
+        concurrency=resolved_concurrency,
         system_prompt_path=system_prompt_path,
         sdk_docs_mode=sdk_docs_mode,
         qc_blurb_text=qc_blurb_text,

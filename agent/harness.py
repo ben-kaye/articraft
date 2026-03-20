@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 from rich.console import Console
 
 from agent.compiler import (
-    compile_urdf_report_maybe_timeout,
+    compile_urdf_report,
     persist_compile_success_artifacts,
 )
 from agent.cost import CostTracker, pricing_for_provider_model
@@ -266,7 +266,7 @@ class ArticraftAgent:
 
     async def _compile_urdf_report_async(self) -> CompileReport:
         return await asyncio.to_thread(
-            compile_urdf_report_maybe_timeout,
+            compile_urdf_report,
             Path(self.file_path),
             sdk_package=self.sdk_package,
         )

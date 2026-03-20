@@ -387,7 +387,7 @@ class ViewerStore:
         ignore_geom_qc: bool = True,
         validate: bool = False,
         target: str = "full",
-        use_compile_timeout: bool = True,
+        use_compile_timeout: bool = False,
     ) -> MaterializeRecordAssetsResult:
         if target not in {"full", "visual"}:
             raise ValueError(f"Unsupported materialization target: {target!r}")
