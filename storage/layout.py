@@ -17,6 +17,10 @@ class StorageLayout:
         return self.data_root / "categories"
 
     @property
+    def batch_specs_root(self) -> Path:
+        return self.data_root / "batch_specs"
+
+    @property
     def records_root(self) -> Path:
         return self.data_root / "records"
 
@@ -48,6 +52,9 @@ class StorageLayout:
     def prompt_batch_path(self, category_slug: str, batch_id: str) -> Path:
         return self.prompt_batches_dir(category_slug) / f"{batch_id}.txt"
 
+    def batch_spec_path(self, batch_id: str) -> Path:
+        return self.batch_specs_root / f"{batch_id}.csv"
+
     def local_workbench_path(self) -> Path:
         return self.local_root / "workbench.json"
 
@@ -55,7 +62,7 @@ class StorageLayout:
         return self.manifests_root / "dataset.json"
 
     def search_index_path(self) -> Path:
-        return self.cache_root / "search.sqlite"
+        return self.cache_root / "search_index.json"
 
     def record_dir(self, record_id: str) -> Path:
         return self.records_root / record_id
@@ -99,9 +106,19 @@ class StorageLayout:
     def run_failures_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "failures"
 
+    def run_state_dir(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "state"
+
+    def run_row_state_path(self, run_id: str, row_id: str) -> Path:
+        return self.run_state_dir(run_id) / f"{row_id}.json"
+
+    def run_allocations_path(self, run_id: str) -> Path:
+        return self.run_dir(run_id) / "allocations.json"
+
     def ensure_base_dirs(self) -> None:
         for path in (
             self.categories_root,
+            self.batch_specs_root,
             self.records_root,
             self.local_root,
             self.manifests_root,

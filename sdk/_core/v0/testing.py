@@ -14,6 +14,7 @@ from .geometry_qc import (
     default_overlap_tol_from_env,
     default_overlap_volume_tol_from_env,
     find_geometry_overlaps,
+    generate_pose_samples,
     part_world_aabb,
 )
 from .types import ArticulationType, Origin
@@ -222,6 +223,24 @@ def _aabb_axis_separation(aabb_a: AABB, aabb_b: AABB, *, axis: str) -> float:
     return max(0.0, lower_gap, upper_gap)
 
 
+def _transform_aabb(aabb: AABB, tf: object) -> AABB:
+    (min_x, min_y, min_z), (max_x, max_y, max_z) = aabb
+    corners = [(x, y, z) for x in (min_x, max_x) for y in (min_y, max_y) for z in (min_z, max_z)]
+    tx0 = ty0 = tz0 = float("inf")
+    tx1 = ty1 = tz1 = float("-inf")
+    for cx, cy, cz in corners:
+        x = float(tf[0][0]) * cx + float(tf[0][1]) * cy + float(tf[0][2]) * cz + float(tf[0][3])  # type: ignore[index]
+        y = float(tf[1][0]) * cx + float(tf[1][1]) * cy + float(tf[1][2]) * cz + float(tf[1][3])  # type: ignore[index]
+        z = float(tf[2][0]) * cx + float(tf[2][1]) * cy + float(tf[2][2]) * cz + float(tf[2][3])  # type: ignore[index]
+        tx0 = min(tx0, x)
+        ty0 = min(ty0, y)
+        tz0 = min(tz0, z)
+        tx1 = max(tx1, x)
+        ty1 = max(ty1, y)
+        tz1 = max(tz1, z)
+    return (tx0, ty0, tz0), (tx1, ty1, tz1)
+
+
 def _named_ref(value: object, *, kind: str) -> str:
     if isinstance(value, str):
         name = value
@@ -296,6 +315,17 @@ class TestContext:
         self._checks.append(name)
         if not ok:
             self._failures.append(TestFailure(name=name, details=details))
+        return ok
+
+    def _record_warning_check(self, name: str, ok: bool, details: str = "") -> bool:
+        self.checks_run += 1
+        self._checks.append(name)
+        if not ok:
+            text = str(details or "").strip()
+            if text:
+                self._warnings.append(f"{name}: {text}")
+            else:
+                self._warnings.append(name)
         return ok
 
     def check(self, name: str, ok: bool, details: str = "") -> bool:
@@ -378,6 +408,44 @@ class TestContext:
         )
         self._part_local_aabbs_cache[cache_key] = cached
         return cached
+
+    def _part_geometry_items_with_local_aabbs(
+        self,
+        part: object,
+        *,
+        use: str,
+    ) -> List[Tuple[Optional[str], Optional[str], AABB]]:
+        part_name = _named_ref(part, kind="part")
+        use_key = _normalize_geometry_source(use, field_name="use")
+        prefer_collisions = use_key == "collision"
+
+        if prefer_collisions and self._compiled_collision_model is not None:
+            part_obj = self._collision_parts_by_name().get(part_name)
+        else:
+            if prefer_collisions and self._compiled_collision_error is not None:
+                raise ValidationError(str(self._compiled_collision_error))
+            part_obj = self._part_by_name(part_name)
+        if part_obj is None:
+            return []
+
+        if prefer_collisions and getattr(part_obj, "collisions", None):
+            raw_items = list(getattr(part_obj, "collisions", []) or [])
+        else:
+            raw_items = list(getattr(part_obj, "visuals", []) or [])
+        items = [item for item in raw_items if getattr(item, "geometry", None) is not None]
+        aabbs = self._part_local_aabbs(part_name, prefer_collisions=prefer_collisions)
+
+        out: List[Tuple[Optional[str], Optional[str], AABB]] = []
+        for idx, local_aabb in enumerate(aabbs):
+            item = items[idx] if idx < len(items) else None
+            out.append(
+                (
+                    getattr(item, "name", None) if item is not None else None,
+                    type(getattr(item, "geometry", None)).__name__ if item is not None else None,
+                    local_aabb,
+                )
+            )
+        return out
 
     def allow_overlap(
         self,
@@ -578,10 +646,12 @@ class TestContext:
         tol: float,
         reason: Optional[str],
         check_name: str,
+        warn_only: bool = False,
     ) -> bool:
+        record = self._record_warning_check if warn_only else self._record
         tol_f = _normalize_joint_origin_tol(tol)
         if not math.isfinite(tol_f) or tol_f < 0.0:
-            return self._record(check_name, False, "tol must be finite and non-negative")
+            return record(check_name, False, "tol must be finite and non-negative")
         r = (reason or "").strip()
         if tol_f > _JOINT_ORIGIN_TOL_DEFAULT and r:
             self.warn(f"Relaxed joint-origin tolerance in use: tol={tol_f:.4g}. Reason: {r}")
@@ -589,7 +659,7 @@ class TestContext:
         links = getattr(self.model, "parts", None)
         joints = getattr(self.model, "articulations", None)
         if not isinstance(links, list) or not isinstance(joints, list):
-            return self._record(check_name, False, "model.parts/articulations missing")
+            return record(check_name, False, "model.parts/articulations missing")
 
         link_to_local: Dict[str, List[AABB]] = {}
         for link in links:
@@ -651,12 +721,12 @@ class TestContext:
         if failures:
             preview = "\n".join(failures[:10])
             more = "" if len(failures) <= 10 else f"\n... ({len(failures) - 10} more)"
-            return self._record(
+            return record(
                 check_name,
                 False,
                 f"Articulation origin(s) far from geometry:\n{preview}{more}",
             )
-        return self._record(check_name, True)
+        return record(check_name, True)
 
     def check_joint_origin_near_geometry(
         self,
@@ -684,6 +754,36 @@ class TestContext:
             tol=tol_f,
             reason=reason,
             check_name=name or f"check_articulation_origin_near_geometry(tol={tol_f:.4g})",
+        )
+
+    def warn_if_joint_origin_near_geometry(
+        self,
+        *,
+        tol: float = _JOINT_ORIGIN_TOL_DEFAULT,
+        reason: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> bool:
+        tol_f = _normalize_joint_origin_tol(tol)
+        return self._check_joint_origin_near_geometry_impl(
+            tol=tol_f,
+            reason=reason,
+            check_name=name or f"warn_if_joint_origin_near_geometry(tol={tol_f:.4g})",
+            warn_only=True,
+        )
+
+    def warn_if_articulation_origin_near_geometry(
+        self,
+        *,
+        tol: float = _JOINT_ORIGIN_TOL_DEFAULT,
+        reason: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> bool:
+        tol_f = _normalize_joint_origin_tol(tol)
+        return self._check_joint_origin_near_geometry_impl(
+            tol=tol_f,
+            reason=reason,
+            check_name=name or f"warn_if_articulation_origin_near_geometry(tol={tol_f:.4g})",
+            warn_only=True,
         )
 
     def check_visual_collision_alignment(
@@ -775,18 +875,54 @@ class TestContext:
         tol: float = 0.005,
         name: Optional[str] = None,
     ) -> bool:
+        return self._check_part_geometry_connected_impl(
+            use=use,
+            tol=tol,
+            check_name=name,
+            warn_only=False,
+        )
+
+    def warn_if_part_geometry_connected(
+        self,
+        *,
+        use: str = "visual",
+        tol: float = 0.005,
+        name: Optional[str] = None,
+    ) -> bool:
+        return self._check_part_geometry_connected_impl(
+            use=use,
+            tol=tol,
+            check_name=name,
+            warn_only=True,
+        )
+
+    def _check_part_geometry_connected_impl(
+        self,
+        *,
+        use: str,
+        tol: float,
+        check_name: Optional[str],
+        warn_only: bool,
+    ) -> bool:
+        record = self._record_warning_check if warn_only else self._record
         use_key = _normalize_geometry_source(use, field_name="use")
         if float(tol) < 0.0:
-            return self._record(
-                name or f"check_part_geometry_connected(use={use_key},tol={float(tol):.4g})",
+            prefix = (
+                "warn_if_part_geometry_connected" if warn_only else "check_part_geometry_connected"
+            )
+            return record(
+                check_name or f"{prefix}(use={use_key},tol={float(tol):.4g})",
                 False,
                 "tol must be non-negative",
             )
 
         links = getattr(self.model, "parts", None)
         if not isinstance(links, list):
-            return self._record(
-                name or f"check_part_geometry_connected(use={use_key},tol={float(tol):.4g})",
+            prefix = (
+                "warn_if_part_geometry_connected" if warn_only else "check_part_geometry_connected"
+            )
+            return record(
+                check_name or f"{prefix}(use={use_key},tol={float(tol):.4g})",
                 False,
                 "model.parts missing or not a list",
             )
@@ -818,14 +954,15 @@ class TestContext:
                     f"part={part_name!r} connected={len(visited)}/{len(aabbs)} use={use_key}"
                 )
 
-        check_name = name or f"check_part_geometry_connected(use={use_key},tol={float(tol):.4g})"
+        prefix = "warn_if_part_geometry_connected" if warn_only else "check_part_geometry_connected"
+        resolved_name = check_name or f"{prefix}(use={use_key},tol={float(tol):.4g})"
         if failures:
             preview = "\n".join(failures[:10])
             more = "" if len(failures) <= 10 else f"\n... ({len(failures) - 10} more)"
-            return self._record(
-                check_name, False, f"Disconnected geometry islands detected:\n{preview}{more}"
+            return record(
+                resolved_name, False, f"Disconnected geometry islands detected:\n{preview}{more}"
             )
-        return self._record(check_name, True)
+        return record(resolved_name, True)
 
     def check_no_overlaps(
         self,
@@ -836,12 +973,55 @@ class TestContext:
         ignore_adjacent: bool = False,
         ignore_fixed: bool = True,
     ) -> bool:
-        check_name = (
-            "check_no_overlaps("
+        return self._check_overlaps_impl(
+            max_pose_samples=max_pose_samples,
+            overlap_tol=overlap_tol,
+            overlap_volume_tol=overlap_volume_tol,
+            ignore_adjacent=ignore_adjacent,
+            ignore_fixed=ignore_fixed,
+            check_name=None,
+            warn_only=False,
+        )
+
+    def warn_if_overlaps(
+        self,
+        *,
+        max_pose_samples: int = 128,
+        overlap_tol: Optional[float] = None,
+        overlap_volume_tol: Optional[float] = None,
+        ignore_adjacent: bool = False,
+        ignore_fixed: bool = True,
+        name: Optional[str] = None,
+    ) -> bool:
+        return self._check_overlaps_impl(
+            max_pose_samples=max_pose_samples,
+            overlap_tol=overlap_tol,
+            overlap_volume_tol=overlap_volume_tol,
+            ignore_adjacent=ignore_adjacent,
+            ignore_fixed=ignore_fixed,
+            check_name=name,
+            warn_only=True,
+        )
+
+    def _check_overlaps_impl(
+        self,
+        *,
+        max_pose_samples: int,
+        overlap_tol: Optional[float],
+        overlap_volume_tol: Optional[float],
+        ignore_adjacent: bool,
+        ignore_fixed: bool,
+        check_name: Optional[str],
+        warn_only: bool,
+    ) -> bool:
+        prefix = "warn_if_overlaps" if warn_only else "check_no_overlaps"
+        resolved_name = check_name or (
+            f"{prefix}("
             f"samples={int(max_pose_samples)},"
             f"ignore_adjacent={bool(ignore_adjacent)},"
             f"ignore_fixed={bool(ignore_fixed)})"
         )
+        record = self._record_warning_check if warn_only else self._record
         allowed_pairs: List[Tuple[str, str]] = []
         if ignore_adjacent or ignore_fixed:
             joints = getattr(self.model, "articulations", None)
@@ -898,11 +1078,314 @@ class TestContext:
         if remaining:
             preview = "\n".join(remaining[:8])
             more = "" if len(remaining) <= 8 else f"\n... ({len(remaining) - 8} more)"
-            return self._record(check_name, False, f"Overlaps detected:\n{preview}{more}")
+            return record(resolved_name, False, f"Overlaps detected:\n{preview}{more}")
 
         if overlaps and (self._allow_pairs or self._allow_elems):
             self.warn(f"Overlaps detected but allowed by justification: {len(overlaps)} overlaps.")
-        return self._record(check_name, True)
+        return record(resolved_name, True)
+
+    def warn_if_coplanar_surfaces(
+        self,
+        *,
+        max_pose_samples: int = 32,
+        use: str = "visual",
+        plane_tol: float = 0.001,
+        min_overlap: float = 0.02,
+        ignore_adjacent: bool = False,
+        ignore_fixed: bool = False,
+        name: Optional[str] = None,
+    ) -> bool:
+        use_key = _normalize_geometry_source(use, field_name="use")
+        resolved_name = name or (
+            f"warn_if_coplanar_surfaces("
+            f"samples={int(max_pose_samples)},"
+            f"use={use_key},"
+            f"plane_tol={float(plane_tol):.4g},"
+            f"min_overlap={float(min_overlap):.4g},"
+            f"ignore_adjacent={bool(ignore_adjacent)},"
+            f"ignore_fixed={bool(ignore_fixed)})"
+        )
+        record = self._record_warning_check
+
+        if int(max_pose_samples) <= 0:
+            return record(resolved_name, False, "max_pose_samples must be positive")
+        plane_tol_f = float(plane_tol)
+        if not math.isfinite(plane_tol_f) or plane_tol_f < 0.0:
+            return record(resolved_name, False, "plane_tol must be finite and non-negative")
+        min_overlap_f = float(min_overlap)
+        if not math.isfinite(min_overlap_f) or min_overlap_f < 0.0:
+            return record(resolved_name, False, "min_overlap must be finite and non-negative")
+
+        links = getattr(self.model, "parts", None)
+        joints = getattr(self.model, "articulations", None)
+        if not isinstance(links, list) or not isinstance(joints, list):
+            return record(resolved_name, False, "model.parts/articulations missing")
+
+        ignored_pairs: set[Tuple[str, str]] = set()
+        if ignore_adjacent or ignore_fixed:
+            for joint in joints:
+                parent = getattr(joint, "parent", None)
+                child = getattr(joint, "child", None)
+                if not isinstance(parent, str) or not isinstance(child, str):
+                    continue
+                joint_type = getattr(joint, "articulation_type", None)
+                if ignore_adjacent or (ignore_fixed and joint_type == ArticulationType.FIXED):
+                    key = (parent, child) if parent <= child else (child, parent)
+                    ignored_pairs.add(key)
+
+        try:
+            poses = generate_pose_samples(
+                self.model,
+                max_samples=int(max_pose_samples),
+                seed=int(self.seed),
+            )
+        except Exception as exc:
+            return record(resolved_name, False, str(exc))
+
+        findings_by_pair: Dict[
+            Tuple[str, str],
+            Tuple[
+                int,
+                Dict[str, float],
+                str,
+                str,
+                str,
+                str,
+                str,
+                float,
+                float,
+                float,
+                float,
+                Optional[str],
+                Optional[str],
+                Optional[str],
+                Optional[str],
+            ],
+        ] = {}
+        for pose_index, pose in enumerate(poses):
+            world_tfs = compute_part_world_transforms(self.model, dict(pose))
+            part_elem_bounds: Dict[str, List[Tuple[Optional[str], Optional[str], AABB]]] = {}
+            for link in links:
+                link_name = getattr(link, "name", None)
+                if not isinstance(link_name, str):
+                    continue
+                world_tf = world_tfs.get(link_name)
+                if world_tf is None:
+                    continue
+                elem_bounds = self._part_geometry_items_with_local_aabbs(link_name, use=use_key)
+                if not elem_bounds:
+                    continue
+                part_elem_bounds[link_name] = [
+                    (elem_name, elem_geometry, _transform_aabb(local_aabb, world_tf))
+                    for elem_name, elem_geometry, local_aabb in elem_bounds
+                ]
+
+            names = sorted(part_elem_bounds.keys())
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    link_a = names[i]
+                    link_b = names[j]
+                    if (link_a, link_b) in ignored_pairs:
+                        continue
+                    best_pair: Optional[
+                        Tuple[
+                            str,
+                            str,
+                            str,
+                            str,
+                            str,
+                            float,
+                            float,
+                            float,
+                            float,
+                            Optional[str],
+                            Optional[str],
+                            Optional[str],
+                            Optional[str],
+                        ]
+                    ] = None
+                    for elem_a_name, elem_a_geometry, aabb_a in part_elem_bounds[link_a]:
+                        for elem_b_name, elem_b_geometry, aabb_b in part_elem_bounds[link_b]:
+                            best: Optional[
+                                Tuple[str, str, str, str, str, float, float, float, float]
+                            ] = None
+                            for axis_name in ("x", "y", "z"):
+                                orth_axes = tuple(
+                                    axis for axis in ("x", "y", "z") if axis != axis_name
+                                )
+                                overlap_0 = _aabb_axis_overlap(aabb_a, aabb_b, axis=orth_axes[0])
+                                overlap_1 = _aabb_axis_overlap(aabb_a, aabb_b, axis=orth_axes[1])
+                                if overlap_0 < min_overlap_f or overlap_1 < min_overlap_f:
+                                    continue
+
+                                axis_idx = _axis_index(axis_name)
+                                face_pairs = (
+                                    (
+                                        "min",
+                                        "min",
+                                        abs(
+                                            float(aabb_a[0][axis_idx]) - float(aabb_b[0][axis_idx])
+                                        ),
+                                    ),
+                                    (
+                                        "min",
+                                        "max",
+                                        abs(
+                                            float(aabb_a[0][axis_idx]) - float(aabb_b[1][axis_idx])
+                                        ),
+                                    ),
+                                    (
+                                        "max",
+                                        "min",
+                                        abs(
+                                            float(aabb_a[1][axis_idx]) - float(aabb_b[0][axis_idx])
+                                        ),
+                                    ),
+                                    (
+                                        "max",
+                                        "max",
+                                        abs(
+                                            float(aabb_a[1][axis_idx]) - float(aabb_b[1][axis_idx])
+                                        ),
+                                    ),
+                                )
+                                face_a, face_b, plane_delta = min(
+                                    face_pairs, key=lambda item: item[2]
+                                )
+                                if plane_delta > plane_tol_f:
+                                    continue
+
+                                area = overlap_0 * overlap_1
+                                candidate = (
+                                    axis_name,
+                                    orth_axes[0],
+                                    orth_axes[1],
+                                    face_a,
+                                    face_b,
+                                    plane_delta,
+                                    overlap_0,
+                                    overlap_1,
+                                    area,
+                                )
+                                if (
+                                    best is None
+                                    or candidate[5] < best[5]
+                                    or (
+                                        abs(candidate[5] - best[5]) <= 1e-9
+                                        and candidate[8] > best[8]
+                                    )
+                                ):
+                                    best = candidate
+
+                            if best is None:
+                                continue
+                            candidate_pair = (
+                                best[0],
+                                best[1],
+                                best[2],
+                                best[3],
+                                best[4],
+                                best[5],
+                                best[6],
+                                best[7],
+                                best[8],
+                                elem_a_name,
+                                elem_a_geometry,
+                                elem_b_name,
+                                elem_b_geometry,
+                            )
+                            if (
+                                best_pair is None
+                                or candidate_pair[5] < best_pair[5]
+                                or (
+                                    abs(candidate_pair[5] - best_pair[5]) <= 1e-9
+                                    and candidate_pair[8] > best_pair[8]
+                                )
+                            ):
+                                best_pair = candidate_pair
+
+                    if best_pair is None:
+                        continue
+                    (
+                        pose_index_best,
+                        pose_best,
+                        axis_name,
+                        overlap_axis_0,
+                        overlap_axis_1,
+                        face_a,
+                        face_b,
+                        plane_delta,
+                        overlap_0,
+                        overlap_1,
+                        _area,
+                        elem_a_name,
+                        elem_a_geometry,
+                        elem_b_name,
+                        elem_b_geometry,
+                    ) = (
+                        pose_index,
+                        dict(pose),
+                        best_pair[0],
+                        best_pair[1],
+                        best_pair[2],
+                        best_pair[3],
+                        best_pair[4],
+                        best_pair[5],
+                        best_pair[6],
+                        best_pair[7],
+                        best_pair[8],
+                        best_pair[9],
+                        best_pair[10],
+                        best_pair[11],
+                        best_pair[12],
+                    )
+                    key = (link_a, link_b)
+                    current = findings_by_pair.get(key)
+                    candidate = (
+                        pose_index_best,
+                        pose_best,
+                        axis_name,
+                        overlap_axis_0,
+                        overlap_axis_1,
+                        face_a,
+                        face_b,
+                        plane_delta,
+                        overlap_0,
+                        overlap_1,
+                        _area,
+                        elem_a_name,
+                        elem_a_geometry,
+                        elem_b_name,
+                        elem_b_geometry,
+                    )
+                    if (
+                        current is None
+                        or candidate[7] < current[7]
+                        or (abs(candidate[7] - current[7]) <= 1e-9 and candidate[10] > current[10])
+                    ):
+                        findings_by_pair[key] = candidate
+
+        if findings_by_pair:
+            findings = [
+                f"pair=({link_a!r},{link_b!r}) pose_index={candidate[0]} "
+                f"axis={candidate[2]} faces=({candidate[5]},{candidate[6]}) "
+                f"plane_delta={candidate[7]:.4g} "
+                f"{candidate[3]}_overlap={candidate[8]:.4g} "
+                f"{candidate[4]}_overlap={candidate[9]:.4g} "
+                f"elem_a={candidate[11]!r}:{candidate[12] or '?'} "
+                f"elem_b={candidate[13]!r}:{candidate[14] or '?'} pose={candidate[1]}"
+                for (link_a, link_b), candidate in sorted(findings_by_pair.items())
+            ]
+            preview = "\n".join(findings[:8])
+            more = "" if len(findings) <= 8 else f"\n... ({len(findings) - 8} more)"
+            return record(
+                resolved_name,
+                False,
+                "Coplanar or nearly coplanar surfaces detected "
+                "(warning-tier heuristic; flush visible mounts can be intentional):\n"
+                f"{preview}{more}",
+            )
+        return record(resolved_name, True)
 
     # ---- Intent checks (pose-aware) ----------------------------------------
 

@@ -1,11 +1,22 @@
-import { useEffect, useId, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent } from "react";
-import { Check, Copy, FolderOpen, MoreVertical, Star, Trash2 } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type JSX,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { ArrowUpRight, Check, ChevronDown, Copy, FolderOpen, MoreVertical, Search, Star, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { deleteRecord, fetchBootstrap, openRecordFolder } from "@/lib/api";
+import { deleteRecord, fetchBootstrap, fetchCategories, openRecordFolder, promoteRecordToDataset } from "@/lib/api";
 import { buildRecordPath, copyTextToClipboard } from "@/lib/record-path";
-import type { RecordSummary } from "@/lib/types";
+import type { CategoryOption, RecordSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 
@@ -62,14 +73,29 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
   const dispatch = useViewerDispatch();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [openState, setOpenState] = useState<"idle" | "opened" | "error">("idle");
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [promotePending, setPromotePending] = useState(false);
+  const [promoteError, setPromoteError] = useState<string | null>(null);
+  const [promoteCategoryOptions, setPromoteCategoryOptions] = useState<CategoryOption[]>([]);
+  const [promoteCategoryLoading, setPromoteCategoryLoading] = useState(false);
+  const [promoteCategoryLoadError, setPromoteCategoryLoadError] = useState<string | null>(null);
+  const [promoteCategoryOpen, setPromoteCategoryOpen] = useState(false);
+  const [promoteCategorySearch, setPromoteCategorySearch] = useState("");
+  const [promoteCategorySlug, setPromoteCategorySlug] = useState("");
+  const [promoteDatasetId, setPromoteDatasetId] = useState("");
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const promoteCategoryPopoverRef = useRef<HTMLDivElement | null>(null);
+  const promoteCategorySearchInputRef = useRef<HTMLInputElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const promoteTitleId = useId();
+  const promoteDescriptionId = useId();
   const isSelected = selection?.kind === "record" && selection.recordId === record.record_id;
+  const alreadyInDataset = record.collections.includes("dataset");
   const summaryText = truncateWithEllipsis(record.prompt_preview || record.title);
   const metadata = [
     record.model_id,
@@ -79,6 +105,19 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
     formatCost(record.total_cost_usd),
     formatDate(record.updated_at ?? record.created_at),
   ].filter((item): item is string => Boolean(item));
+  const selectedCategoryOption = useMemo(
+    () => promoteCategoryOptions.find((option) => option.slug === promoteCategorySlug) ?? null,
+    [promoteCategoryOptions, promoteCategorySlug],
+  );
+  const filteredCategoryOptions = useMemo(() => {
+    const query = promoteCategorySearch.trim().toLowerCase();
+    if (!query) {
+      return promoteCategoryOptions;
+    }
+    return promoteCategoryOptions.filter((option) =>
+      option.title.toLowerCase().includes(query) || option.slug.toLowerCase().includes(query),
+    );
+  }, [promoteCategoryOptions, promoteCategorySearch]);
 
   useEffect(() => {
     if (!menuOpen) {
@@ -125,6 +164,90 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [confirmOpen, deletePending]);
+
+  useEffect(() => {
+    if (!promoteOpen) {
+      return;
+    }
+
+    let cancelled = false;
+    setPromoteCategoryLoading(true);
+    setPromoteCategoryLoadError(null);
+
+    fetchCategories()
+      .then((categories) => {
+        if (cancelled) {
+          return;
+        }
+        setPromoteCategoryOptions(categories);
+        setPromoteCategoryLoading(false);
+        if (record.category_slug && categories.some((option) => option.slug === record.category_slug)) {
+          setPromoteCategorySlug(record.category_slug);
+        } else {
+          setPromoteCategorySlug("");
+        }
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setPromoteCategoryOptions([]);
+        setPromoteCategoryLoading(false);
+        setPromoteCategoryLoadError(error instanceof Error ? error.message : "Failed to load categories.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [promoteOpen, record.category_slug]);
+
+  useEffect(() => {
+    if (!promoteOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !promotePending) {
+        setPromoteOpen(false);
+        setPromoteError(null);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [promoteOpen, promotePending]);
+
+  useEffect(() => {
+    if (!promoteCategoryOpen) {
+      return;
+    }
+
+    promoteCategorySearchInputRef.current?.focus();
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!promoteCategoryPopoverRef.current) {
+        return;
+      }
+      if (event.target instanceof Node && !promoteCategoryPopoverRef.current.contains(event.target)) {
+        setPromoteCategoryOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPromoteCategoryOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [promoteCategoryOpen]);
 
   useEffect(() => {
     if (copyState === "idle") {
@@ -212,12 +335,31 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
     setConfirmOpen(true);
   };
 
+  const handlePromoteIntent = () => {
+    setMenuOpen(false);
+    setPromoteError(null);
+    setPromoteCategoryOpen(false);
+    setPromoteCategorySearch("");
+    setPromoteCategorySlug(record.category_slug ?? "");
+    setPromoteDatasetId("");
+    setPromoteOpen(true);
+  };
+
   const handleDeleteCancel = () => {
     if (deletePending) {
       return;
     }
     setConfirmOpen(false);
     setDeleteError(null);
+  };
+
+  const handlePromoteCancel = () => {
+    if (promotePending) {
+      return;
+    }
+    setPromoteOpen(false);
+    setPromoteCategoryOpen(false);
+    setPromoteError(null);
   };
 
   const handleConfirmDelete = async () => {
@@ -246,6 +388,44 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
       setDeleteError(error instanceof Error ? error.message : "Failed to delete record.");
     } finally {
       setDeletePending(false);
+    }
+  };
+
+  const handleConfirmPromote = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (promotePending) {
+      return;
+    }
+
+    if (!selectedCategoryOption) {
+      setPromoteError("Select a category.");
+      return;
+    }
+
+    setPromotePending(true);
+    setPromoteError(null);
+
+    try {
+      await promoteRecordToDataset(record.record_id, {
+        categoryTitle: selectedCategoryOption.title,
+        datasetId: promoteDatasetId,
+      });
+      setPromoteOpen(false);
+
+      try {
+        const refreshedBootstrap = await fetchBootstrap();
+        dispatch({ type: "SET_BOOTSTRAP", payload: refreshedBootstrap });
+        dispatch({ type: "SET_BROWSER_TAB", payload: "dataset" });
+      } catch (error) {
+        dispatch({
+          type: "SET_ERROR",
+          payload: error instanceof Error ? error.message : "Promotion succeeded, but viewer refresh failed.",
+        });
+      }
+    } catch (error) {
+      setPromoteError(error instanceof Error ? error.message : "Failed to promote record.");
+    } finally {
+      setPromotePending(false);
     }
   };
 
@@ -347,6 +527,17 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
                 role="menu"
                 className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 text-[var(--text-primary)] shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]"
               >
+                {!alreadyInDataset ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={handlePromoteIntent}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)]"
+                  >
+                    <ArrowUpRight className="size-3.5" />
+                    <span>Promote to dataset</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"
@@ -391,6 +582,161 @@ export function RecordListItem({ record, multiSelectActive, isMultiSelected, onM
           </div>
         </div>
       </div>
+
+      {promoteOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.15)] px-4 backdrop-blur-[2px]"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              handlePromoteCancel();
+            }
+          }}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={promoteTitleId}
+            aria-describedby={promoteDescriptionId}
+            className="w-full max-w-[420px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-0)] p-5 shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={handleConfirmPromote}
+          >
+            <div className="space-y-1.5">
+              <h2 id={promoteTitleId} className="text-[14px] font-semibold text-[var(--text-primary)]">
+                Promote to dataset
+              </h2>
+              <p id={promoteDescriptionId} className="text-[12px] leading-5 text-[var(--text-secondary)]">
+                Assign a category and optional dataset ID for this record. Leave dataset ID empty to auto-generate one.
+              </p>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div ref={promoteCategoryPopoverRef} className="relative space-y-1.5">
+                <Label className="text-[11px] text-[var(--text-secondary)]">
+                  Category
+                </Label>
+                <button
+                  type="button"
+                  aria-expanded={promoteCategoryOpen}
+                  aria-haspopup="listbox"
+                  onClick={() => setPromoteCategoryOpen((current) => !current)}
+                  className={cn(
+                    "flex h-8 w-full items-center justify-between gap-2 rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] px-2.5 py-1.5 text-left text-[12px] text-[var(--text-primary)] transition-all duration-150 outline-none",
+                    "focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
+                    !selectedCategoryOption && "text-[var(--text-quaternary)]",
+                  )}
+                  disabled={promotePending}
+                >
+                  <span className="truncate">
+                    {selectedCategoryOption
+                      ? selectedCategoryOption.title
+                      : promoteCategoryLoading
+                        ? "Loading categories..."
+                        : "Select a category"}
+                  </span>
+                  <ChevronDown className={cn("size-3.5 shrink-0 text-[var(--text-tertiary)] transition-transform", promoteCategoryOpen && "rotate-180")} />
+                </button>
+
+                {promoteCategoryOpen ? (
+                  <div className="absolute left-0 top-[calc(100%+0.375rem)] z-10 w-full rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]">
+                    <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-2 py-1.5">
+                      <Search className="size-3 shrink-0 text-[var(--text-quaternary)]" />
+                      <Input
+                        ref={promoteCategorySearchInputRef}
+                        value={promoteCategorySearch}
+                        onChange={(event) => setPromoteCategorySearch(event.target.value)}
+                        placeholder="Search categories..."
+                        className="h-6 border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0"
+                        disabled={promotePending}
+                      />
+                    </div>
+
+                    {promoteCategoryLoadError ? (
+                      <div className="px-2.5 py-2 text-[11px] text-[var(--destructive)]">
+                        {promoteCategoryLoadError}
+                      </div>
+                    ) : promoteCategoryLoading ? (
+                      <div className="px-2.5 py-2 text-[11px] text-[var(--text-quaternary)]">
+                        Loading categories...
+                      </div>
+                    ) : filteredCategoryOptions.length === 0 ? (
+                      <div className="px-2.5 py-2 text-[11px] text-[var(--text-quaternary)]">
+                        No matching categories
+                      </div>
+                    ) : (
+                      <div role="listbox" aria-label="Categories" className="max-h-56 overflow-y-auto py-1">
+                        {filteredCategoryOptions.map((option) => {
+                          const selected = option.slug === promoteCategorySlug;
+                          return (
+                            <button
+                              key={option.slug}
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              onClick={() => {
+                                setPromoteCategorySlug(option.slug);
+                                setPromoteCategoryOpen(false);
+                                setPromoteCategorySearch("");
+                                setPromoteError(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12px] text-[var(--text-primary)] outline-none transition-colors hover:bg-[var(--accent-soft)] focus-visible:bg-[var(--accent-soft)]"
+                            >
+                              <span
+                                className={cn(
+                                  "flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+                                  selected
+                                    ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                                    : "border-[var(--border-default)] bg-[var(--surface-1)] text-transparent",
+                                )}
+                              >
+                                <Check className="size-3" />
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate">{option.title}</span>
+                                <span className="block truncate text-[10px] text-[var(--text-tertiary)]">
+                                  {option.slug}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor={`${record.record_id}-dataset-id`} className="text-[11px] text-[var(--text-secondary)]">
+                  Dataset ID
+                </Label>
+                <Input
+                  id={`${record.record_id}-dataset-id`}
+                  value={promoteDatasetId}
+                  onChange={(event) => setPromoteDatasetId(event.target.value)}
+                  placeholder="Optional, e.g. ds_hinges_0007"
+                  disabled={promotePending}
+                />
+              </div>
+            </div>
+
+            {promoteError ? (
+              <div className="mt-3 rounded-lg border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-3 py-2 text-[11px] text-[var(--destructive)]">
+                {promoteError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button type="button" variant="outline" onClick={handlePromoteCancel} disabled={promotePending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={promotePending}>
+                {promotePending ? "Promoting..." : "Promote"}
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       {confirmOpen ? (
         <div

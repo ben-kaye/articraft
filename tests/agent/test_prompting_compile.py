@@ -22,10 +22,29 @@ def test_prompt_outputs_are_current() -> None:
     assert "wrong geometric representation" in compiled_by_name["designer_system_prompt_openai.txt"]
     assert "prompt-named visible features" in compiled_by_name["designer_system_prompt_openai.txt"]
     assert (
+        "warn_if_articulation_origin_near_geometry"
+        in compiled_by_name["designer_system_prompt_openai.txt"]
+    )
+    assert (
+        "warn_if_part_geometry_connected" in compiled_by_name["designer_system_prompt_openai.txt"]
+    )
+    assert (
+        "deliberately dumb static sensors" in compiled_by_name["designer_system_prompt_openai.txt"]
+    )
+    assert "semantic regression" in compiled_by_name["designer_system_prompt_openai.txt"]
+    assert (
         "silhouette-critical visible forms" in compiled_by_name["designer_system_prompt_openai.txt"]
     )
     assert (
         "Plain primitives are acceptable for hidden structure"
+        in compiled_by_name["designer_system_prompt_openai.txt"]
+    )
+    assert (
+        "If the real object should be hollow, thin-walled, or cavity-bearing"
+        in compiled_by_name["designer_system_prompt_openai.txt"]
+    )
+    assert (
+        "Do not omit important internal structures"
         in compiled_by_name["designer_system_prompt_openai.txt"]
     )
     assert "sdk_hybrid" in compiled_by_name["designer_system_prompt_openai_hybrid.txt"]
@@ -37,10 +56,29 @@ def test_prompt_outputs_are_current() -> None:
     assert "wrong geometric representation" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert "prompt-named visible features" in compiled_by_name["designer_system_prompt_gemini.txt"]
     assert (
+        "warn_if_articulation_origin_near_geometry"
+        in compiled_by_name["designer_system_prompt_gemini.txt"]
+    )
+    assert (
+        "warn_if_part_geometry_connected" in compiled_by_name["designer_system_prompt_gemini.txt"]
+    )
+    assert (
+        "deliberately dumb static sensors" in compiled_by_name["designer_system_prompt_gemini.txt"]
+    )
+    assert "semantic regression" in compiled_by_name["designer_system_prompt_gemini.txt"]
+    assert (
         "silhouette-critical visible forms" in compiled_by_name["designer_system_prompt_gemini.txt"]
     )
     assert (
         "Plain primitives are acceptable for hidden structure"
+        in compiled_by_name["designer_system_prompt_gemini.txt"]
+    )
+    assert (
+        "If the real object should be hollow, thin-walled, or cavity-bearing"
+        in compiled_by_name["designer_system_prompt_gemini.txt"]
+    )
+    assert (
+        "Do not omit important internal structures"
         in compiled_by_name["designer_system_prompt_gemini.txt"]
     )
     assert "sdk_hybrid" in compiled_by_name["designer_system_prompt_gemini_hybrid.txt"]

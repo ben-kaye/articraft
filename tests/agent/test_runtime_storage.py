@@ -16,6 +16,19 @@ def fake_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "ArticraftAgent", FakeAgent)
 
 
+class DeletingImageAgent(FakeAgent):
+    async def run(self, user_content: object):  # type: ignore[override]
+        if isinstance(user_content, list):
+            for item in user_content:
+                if not isinstance(item, dict):
+                    continue
+                image_path = item.get("image_path")
+                if isinstance(image_path, str):
+                    Path(image_path).unlink()
+                    break
+        return await super().run(user_content)
+
+
 def test_workbench_run_and_rerun_persist_runtime_artifacts(
     fake_agent: None,
     tmp_path: Path,
@@ -227,3 +240,49 @@ def test_dataset_run_and_rerun_preserve_dataset_metadata(
     assert latest_run_metadata["status"] == "success"
     assert latest_run_metadata["collection"] == "dataset"
     assert latest_run_metadata["run_mode"] == "dataset_single"
+
+
+def test_workbench_run_succeeds_when_persisted_input_image_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runner, "ArticraftAgent", DeletingImageAgent)
+
+    repo_root = tmp_path
+    image_path = repo_root / "reference.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    exit_code = asyncio.run(
+        runner.run_from_input(
+            [
+                {"type": "input_text", "text": "make a lamp"},
+                {"type": "input_image", "image_path": str(image_path), "detail": "high"},
+            ],
+            prompt_text="make a lamp",
+            display_prompt="make a lamp",
+            repo_root=repo_root,
+            image_path=image_path,
+            provider="openai",
+            thinking_level="high",
+            max_turns=30,
+            system_prompt_path=DESIGNER_PROMPT_NAME,
+            sdk_package="sdk",
+            sdk_docs_mode="full",
+            label="lamp try",
+            tags=["lamp"],
+        )
+    )
+    assert exit_code == 0
+
+    record_dir = next((repo_root / "data" / "records").iterdir())
+    assert (record_dir / "record.json").exists()
+    assert (record_dir / "provenance.json").exists()
+    assert (record_dir / "compile_report.json").exists()
+    assert list((record_dir / "inputs").iterdir()) == []
+
+    run_dir = next((repo_root / "data" / "cache" / "runs").iterdir())
+    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "success"
+    results = (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(results) == 1
+    assert json.loads(results[0])["status"] == "success"

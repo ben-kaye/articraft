@@ -71,6 +71,11 @@ class DatasetEntryResponse(BaseModel):
     record: RecordSummaryResponse | None = None
 
 
+class CategoryOptionResponse(BaseModel):
+    slug: str
+    title: str
+
+
 class StagingEntryResponse(BaseModel):
     run_id: str
     record_id: str
@@ -143,6 +148,11 @@ class RecordRatingResponse(BaseModel):
     record_id: str
     rating: int
     updated_at: str | None = None
+
+
+class PromoteRecordRequest(BaseModel):
+    category_title: str = Field(min_length=1)
+    dataset_id: str | None = None
 
 
 class RecordTextFileResponse(BaseModel):

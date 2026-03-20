@@ -13,6 +13,9 @@ api_host := host
 api_port := port
 sdk_package := "sdk"
 viewer_target := "/"
+spec := ""
+concurrency := "5"
+name := ""
 
 setup:
     # Create a local env template once; never overwrite an existing secrets file.
@@ -46,6 +49,9 @@ lint:
 
 smoke-tests:
     uv run --group dev pytest -q
+
+perf:
+    uv run python -m performance
 
 wb prompt:
     #!/usr/bin/env bash
@@ -218,6 +224,34 @@ dataset-promote record_ref category_title:
       "$record_ref" \
       "$category_title"
 
+dataset-batch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    spec_path={{ quote(spec) }}
+    concurrency_value={{ quote(concurrency) }}
+    if [ -z "$spec_path" ]; then
+      echo "Set spec=path/to/batch.csv" >&2
+      exit 1
+    fi
+    exec uv run articraft-dataset --repo-root . run-batch "$spec_path" --concurrency "$concurrency_value"
+
+batch-spec-new:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    batch_name={{ quote(name) }}
+    if [ -z "$batch_name" ]; then
+      echo "Set name=<batch-id>" >&2
+      exit 1
+    fi
+    spec_path="data/batch_specs/${batch_name}.csv"
+    if [ -e "$spec_path" ]; then
+      echo "Batch spec already exists: $spec_path" >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "$spec_path")"
+    printf '%s\n' 'row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label' >"$spec_path"
+    echo "Created $spec_path"
+
 search-index:
     uv run articraft-workbench --repo-root . rebuild-search-index
 
@@ -368,6 +402,42 @@ compile record_dir:
       exit 1
     fi
     RECORD_SCRIPT="$script_path" RECORD_URDF="$urdf_path" RECORD_SDK="$sdk_package" uv run python - <<'PY'
+    import os
+    from pathlib import Path
+
+    from agent.compiler import compile_urdf_report
+
+    script = Path(os.environ["RECORD_SCRIPT"]).resolve()
+    urdf_path = Path(os.environ["RECORD_URDF"]).resolve()
+    sdk_package = os.environ["RECORD_SDK"]
+    report = compile_urdf_report(
+        script,
+        sdk_package=sdk_package,
+        ignore_geom_qc=True,
+    )
+    urdf_path.write_text(report.urdf_xml, encoding="utf-8")
+    print(f"Recompiled {script}")
+    print(f"Wrote URDF to {urdf_path}")
+    if report.warnings:
+        print(f"Warnings: {len(report.warnings)}")
+        for warning in report.warnings:
+            print(f"- {warning.splitlines()[0]}")
+    else:
+        print("Warnings: 0")
+    PY
+
+compile-strict record_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    record_dir={{ quote(record_dir) }}
+    sdk_package={{ quote(sdk_package) }}
+    script_path="$record_dir/model.py"
+    urdf_path="$record_dir/model.urdf"
+    if [ ! -f "$script_path" ]; then
+      echo "Record model not found: $script_path" >&2
+      exit 1
+    fi
+    RECORD_SCRIPT="$script_path" RECORD_URDF="$urdf_path" RECORD_SDK="$sdk_package" uv run python - <<'PY'
     from pathlib import Path
     import os
     from agent.compiler import compile_urdf_report
@@ -387,8 +457,46 @@ compile record_dir:
         print("Warnings: 0")
     PY
 
+compile-unsafe record_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    record_dir={{ quote(record_dir) }}
+    sdk_package={{ quote(sdk_package) }}
+    script_path="$record_dir/model.py"
+    urdf_path="$record_dir/model.urdf"
+    if [ ! -f "$script_path" ]; then
+      echo "Record model not found: $script_path" >&2
+      exit 1
+    fi
+    RECORD_SCRIPT="$script_path" RECORD_URDF="$urdf_path" RECORD_SDK="$sdk_package" uv run python - <<'PY'
+    from pathlib import Path
+    import os
+    from agent.compiler import compile_urdf_report
+
+    script = Path(os.environ["RECORD_SCRIPT"]).resolve()
+    urdf_path = Path(os.environ["RECORD_URDF"]).resolve()
+    sdk_package = os.environ["RECORD_SDK"]
+    report = compile_urdf_report(script, sdk_package=sdk_package, run_checks=False)
+    urdf_path.write_text(report.urdf_xml, encoding="utf-8")
+    print(f"Unsafely recompiled {script}")
+    print(f"Wrote URDF to {urdf_path}")
+    print("Checks: skipped")
+    if report.warnings:
+        print(f"Warnings: {len(report.warnings)}")
+        for warning in report.warnings:
+            print(f"- {warning.splitlines()[0]}")
+    else:
+        print("Warnings: 0")
+    PY
+
 compile-all:
     uv run python scripts/compile_all_records.py --repo-root .
+
+force-compile-all:
+    uv run python scripts/compile_all_records.py --repo-root . --force
+
+compile-all-strict:
+    uv run python scripts/compile_all_records.py --repo-root . --strict
 
 viewer-web-install:
     npm --prefix viewer/web install

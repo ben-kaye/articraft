@@ -84,9 +84,10 @@ def test_rotate_supports_custom_origin() -> None:
 def test_mesh_from_geometry_preserves_general_rotation_transform(tmp_path) -> None:
     mesh = sdk.mesh_from_geometry(
         sdk.BoxGeometry((0.20, 0.10, 0.06)).rotate((0.0, 0.0, 1.0), pi / 2.0),
-        tmp_path / "meshes" / "rotated_box.obj",
+        tmp_path / "assets" / "meshes" / "rotated_box.obj",
     )
 
+    assert mesh.filename == "assets/meshes/rotated_box.obj"
     assert isinstance(mesh.source_geometry, sdk.Box)
     assert mesh.source_transform is not None
 

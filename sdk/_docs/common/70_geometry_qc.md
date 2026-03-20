@@ -57,7 +57,8 @@ Find parts in a multi-part object that are not contacting any other part in the 
 - Use `geometry_source="visual"` for visible-envelope support checks based on world AABBs.
 - Use `geometry_source="collision"` for physical support checks on generated collision geometry.
 - Collision-mode support queries require FCL. Missing or broken FCL support is an error; the SDK does not silently fall back.
-- This function is used by the harness automatically at compile time to emit non-blocking isolated-part warnings.
+- This function is used by the harness automatically at compile time.
+- The harness keeps `visual` isolated-part findings as warnings, but promotes `collision` isolated-part findings to blocking failures by default because conservative generated collision envelopes still failing contact is usually a real mount/attachment bug.
 
 ## `validate_no_geometry_overlaps(...)`
 

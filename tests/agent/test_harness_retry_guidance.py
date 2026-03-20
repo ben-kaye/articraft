@@ -23,7 +23,7 @@ def test_compile_failure_signal_message_has_structured_sections() -> None:
     assert "<failures>" in content
     assert "<response_rules>" in content
     assert "compile execution failed" in content
-    assert "Fix failures first." in content
+    assert "Resolve failures either by correcting the current code" in content
     assert conversation
 
 

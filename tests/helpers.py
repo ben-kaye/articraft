@@ -43,7 +43,7 @@ class FakeAgent:
             "from __future__ import annotations\n\nobject_model = None\n",
             encoding="utf-8",
         )
-        meshes_dir = self.file_path.parent / "meshes"
+        meshes_dir = self.file_path.parent / "assets" / "meshes"
         meshes_dir.mkdir(parents=True, exist_ok=True)
         (meshes_dir / "part.obj").write_text("# mesh\n", encoding="utf-8")
         cost_path = self.file_path.parent / "cost.json"

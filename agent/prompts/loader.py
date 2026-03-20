@@ -5,7 +5,6 @@ from pathlib import Path
 
 from sdk._profiles import get_sdk_profile
 
-
 LEGACY_DESIGNER_PROMPT_NAME = "system_prompt.txt"
 DESIGNER_PROMPT_NAME = "designer_system_prompt.txt"
 OPENAI_DESIGNER_PROMPT_NAME = "designer_system_prompt_openai.txt"
@@ -14,6 +13,9 @@ GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini.txt"
 HYBRID_GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini_hybrid.txt"
 
 SUPPORTED_SDK_DOCS_MODES = {"full", "core", "none"}
+LEGACY_SDK_DOCS_MODE_ALIASES = {
+    "legacy_import": "full",
+}
 PROMPTS_ROOT = Path(__file__).resolve().parent
 GENERATED_PROMPTS_DIR = PROMPTS_ROOT / "generated"
 # Back-compat alias for older references.
@@ -28,6 +30,7 @@ def normalize_sdk_package(sdk_package: str) -> str:
 
 def normalize_sdk_docs_mode(docs_mode: str) -> str:
     candidate = (docs_mode or "full").strip().lower()
+    candidate = LEGACY_SDK_DOCS_MODE_ALIASES.get(candidate, candidate)
     if candidate not in SUPPORTED_SDK_DOCS_MODES:
         raise ValueError(
             f"Unsupported SDK docs mode: {docs_mode!r}. "

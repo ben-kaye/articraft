@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,8 +11,25 @@ from pathlib import Path
 from cli.common import add_data_root_argument
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
+from storage.dataset_workflow import (
+    next_dataset_id as _shared_next_dataset_id,
+)
+from storage.dataset_workflow import (
+    parse_canonical_dataset_sequence as _shared_parse_canonical_dataset_sequence,
+)
+from storage.dataset_workflow import (
+    promote_record_workflow as _shared_promote_record_workflow,
+)
+from storage.dataset_workflow import (
+    sdk_package_to_target_sdk_version as _shared_sdk_package_to_target_sdk_version,
+)
+from storage.dataset_workflow import (
+    slugify_category_title as _shared_slugify_category_title,
+)
+from storage.dataset_workflow import (
+    upsert_category_metadata as _shared_upsert_category_metadata,
+)
 from storage.datasets import DatasetStore
-from storage.models import CategoryRecord
 from storage.queries import StorageQueries
 from storage.records import RecordStore
 from storage.repo import StorageRepo
@@ -46,9 +63,6 @@ class DeleteRecordPreview:
 class PruneCachePreview:
     failed_staging_dirs: list[Path]
     empty_dirs: list[Path]
-
-
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _build_delete_category_preview(
@@ -108,25 +122,15 @@ def _resolve_record_reference(repo: StorageRepo, record_ref: str) -> str:
 
 
 def _slugify_category_title(title: str) -> str:
-    slug = _NON_ALNUM_RE.sub("_", title.strip().lower()).strip("_")
-    if not slug:
-        raise ValueError(f"Could not derive category slug from {title!r}")
-    return slug
+    return _shared_slugify_category_title(title)
 
 
 def _sdk_package_to_target_sdk_version(sdk_package: str) -> str | None:
-    if sdk_package == "sdk":
-        return "base"
-    if sdk_package == "sdk_hybrid":
-        return "hybrid_cad"
-    return None
+    return _shared_sdk_package_to_target_sdk_version(sdk_package)
 
 
 def _parse_canonical_dataset_sequence(dataset_id: str, category_slug: str) -> int | None:
-    match = re.fullmatch(rf"ds_{re.escape(category_slug)}_(\d{{4}})", dataset_id)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return _shared_parse_canonical_dataset_sequence(dataset_id, category_slug)
 
 
 def _next_dataset_id(
@@ -135,29 +139,7 @@ def _next_dataset_id(
     category_slug: str,
     category: dict | None,
 ) -> tuple[str, int]:
-    seen_dataset_ids = {
-        str(entry.get("dataset_id") or "")
-        for entry in datasets.list_entries()
-        if isinstance(entry, dict)
-    }
-    highest_sequence = 0
-    for dataset_id in seen_dataset_ids:
-        sequence = _parse_canonical_dataset_sequence(dataset_id, category_slug)
-        if sequence is not None:
-            highest_sequence = max(highest_sequence, sequence)
-
-    if isinstance(category, dict):
-        for key in ("last_item_index", "current_count"):
-            value = category.get(key)
-            if isinstance(value, int):
-                highest_sequence = max(highest_sequence, value)
-
-    sequence = highest_sequence + 1
-    dataset_id = f"ds_{category_slug}_{sequence:04d}"
-    while dataset_id in seen_dataset_ids:
-        sequence += 1
-        dataset_id = f"ds_{category_slug}_{sequence:04d}"
-    return dataset_id, sequence
+    return _shared_next_dataset_id(datasets, category_slug=category_slug, category=category)
 
 
 def _upsert_category_metadata(
@@ -170,63 +152,15 @@ def _upsert_category_metadata(
     now: str,
     sequence: int | None,
 ) -> dict:
-    categories = CategoryStore(repo)
-    existing = categories.load(category_slug)
-    record_category_count = len(queries.list_record_ids_for_category(category_slug))
-    run_count = len(queries.list_run_ids_for_category(category_slug))
-
-    if isinstance(existing, dict):
-        category = CategoryRecord(
-            schema_version=int(existing.get("schema_version", 1)),
-            slug=category_slug,
-            title=str(existing.get("title") or category_title),
-            description=str(existing.get("description") or ""),
-            prompt_batch_ids=[
-                str(batch_id)
-                for batch_id in existing.get("prompt_batch_ids", [])
-                if str(batch_id).strip()
-            ],
-            target_sdk_version=(
-                str(existing.get("target_sdk_version"))
-                if existing.get("target_sdk_version") is not None
-                else _sdk_package_to_target_sdk_version(str(record.get("sdk_package") or ""))
-            ),
-            current_count=record_category_count,
-            last_item_index=max(
-                [
-                    value
-                    for value in (
-                        sequence,
-                        existing.get("last_item_index")
-                        if isinstance(existing.get("last_item_index"), int)
-                        else None,
-                    )
-                    if isinstance(value, int)
-                ],
-                default=None,
-            ),
-            created_at=str(existing.get("created_at") or now),
-            updated_at=now,
-            run_count=run_count,
-        )
-    else:
-        category = CategoryRecord(
-            schema_version=1,
-            slug=category_slug,
-            title=category_title,
-            description="",
-            prompt_batch_ids=[],
-            target_sdk_version=_sdk_package_to_target_sdk_version(
-                str(record.get("sdk_package") or "")
-            ),
-            current_count=record_category_count,
-            last_item_index=sequence,
-            created_at=now,
-            updated_at=now,
-            run_count=run_count,
-        )
-    categories.save(category)
-    return category.to_dict()
+    return _shared_upsert_category_metadata(
+        repo,
+        queries,
+        record=record,
+        category_title=category_title,
+        category_slug=category_slug,
+        now=now,
+        sequence=sequence,
+    )
 
 
 def _promote_record_workflow(
@@ -239,81 +173,16 @@ def _promote_record_workflow(
     dataset_id: str | None,
     promoted_at: str,
 ) -> tuple[dict, dict, dict, object]:
-    record_store = RecordStore(repo)
-    collections = CollectionStore(repo)
-
     record_id = _resolve_record_reference(repo, record_ref)
-    record = record_store.load_record(record_id)
-    if not isinstance(record, dict):
-        raise ValueError(f"Missing record.json for {record_id}")
-
-    category_slug = _slugify_category_title(category_title)
-    existing_entry = datasets.load_entry(record_id)
-    used_sequence: int | None = None
-    resolved_dataset_id = dataset_id
-
-    if isinstance(existing_entry, dict):
-        existing_category_slug = str(existing_entry.get("category_slug") or "")
-        if existing_category_slug and existing_category_slug != category_slug:
-            raise ValueError(
-                f"Record already promoted under category {existing_category_slug}: {record_id}"
-            )
-        resolved_dataset_id = str(existing_entry.get("dataset_id") or "")
-        used_sequence = _parse_canonical_dataset_sequence(resolved_dataset_id, category_slug)
-        if not resolved_dataset_id:
-            raise ValueError(f"Existing dataset entry missing dataset_id for {record_id}")
-    else:
-        if not resolved_dataset_id:
-            category = CategoryStore(repo).load(category_slug)
-            resolved_dataset_id, used_sequence = _next_dataset_id(
-                datasets,
-                category_slug=category_slug,
-                category=category,
-            )
-        else:
-            if datasets.find_record_id_by_dataset_id(resolved_dataset_id) is not None:
-                raise ValueError(f"Dataset ID already exists: {resolved_dataset_id}")
-            used_sequence = _parse_canonical_dataset_sequence(resolved_dataset_id, category_slug)
-
-    record["category_slug"] = category_slug
-    record["collections"] = ["dataset"]
-    record["updated_at"] = promoted_at
-    record_store.repo.write_json(repo.layout.record_metadata_path(record_id), record)
-
-    source = record.get("source")
-    run_id = str(source.get("run_id") or "") if isinstance(source, dict) else ""
-    if run_id:
-        run_path = repo.layout.run_metadata_path(run_id)
-        run_metadata = repo.read_json(run_path)
-        if isinstance(run_metadata, dict):
-            run_metadata["category_slug"] = category_slug
-            run_metadata["updated_at"] = promoted_at
-            repo.write_json(run_path, run_metadata)
-
-    if not isinstance(existing_entry, dict):
-        datasets.promote_record(
-            record_id=record_id,
-            dataset_id=resolved_dataset_id,
-            category_slug=category_slug,
-            promoted_at=promoted_at,
-        )
-
-    collections.remove_workbench_entries(record_id)
-    category = _upsert_category_metadata(
+    return _shared_promote_record_workflow(
         repo,
+        datasets,
         queries,
-        record=record,
+        record_id=record_id,
         category_title=category_title,
-        category_slug=category_slug,
-        now=promoted_at,
-        sequence=used_sequence,
+        dataset_id=dataset_id,
+        promoted_at=promoted_at,
     )
-    manifest = datasets.write_dataset_manifest()
-    search_stats = SearchIndex(repo).rebuild()
-    entry = datasets.load_entry(record_id)
-    if not isinstance(entry, dict):
-        raise ValueError(f"Failed to load dataset entry for {record_id}")
-    return entry, category, manifest, search_stats
 
 
 def _build_delete_record_preview(
@@ -619,6 +488,66 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Execute the prune after showing the preview.",
     )
+    run_batch = subparsers.add_parser(
+        "run-batch",
+        help="Run a tracked dataset batch CSV spec into canonical records and a batch run cache entry.",
+    )
+    run_batch.add_argument("spec", help="CSV spec path, typically under data/batch_specs/.")
+    run_batch.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Maximum number of batch rows to run concurrently.",
+    )
+    run_batch.add_argument(
+        "--system-prompt-path",
+        default="designer_system_prompt.txt",
+        help="System prompt file to use for all rows in the batch.",
+    )
+    run_batch.add_argument(
+        "--sdk-docs-mode",
+        default="full",
+        help="SDK docs injection mode for all rows in the batch.",
+    )
+    run_batch.add_argument(
+        "--qc-blurb",
+        default=None,
+        help="Optional QC checklist file to append to every prompt.",
+    )
+    run_batch.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the latest prior run for this batch spec in place.",
+    )
+    run_batch.add_argument(
+        "--resume-policy",
+        default="failed_or_pending",
+        choices=("failed_or_pending", "failed_only", "all"),
+        help="In resume mode, choose which row statuses should run again.",
+    )
+    run_batch.add_argument(
+        "--pause-file",
+        default=None,
+        help="Optional pause sentinel file path. Existing file pauses launch of new rows.",
+    )
+    run_batch.add_argument(
+        "--pause-poll-seconds",
+        type=float,
+        default=1.0,
+        help="Polling interval for pause-file checks.",
+    )
+    run_batch.add_argument(
+        "--keyboard-pause",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable live keyboard pause toggle (`p`) when stdin is a TTY.",
+    )
+    run_batch.add_argument(
+        "--keep-awake",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prevent idle sleep while the batch is running on macOS.",
+    )
     return parser
 
 
@@ -811,6 +740,36 @@ def main(argv: list[str] | None = None) -> int:
         removed = _prune_cache(repo, preview)
         print(f"Removed cache paths: {removed}")
         return 0
+
+    if args.command == "run-batch":
+        from agent.batch_runner import build_batch_config, keep_system_awake, run_dataset_batch
+
+        try:
+            config = build_batch_config(
+                repo_root=args.repo_root,
+                spec_arg=args.spec,
+                concurrency=args.concurrency,
+                system_prompt_path=args.system_prompt_path,
+                sdk_docs_mode=args.sdk_docs_mode,
+                qc_blurb_path=args.qc_blurb,
+                resume=args.resume,
+                resume_policy=args.resume_policy,
+                keep_awake=bool(args.keep_awake),
+                pause_file=args.pause_file,
+                pause_poll_seconds=args.pause_poll_seconds,
+                keyboard_pause_enabled=bool(args.keyboard_pause),
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(str(exc))
+            return 1
+
+        with keep_system_awake(config.keep_awake):
+            summary = asyncio.run(run_dataset_batch(config))
+        print(
+            f"Batch run_id={summary['run_id']} status={summary['status']} "
+            f"successes={summary['success_count']} failures={summary['failed_count']}"
+        )
+        return 0 if summary["status"] == "success" else 1
 
     parser.error(f"Unhandled command: {args.command}")
     return 2

@@ -114,6 +114,23 @@ class SingleRunContext:
     record_urdf_path: Path
 
 
+@dataclass(slots=True, frozen=True)
+class RunExecutionOutcome:
+    exit_code: int
+    run_id: str
+    record_id: str
+    status: str
+    message: str | None = None
+    record_dir: Path | None = None
+    staging_dir: Path | None = None
+    turn_count: int | None = None
+    tool_call_count: int | None = None
+    compile_attempt_count: int | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    sdk_package: str | None = None
+
+
 def _slugify(text: str) -> str:
     cleaned: list[str] = []
     last_dash = False
@@ -210,6 +227,17 @@ def _platform_id() -> str:
     return f"{platform.system().lower()}-{platform.machine().lower()}"
 
 
+def _infer_provider_from_model_id(model_id: str | None) -> str | None:
+    model_norm = (model_id or "").strip().lower()
+    if not model_norm:
+        return None
+    if model_norm.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if model_norm.startswith("gemini-"):
+        return "gemini"
+    return None
+
+
 def _default_model_id(
     *,
     provider: str,
@@ -239,22 +267,23 @@ def _build_single_run_context(
     prompt: str,
     storage_repo: StorageRepo,
     record_id: str | None = None,
+    run_id: str | None = None,
     now: datetime | None = None,
 ) -> SingleRunContext:
     created_at = _utc_now(now)
     token = _timestamp_token(now)
     prompt_slug = _build_single_run_slug(prompt)[:48]
     digest = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:8]
-    run_id = f"run_{token}_{digest}"
+    resolved_run_id = run_id or f"run_{token}_{digest}"
     resolved_record_id = record_id or f"rec_{prompt_slug}_{token}_{digest}"
-    run_dir = storage_repo.layout.run_dir(run_id)
-    staging_dir = storage_repo.layout.run_staging_dir(run_id) / resolved_record_id
+    run_dir = storage_repo.layout.run_dir(resolved_run_id)
+    staging_dir = storage_repo.layout.run_staging_dir(resolved_run_id) / resolved_record_id
     staging_dir.mkdir(parents=True, exist_ok=True)
     record_dir = storage_repo.layout.record_dir(resolved_record_id)
     return SingleRunContext(
         repo_root=repo_root.resolve(),
         created_at=created_at,
-        run_id=run_id,
+        run_id=resolved_run_id,
         record_id=resolved_record_id,
         run_dir=run_dir,
         staging_dir=staging_dir,
@@ -393,7 +422,7 @@ def _build_record_derived_assets(existing_record: dict | None) -> DerivedAssets:
     if not isinstance(existing_derived, dict):
         existing_derived = {}
     materialization_status = str(existing_derived.get("materialization_status") or "missing")
-    if materialization_status not in {"missing", "available", "stale"}:
+    if materialization_status not in {"missing", "available"}:
         materialization_status = "missing"
     return DerivedAssets(
         assets_dir=_first_string(existing_derived.get("assets_dir"), "assets"),
@@ -620,6 +649,10 @@ def _write_success_record(
     collection: str,
     category_slug: str | None,
     dataset_id: str | None,
+    prompt_batch_id: str | None = None,
+    batch_spec_id: str | None = None,
+    row_id: str | None = None,
+    prompt_index: int | None = None,
     existing_record: dict | None = None,
     workbench_entry: dict | None = None,
     dataset_entry: dict | None = None,
@@ -630,7 +663,7 @@ def _write_success_record(
     storage_repo.write_text(context.record_urdf_path, urdf_xml)
 
     if image_path is not None:
-        record_store.copy_input_image(context.record_id, image_path)
+        record_store.copy_input_image(context.record_id, image_path, missing_ok=True)
 
     _replace_file_from_source(context.cost_path, context.record_dir / "cost.json")
     _replace_tree_from_source(
@@ -639,17 +672,16 @@ def _write_success_record(
     )
     if context.trace_dir.exists():
         shutil.rmtree(context.trace_dir)
-    for legacy_dir in ("meshes", "glb", "viewer"):
-        _remove_tree_if_exists(context.record_dir / legacy_dir)
     _replace_tree_from_source(
-        context.staging_dir / "meshes",
+        context.staging_dir / "assets" / "meshes",
         storage_repo.layout.record_asset_meshes_dir(context.record_id),
     )
     _replace_tree_from_source(
-        context.staging_dir / "glb", storage_repo.layout.record_asset_glb_dir(context.record_id)
+        context.staging_dir / "assets" / "glb",
+        storage_repo.layout.record_asset_glb_dir(context.record_id),
     )
     _replace_tree_from_source(
-        context.staging_dir / "viewer",
+        context.staging_dir / "assets" / "viewer",
         storage_repo.layout.record_asset_viewer_dir(context.record_id),
     )
 
@@ -734,7 +766,13 @@ def _write_success_record(
             else "single_prompt"
         ),
         category_slug=category_slug,
-        source=SourceRef(run_id=context.run_id),
+        source=SourceRef(
+            run_id=context.run_id,
+            prompt_batch_id=prompt_batch_id,
+            batch_spec_id=batch_spec_id,
+            row_id=row_id,
+            prompt_index=prompt_index,
+        ),
         sdk_package=sdk_package,
         provider=provider,
         model_id=model_id,
@@ -883,10 +921,72 @@ async def run_from_input(
     collection: str = "workbench",
     category_slug: str | None = None,
     dataset_id: str | None = None,
+    record_id: str | None = None,
+    run_id: str | None = None,
+    persist_run_metadata: bool = True,
+    persist_run_result: bool = True,
 ) -> int:
+    outcome = await _run_from_input_impl(
+        user_content,
+        prompt_text=prompt_text,
+        display_prompt=display_prompt,
+        repo_root=repo_root,
+        image_path=image_path,
+        provider=provider,
+        model_id=model_id,
+        openai_transport=openai_transport,
+        thinking_level=thinking_level,
+        max_turns=max_turns,
+        system_prompt_path=system_prompt_path,
+        display_enabled=display_enabled,
+        on_turn_start=on_turn_start,
+        sdk_package=sdk_package,
+        sdk_docs_mode=sdk_docs_mode,
+        openai_reasoning_summary=openai_reasoning_summary,
+        label=label,
+        tags=tags,
+        collection=collection,
+        category_slug=category_slug,
+        dataset_id=dataset_id,
+        record_id=record_id,
+        run_id=run_id,
+        persist_run_metadata=persist_run_metadata,
+        persist_run_result=persist_run_result,
+    )
+    return outcome.exit_code
+
+
+async def _run_from_input_impl(
+    user_content: Any,
+    *,
+    prompt_text: str,
+    display_prompt: str | None,
+    repo_root: Path,
+    image_path: Path | None,
+    provider: str,
+    model_id: Optional[str] = None,
+    openai_transport: str = "http",
+    thinking_level: str,
+    max_turns: int,
+    system_prompt_path: str,
+    display_enabled: Optional[bool] = None,
+    on_turn_start: Optional[Callable[[int], None]] = None,
+    sdk_package: str = "sdk",
+    sdk_docs_mode: str = "full",
+    openai_reasoning_summary: Optional[str] = "auto",
+    label: str | None = None,
+    tags: Optional[list[str]] = None,
+    collection: str = "workbench",
+    category_slug: str | None = None,
+    dataset_id: str | None = None,
+    record_id: str | None = None,
+    run_id: str | None = None,
+    persist_run_metadata: bool = True,
+    persist_run_result: bool = True,
+) -> RunExecutionOutcome:
     resolved_repo_root = repo_root.resolve()
     storage_repo = StorageRepo(resolved_repo_root)
-    storage_repo.ensure_layout()
+    await asyncio.to_thread(storage_repo.ensure_layout)
     record_store = RecordStore(storage_repo)
     collections = CollectionStore(storage_repo)
     datasets = DatasetStore(storage_repo)
@@ -898,20 +998,25 @@ async def run_from_input(
             raise ValueError("dataset_id is required when collection=dataset")
         if not category_slug:
             raise ValueError("category_slug is required when collection=dataset")
-        existing_record_id = datasets.find_record_id_by_dataset_id(dataset_id)
+        existing_record_id = await asyncio.to_thread(
+            datasets.find_record_id_by_dataset_id, dataset_id
+        )
         if existing_record_id is not None:
             logger.error(
                 "Dataset ID already exists: %s (record %s)", dataset_id, existing_record_id
             )
             return 1
     else:
-        collections.ensure_workbench()
+        await asyncio.to_thread(collections.ensure_workbench)
     run_mode = "dataset_single" if collection == "dataset" else "workbench_single"
 
-    context = _build_single_run_context(
+    context = await asyncio.to_thread(
+        _build_single_run_context,
         repo_root=resolved_repo_root,
         prompt=prompt_text,
         storage_repo=storage_repo,
+        record_id=record_id,
+        run_id=run_id,
     )
     selected_model_id = _default_model_id(
         provider=provider,
@@ -920,23 +1025,25 @@ async def run_from_input(
         openai_transport=openai_transport,
         openai_reasoning_summary=openai_reasoning_summary,
     )
-    run_store.write_run(
-        RunRecord(
-            schema_version=1,
-            run_id=context.run_id,
-            run_mode=run_mode,
-            collection=collection,
-            created_at=context.created_at,
-            updated_at=context.created_at,
-            provider=provider,
-            model_id=selected_model_id,
-            sdk_package=sdk_package,
-            status="running",
-            category_slug=category_slug,
-            prompt_count=1,
+    if persist_run_metadata:
+        await asyncio.to_thread(
+            run_store.write_run,
+            RunRecord(
+                schema_version=1,
+                run_id=context.run_id,
+                run_mode=run_mode,
+                collection=collection,
+                created_at=context.created_at,
+                updated_at=context.created_at,
+                provider=provider,
+                model_id=selected_model_id,
+                sdk_package=sdk_package,
+                status="running",
+                category_slug=category_slug,
+                prompt_count=1,
+            ),
         )
-    )
-    storage_repo.write_text(context.staging_prompt_path, prompt_text)
+    await asyncio.to_thread(storage_repo.write_text, context.staging_prompt_path, prompt_text)
 
     actual_model_id = selected_model_id
     loaded_system_prompt_path = resolve_system_prompt_path(
@@ -968,66 +1075,91 @@ async def run_from_input(
             actual_model_id = agent.llm.model_id
     except Exception as exc:
         finished_at = _utc_now()
-        run_store.write_run(
-            RunRecord(
-                schema_version=1,
-                run_id=context.run_id,
-                run_mode=run_mode,
-                collection=collection,
-                created_at=context.created_at,
-                updated_at=finished_at,
-                provider=provider,
-                model_id=actual_model_id,
-                sdk_package=sdk_package,
-                status="failed",
-                category_slug=category_slug,
-                prompt_count=1,
+        result_row = {
+            "record_id": context.record_id,
+            "status": "failed",
+            "message": f"Runtime error: {exc}",
+            "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+        }
+        if persist_run_metadata:
+            await asyncio.to_thread(
+                run_store.write_run,
+                RunRecord(
+                    schema_version=1,
+                    run_id=context.run_id,
+                    run_mode=run_mode,
+                    collection=collection,
+                    created_at=context.created_at,
+                    updated_at=finished_at,
+                    provider=provider,
+                    model_id=actual_model_id,
+                    sdk_package=sdk_package,
+                    status="failed",
+                    category_slug=category_slug,
+                    prompt_count=1,
+                ),
             )
-        )
-        run_store.append_result(
-            context.run_id,
-            {
-                "record_id": context.record_id,
-                "status": "failed",
-                "message": f"Runtime error: {exc}",
-                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
-            },
-        )
+        if persist_run_result:
+            await asyncio.to_thread(run_store.append_result, context.run_id, result_row)
         logger.exception("Agent runtime failed")
-        return 2
+        return RunExecutionOutcome(
+            exit_code=2,
+            run_id=context.run_id,
+            record_id=context.record_id,
+            status="failed",
+            message=result_row["message"],
+            staging_dir=context.staging_dir,
+            provider=provider,
+            model_id=actual_model_id,
+            sdk_package=sdk_package,
+        )
 
     if not result.success:
         finished_at = _utc_now()
-        run_store.write_run(
-            RunRecord(
-                schema_version=1,
-                run_id=context.run_id,
-                run_mode=run_mode,
-                collection=collection,
-                created_at=context.created_at,
-                updated_at=finished_at,
-                provider=provider,
-                model_id=actual_model_id,
-                sdk_package=sdk_package,
-                status="failed",
-                category_slug=category_slug,
-                prompt_count=1,
+        result_row = {
+            "record_id": context.record_id,
+            "status": "failed",
+            "message": result.message,
+            "turn_count": result.turn_count,
+            "tool_call_count": result.tool_call_count,
+            "compile_attempt_count": result.compile_attempt_count,
+            "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+        }
+        if persist_run_metadata:
+            await asyncio.to_thread(
+                run_store.write_run,
+                RunRecord(
+                    schema_version=1,
+                    run_id=context.run_id,
+                    run_mode=run_mode,
+                    collection=collection,
+                    created_at=context.created_at,
+                    updated_at=finished_at,
+                    provider=provider,
+                    model_id=actual_model_id,
+                    sdk_package=sdk_package,
+                    status="failed",
+                    category_slug=category_slug,
+                    prompt_count=1,
+                ),
             )
-        )
-        run_store.append_result(
-            context.run_id,
-            {
-                "record_id": context.record_id,
-                "status": "failed",
-                "message": result.message,
-                "turn_count": result.turn_count,
-                "tool_call_count": result.tool_call_count,
-                "compile_attempt_count": result.compile_attempt_count,
-                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
-            },
-        )
+        if persist_run_result:
+            await asyncio.to_thread(run_store.append_result, context.run_id, result_row)
         logger.error("Agent failed: %s", result.message)
-        return 2
+        return RunExecutionOutcome(
+            exit_code=2,
+            run_id=context.run_id,
+            record_id=context.record_id,
+            status="failed",
+            message=result.message,
+            staging_dir=context.staging_dir,
+            turn_count=result.turn_count,
+            tool_call_count=result.tool_call_count,
+            compile_attempt_count=result.compile_attempt_count,
+            provider=provider,
+            model_id=actual_model_id,
+            sdk_package=sdk_package,
+        )
 
     if result.usage:
         logger.info("Total tokens: %s", result.usage)
@@ -1056,42 +1188,57 @@ async def run_from_input(
             compile_warnings = list(report.warnings)
         except Exception as exc:
             finished_at = _utc_now()
-            run_store.write_run(
-                RunRecord(
-                    schema_version=1,
-                    run_id=context.run_id,
-                    run_mode=run_mode,
-                    collection=collection,
-                    created_at=context.created_at,
-                    updated_at=finished_at,
-                    provider=provider,
-                    model_id=actual_model_id,
-                    sdk_package=sdk_package,
-                    status="failed",
-                    category_slug=category_slug,
-                    prompt_count=1,
+            result_row = {
+                "record_id": context.record_id,
+                "status": "failed",
+                "message": f"Failed to compile URDF: {exc}",
+                "turn_count": result.turn_count,
+                "tool_call_count": result.tool_call_count,
+                "compile_attempt_count": result.compile_attempt_count,
+                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+            }
+            if persist_run_metadata:
+                await asyncio.to_thread(
+                    run_store.write_run,
+                    RunRecord(
+                        schema_version=1,
+                        run_id=context.run_id,
+                        run_mode=run_mode,
+                        collection=collection,
+                        created_at=context.created_at,
+                        updated_at=finished_at,
+                        provider=provider,
+                        model_id=actual_model_id,
+                        sdk_package=sdk_package,
+                        status="failed",
+                        category_slug=category_slug,
+                        prompt_count=1,
+                    ),
                 )
-            )
-            run_store.append_result(
-                context.run_id,
-                {
-                    "record_id": context.record_id,
-                    "status": "failed",
-                    "message": f"Failed to compile URDF: {exc}",
-                    "turn_count": result.turn_count,
-                    "tool_call_count": result.tool_call_count,
-                    "compile_attempt_count": result.compile_attempt_count,
-                    "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
-                },
-            )
+            if persist_run_result:
+                await asyncio.to_thread(run_store.append_result, context.run_id, result_row)
             logger.error("Failed to compile URDF: %s", exc)
-            return 3
+            return RunExecutionOutcome(
+                exit_code=3,
+                run_id=context.run_id,
+                record_id=context.record_id,
+                status="failed",
+                message=result_row["message"],
+                staging_dir=context.staging_dir,
+                turn_count=result.turn_count,
+                tool_call_count=result.tool_call_count,
+                compile_attempt_count=result.compile_attempt_count,
+                provider=provider,
+                model_id=actual_model_id,
+                sdk_package=sdk_package,
+            )
     final_code = result.final_code
     if final_code is None:
         final_code = context.script_path.read_text(encoding="utf-8")
 
     try:
-        record_dir = _write_success_record(
+        record_dir = await asyncio.to_thread(
+            _write_success_record,
             repo_root=resolved_repo_root,
             storage_repo=storage_repo,
             record_store=record_store,
@@ -1124,7 +1271,62 @@ async def run_from_input(
         )
     except Exception as exc:
         finished_at = _utc_now()
-        run_store.write_run(
+        result_row = {
+            "record_id": context.record_id,
+            "status": "failed",
+            "message": f"Failed to persist record: {exc}",
+            "turn_count": result.turn_count,
+            "tool_call_count": result.tool_call_count,
+            "compile_attempt_count": result.compile_attempt_count,
+            "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
+        }
+        if persist_run_metadata:
+            await asyncio.to_thread(
+                run_store.write_run,
+                RunRecord(
+                    schema_version=1,
+                    run_id=context.run_id,
+                    run_mode=run_mode,
+                    collection=collection,
+                    created_at=context.created_at,
+                    updated_at=finished_at,
+                    provider=provider,
+                    model_id=actual_model_id,
+                    sdk_package=sdk_package,
+                    status="failed",
+                    category_slug=category_slug,
+                    prompt_count=1,
+                ),
+            )
+        if persist_run_result:
+            await asyncio.to_thread(run_store.append_result, context.run_id, result_row)
+        logger.error("Failed to persist record: %s", exc)
+        return RunExecutionOutcome(
+            exit_code=4,
+            run_id=context.run_id,
+            record_id=context.record_id,
+            status="failed",
+            message=result_row["message"],
+            staging_dir=context.staging_dir,
+            turn_count=result.turn_count,
+            tool_call_count=result.tool_call_count,
+            compile_attempt_count=result.compile_attempt_count,
+            provider=provider,
+            model_id=actual_model_id,
+            sdk_package=sdk_package,
+        )
+    finished_at = _utc_now()
+    result_row = {
+        "record_id": context.record_id,
+        "status": "success",
+        "record_dir": _relative_to_repo(record_dir, resolved_repo_root),
+        "turn_count": result.turn_count,
+        "tool_call_count": result.tool_call_count,
+        "compile_attempt_count": result.compile_attempt_count,
+    }
+    if persist_run_metadata:
+        await asyncio.to_thread(
+            run_store.write_run,
             RunRecord(
                 schema_version=1,
                 run_id=context.run_id,
@@ -1135,63 +1337,39 @@ async def run_from_input(
                 provider=provider,
                 model_id=actual_model_id,
                 sdk_package=sdk_package,
-                status="failed",
+                status="success",
                 category_slug=category_slug,
                 prompt_count=1,
-            )
+            ),
         )
-        run_store.append_result(
-            context.run_id,
-            {
-                "record_id": context.record_id,
-                "status": "failed",
-                "message": f"Failed to persist record: {exc}",
-                "turn_count": result.turn_count,
-                "tool_call_count": result.tool_call_count,
-                "compile_attempt_count": result.compile_attempt_count,
-                "staging_dir": _relative_to_repo(context.staging_dir, resolved_repo_root),
-            },
-        )
-        logger.error("Failed to persist record: %s", exc)
-        return 4
-    finished_at = _utc_now()
-    run_store.write_run(
-        RunRecord(
-            schema_version=1,
-            run_id=context.run_id,
-            run_mode=run_mode,
-            collection=collection,
-            created_at=context.created_at,
-            updated_at=finished_at,
-            provider=provider,
-            model_id=actual_model_id,
-            sdk_package=sdk_package,
-            status="success",
-            category_slug=category_slug,
-            prompt_count=1,
-        )
-    )
-    run_store.append_result(
-        context.run_id,
-        {
-            "record_id": context.record_id,
-            "status": "success",
-            "record_dir": _relative_to_repo(record_dir, resolved_repo_root),
-            "turn_count": result.turn_count,
-            "tool_call_count": result.tool_call_count,
-            "compile_attempt_count": result.compile_attempt_count,
-        },
-    )
+    if persist_run_result:
+        await asyncio.to_thread(run_store.append_result, context.run_id, result_row)
     logger.info("Wrote record to %s", record_dir)
     logger.info("Wrote URDF to %s", context.record_urdf_path)
 
-    return 0
+    return RunExecutionOutcome(
+        exit_code=0,
+        run_id=context.run_id,
+        record_id=context.record_id,
+        status="success",
+        message=None,
+        record_dir=record_dir,
+        staging_dir=context.staging_dir,
+        turn_count=result.turn_count,
+        tool_call_count=result.tool_call_count,
+        compile_attempt_count=result.compile_attempt_count,
+        provider=provider,
+        model_id=actual_model_id,
+        sdk_package=sdk_package,
+    )
 
 
 async def rerun_record_in_place(
     *,
     repo_root: Path,
     record_id: str,
+    model_id: str | None = None,
+    thinking_level: str | None = None,
     display_enabled: Optional[bool] = None,
 ) -> int:
     resolved_repo_root = repo_root.resolve()
@@ -1231,9 +1409,9 @@ async def rerun_record_in_place(
         return 1
 
     provider = _first_string(generation.get("provider"), existing_record.get("provider"))
-    model_id = _optional_string(generation.get("model_id"))
+    stored_model_id = _optional_string(generation.get("model_id"))
     openai_transport = _first_string(generation.get("openai_transport"), "http")
-    thinking_level = _first_string(generation.get("thinking_level"), "high")
+    stored_thinking_level = _first_string(generation.get("thinking_level"), "high")
     max_turns = int(generation.get("max_turns") or 30)
     openai_reasoning_summary = (
         _optional_string(generation.get("openai_reasoning_summary")) or "auto"
@@ -1244,6 +1422,9 @@ async def rerun_record_in_place(
     )
     sdk_docs_mode = _first_string(prompting.get("sdk_docs_mode"), "full")
     sdk_package = _first_string(sdk.get("sdk_package"), existing_record.get("sdk_package"))
+    model_id = _optional_string(model_id) or stored_model_id
+    thinking_level = _optional_string(thinking_level) or stored_thinking_level
+    provider = _infer_provider_from_model_id(model_id) or provider
 
     try:
         image_path = _resolve_input_image_for_record(

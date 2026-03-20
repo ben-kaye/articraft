@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -7,6 +8,8 @@ from pathlib import Path
 
 from storage.models import CompileReport, Provenance, Record
 from storage.repo import StorageRepo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,12 +43,25 @@ class RecordStore:
         return path
 
     def copy_input_image(
-        self, record_id: str, source: Path, destination_name: str | None = None
-    ) -> Path:
+        self,
+        record_id: str,
+        source: Path,
+        destination_name: str | None = None,
+        *,
+        missing_ok: bool = False,
+    ) -> Path | None:
         inputs_dir = self.repo.layout.record_inputs_dir(record_id)
         inputs_dir.mkdir(parents=True, exist_ok=True)
         destination = inputs_dir / (destination_name or source.name)
-        shutil.copy2(source, destination)
+        if source.resolve() == destination.resolve():
+            return destination
+        try:
+            shutil.copy2(source, destination)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
+            logger.warning("Skipping missing input image for record %s: %s", record_id, source)
+            return None
         return destination
 
     def load_record(self, record_id: str) -> dict | None:

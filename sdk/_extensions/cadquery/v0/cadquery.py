@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from sdk._core.v0.assets import AssetContextLike, resolve_asset_context
-from sdk._core.v0.errors import ValidationError
 from sdk._core.v0.types import Mesh
 
 Vec3 = tuple[float, float, float]
@@ -85,14 +84,8 @@ def tessellate_cadquery(
         vertices_raw, triangles_raw = shape.tessellate(float(tolerance))
 
     scale = float(unit_scale)
-    vertices = [
-        tuple(coord * scale for coord in _vector_xyz(vertex))
-        for vertex in vertices_raw
-    ]
-    triangles = [
-        (int(face[0]), int(face[1]), int(face[2]))
-        for face in triangles_raw
-    ]
+    vertices = [tuple(coord * scale for coord in _vector_xyz(vertex)) for vertex in vertices_raw]
+    triangles = [(int(face[0]), int(face[1]), int(face[2])) for face in triangles_raw]
 
     if not vertices:
         raise ValueError("CadQuery tessellation produced no vertices")
@@ -107,6 +100,8 @@ def _export_friendly_mesh_filename(filename: str) -> str:
         return filename
 
     normalized = filename.replace("\\", "/")
+    if normalized.startswith("assets/meshes/"):
+        return normalized
     if normalized.startswith("meshes/"):
         return normalized
 
@@ -116,11 +111,17 @@ def _export_friendly_mesh_filename(filename: str) -> str:
         return filename
 
     parts = list(path.parts)
+    asset_meshes_indices = [
+        i for i in range(len(parts) - 1) if parts[i] == "assets" and parts[i + 1] == "meshes"
+    ]
+    if asset_meshes_indices:
+        return Path(*parts[asset_meshes_indices[-1] :]).as_posix()
+
     meshes_indices = [i for i, part in enumerate(parts) if part == "meshes"]
     if not meshes_indices:
         return filename
 
-    return Path(*parts[meshes_indices[-1]:]).as_posix()
+    return Path(*parts[meshes_indices[-1] :]).as_posix()
 
 
 def _resolve_export_path(

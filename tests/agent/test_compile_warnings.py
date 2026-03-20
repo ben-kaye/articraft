@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from agent.compiler import _warn_geometry_scale_anomalies
+import pytest
+
+from agent.compiler import _validate_unsupported_parts, _warn_geometry_scale_anomalies
 from agent.feedback import build_compile_signal_bundle
 from agent.harness import ArticraftAgent
 from agent.models import CompileReport
@@ -118,3 +121,66 @@ def test_harness_injects_structured_compile_signals() -> None:
     assert "Geometry outlier dimensions detected." in conversation[0]["content"]
     assert "visual connectivity drift detected" in conversation[0]["content"]
     assert "hinge nesting" in conversation[0]["content"]
+
+
+def test_validate_unsupported_parts_keeps_visual_findings_as_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    findings_by_source = {
+        "visual": [
+            SimpleNamespace(
+                part="lid",
+                nearest_part="base",
+                min_distance=0.012,
+                pose_index=0,
+                pose={},
+                backend="aabb",
+            )
+        ],
+        "collision": [],
+    }
+
+    fake_sdk = SimpleNamespace(
+        default_contact_tol_from_env=lambda: 1e-6,
+        find_unsupported_parts=lambda _model, **kwargs: findings_by_source[
+            kwargs["geometry_source"]
+        ],
+    )
+    monkeypatch.setattr("agent.compiler._import_sdk_module", lambda _sdk_package: fake_sdk)
+
+    warnings = _validate_unsupported_parts({"object_model": object()}, script_dir=Path.cwd())
+
+    assert len(warnings) == 1
+    assert "URDF compile warning (visual, non-blocking): isolated parts detected" in warnings[0]
+
+
+def test_validate_unsupported_parts_promotes_collision_findings_to_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    findings_by_source = {
+        "visual": [],
+        "collision": [
+            SimpleNamespace(
+                part="fan",
+                nearest_part="nacelle",
+                min_distance=0.021,
+                pose_index=0,
+                pose={},
+                backend="fcl",
+            )
+        ],
+    }
+
+    fake_sdk = SimpleNamespace(
+        default_contact_tol_from_env=lambda: 1e-6,
+        find_unsupported_parts=lambda _model, **kwargs: findings_by_source[
+            kwargs["geometry_source"]
+        ],
+    )
+    monkeypatch.setattr("agent.compiler._import_sdk_module", lambda _sdk_package: fake_sdk)
+
+    with pytest.raises(
+        RuntimeError,
+        match="URDF compile failure \\(collision, blocking\\): isolated parts detected",
+    ):
+        _validate_unsupported_parts({"object_model": object()}, script_dir=Path.cwd())

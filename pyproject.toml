@@ -21,11 +21,13 @@ dependencies = [
     "coacd>=1.0.7",
     "websockets>=15.0.1",
     "networkx>=3.6.1",
+    "rtree>=1.4.1",
 ]
 
 [project.scripts]
 articraft-dataset = "cli.dataset:main"
 articraft-workbench = "cli.workbench:main"
+articraft-performance = "performance.runner:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -35,6 +37,7 @@ build-backend = "hatchling.build"
 packages = [
     "agent",
     "cli",
+    "performance",
     "storage",
     "viewer",
     "sdk",

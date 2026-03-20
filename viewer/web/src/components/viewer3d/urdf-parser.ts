@@ -299,8 +299,8 @@ function parseJoint(jointEl: Element): UrdfJoint {
 }
 
 /**
- * Rewrite mesh filenames from absolute package:// paths to relative paths
- * e.g., "package://robot/meshes/link.dae" -> "meshes/link.dae"
+ * Rewrite mesh filenames from absolute package:// paths to repo-relative paths
+ * e.g., "package://robot/assets/meshes/link.dae" -> "assets/meshes/link.dae"
  */
 export function rewriteAbsoluteMeshFilenames(urdfSpec: UrdfSpec): UrdfSpec {
   const rewrite = (filename: string): string => {

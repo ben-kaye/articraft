@@ -28,6 +28,8 @@ const SEGMENTATION_PALETTE = [
   '#ff3d77',
 ] as const;
 const SEGMENTATION_SNAPSHOT_KEY = '__articraftSegmentColorSnapshot__';
+const PREVIEW_MAX_PIXEL_RATIO = 1.25;
+const DEFAULT_MAX_PIXEL_RATIO = 2;
 
 type MaterialWithColor = THREE.Material & {
   color?: THREE.Color;
@@ -216,7 +218,12 @@ export function SceneCanvas({
   const [selectedPartName, setSelectedPartName] = useState<string | null>(null);
   const isStagingSelection = selectionKey?.startsWith("staging:") ?? false;
 
-  const { scene, camera, renderer, controls, gridGroup, axisGroup, sceneReady } = useThreeScene(containerRef);
+  const { scene, camera, renderer, controls, gridGroup, axisGroup, sceneReady } = useThreeScene(
+    containerRef,
+    {
+      maxPixelRatio: renderOptions.autoAnimate ? PREVIEW_MAX_PIXEL_RATIO : DEFAULT_MAX_PIXEL_RATIO,
+    },
+  );
   const { urdfSpec, jointNodes, jointFrames, loading, error } = useUrdfLoader(
     baseFileUrl,
     assetRevisionKey,

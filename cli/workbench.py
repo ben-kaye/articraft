@@ -129,6 +129,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "record",
         help="Record ID or canonical record directory path under data/records/.",
     )
+    rerun.add_argument(
+        "--model-id",
+        default=None,
+        help="Optional model override for this rerun. A provider switch is inferred for known model families.",
+    )
+    rerun.add_argument(
+        "--thinking-level",
+        default=None,
+        help="Optional thinking level override for this rerun.",
+    )
     subparsers.add_parser("status", help="Show workbench storage status.")
     return parser
 
@@ -222,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
             rerun_record_in_place(
                 repo_root=args.repo_root,
                 record_id=record_id,
+                model_id=args.model_id,
+                thinking_level=args.thinking_level,
             )
         )
         if exit_code != 0:

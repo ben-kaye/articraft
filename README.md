@@ -139,3 +139,48 @@ Precompile all saved records that are still missing generated artifacts:
 ```bash
 just compile-all
 ```
+
+## 8. Run A Dataset Batch From CSV
+
+Tracked dataset batch specs live under `data/batch_specs/`. Each CSV row defines one dataset generation job, including its own model settings.
+
+Create a new empty spec with the correct header:
+
+```bash
+just name=<batch-id> batch-spec-new
+```
+
+Use this v1 header:
+
+```csv
+row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label
+```
+
+Notes:
+
+- Required columns: `category_slug`, `prompt`, `provider`, `model_id`, `thinking_level`, `max_turns`, `sdk_package`
+- `category_title` is required when a row introduces a new category
+- `row_id` and `label` are optional; if `row_id` is omitted it defaults to `row_0001`, `row_0002`, and so on
+- `image_path` is not supported in v1
+- `provider` must be `openai` or `gemini`
+- `thinking_level` must be `low`, `med`, or `high`
+
+Run a batch directly:
+
+```bash
+uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --concurrency 8
+```
+
+Resume the latest run for that spec:
+
+```bash
+uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --concurrency 8 --resume
+```
+
+Or use the `just` shortcut:
+
+```bash
+just spec=data/batch_specs/<batch-id>.csv concurrency=8 dataset-batch
+```
+
+Batch rows run concurrently up to the requested limit, successful outputs are promoted into canonical dataset storage under `data/records/`, and resumable batch state is stored under `data/cache/runs/<run_id>/`.

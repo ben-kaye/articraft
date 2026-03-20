@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from storage.materialize import infer_materialization_status
 from storage.repo import StorageRepo
 from viewer.api.store import ViewerStore
 
@@ -26,6 +28,21 @@ class CompileCandidate:
     force: bool = False
 
 
+_EXCEPTION_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)):\s*")
+_GEOMETRY_QC_MARKERS = (
+    "isolated parts detected",
+    "mesh connectivity check failed",
+    "visual connectivity check failed",
+    "visual/collision geometry appear misaligned",
+    "overlaps detected",
+    "check_no_overlaps(",
+    "expect_aabb_",
+    "expect_xy_distance",
+    "expect_above",
+    "expect_joint_motion_axis",
+)
+
+
 def _record_artifact_path(record_dir: Path, record: dict | None, key: str, default: str) -> Path:
     artifacts = record.get("artifacts") if isinstance(record, dict) else None
     if isinstance(artifacts, dict):
@@ -33,15 +50,6 @@ def _record_artifact_path(record_dir: Path, record: dict | None, key: str, defau
         if isinstance(value, str) and value.strip():
             return record_dir / value
     return record_dir / default
-
-
-def _record_assets_available(repo: StorageRepo, record_id: str) -> bool:
-    assets_root = repo.layout.record_assets_dir(record_id)
-    for child_name in ("meshes", "glb", "viewer"):
-        child = assets_root / child_name
-        if child.exists() and any(child.iterdir()):
-            return True
-    return False
 
 
 def _collect_candidates(repo_root: Path, *, force: bool) -> tuple[list[CompileCandidate], int]:
@@ -79,7 +87,7 @@ def _collect_candidates(repo_root: Path, *, force: bool) -> tuple[list[CompileCa
             if isinstance(compile_report, dict) and isinstance(compile_report.get("status"), str)
             else None
         )
-        assets_available = _record_assets_available(repo, record_id)
+        materialization_status = infer_materialization_status(repo, record_id, record=record)
 
         if not urdf_path.exists():
             candidates.append(
@@ -87,7 +95,7 @@ def _collect_candidates(repo_root: Path, *, force: bool) -> tuple[list[CompileCa
             )
             continue
 
-        if not assets_available:
+        if materialization_status == "missing":
             candidates.append(
                 CompileCandidate(
                     record_id=record_id,
@@ -117,6 +125,7 @@ def _build_summary_table(
     candidates: int,
     compiled: int,
     failed: int,
+    failure_label: str = "Failed",
 ) -> Table:
     table = Table(title="Compile Summary")
     table.add_column("Metric")
@@ -125,9 +134,52 @@ def _build_summary_table(
     table.add_row("Missing model.py", str(skipped_missing_script))
     table.add_row("Queued for compile", str(candidates))
     table.add_row("Compiled", str(compiled))
-    table.add_row("Failed", str(failed))
+    table.add_row(failure_label, str(failed))
     table.add_row("Already up to date", str(max(scanned - skipped_missing_script - candidates, 0)))
     return table
+
+
+def _strip_compile_error_wrappers(record_id: str, error: str) -> str:
+    message = error.strip()
+    prefix = f"Failed to compile assets for {record_id}: "
+    if message.startswith(prefix):
+        message = message[len(prefix) :].lstrip()
+    while True:
+        match = _EXCEPTION_PREFIX_RE.match(message)
+        if match is None:
+            break
+        message = message[match.end() :].lstrip()
+    return message
+
+
+def _is_geometry_qc_issue(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _GEOMETRY_QC_MARKERS)
+
+
+def _rewrite_nonblocking_geometry_issue(message: str) -> str:
+    if message.startswith("URDF compile failure ("):
+        header_end = message.find("):")
+        if header_end != -1:
+            context = message[len("URDF compile failure (") : header_end]
+            detail = message[header_end + 2 :].lstrip(": ").lstrip()
+            geometry_source = context.split(",", 1)[0].strip() or "geometry"
+            return f"Geometry QC issue ({geometry_source}, non-blocking in compile-all): {detail}"
+    return f"Geometry QC issue (non-blocking in compile-all): {message}"
+
+
+def _format_bulk_compile_error(record_id: str, error: str, *, strict: bool) -> str:
+    message = _strip_compile_error_wrappers(record_id, error)
+    if strict or not _is_geometry_qc_issue(message):
+        return message
+    return _rewrite_nonblocking_geometry_issue(message)
+
+
+def _should_suppress_bulk_compile_error(record_id: str, error: str, *, strict: bool) -> bool:
+    if strict:
+        return False
+    message = _strip_compile_error_wrappers(record_id, error)
+    return _is_geometry_qc_issue(message)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -147,6 +199,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Show which records would be compiled without doing any compile work.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero if any record compile fails.",
     )
     return parser
 
@@ -173,6 +230,7 @@ def main() -> int:
                 candidates=0,
                 compiled=0,
                 failed=0,
+                failure_label="Failed" if args.strict else "Non-blocking issues",
             )
         )
         console.print("[green]No records need compilation.[/green]")
@@ -192,6 +250,7 @@ def main() -> int:
                 candidates=len(candidates),
                 compiled=0,
                 failed=0,
+                failure_label="Failed" if args.strict else "Non-blocking issues",
             )
         )
         return 0
@@ -216,7 +275,9 @@ def main() -> int:
             )
             try:
                 result = viewer_store.materialize_record_assets(
-                    candidate.record_id, force=candidate.force
+                    candidate.record_id,
+                    force=candidate.force,
+                    ignore_geom_qc=not args.strict,
                 )
             except Exception as exc:
                 failures.append((candidate.record_id, str(exc)))
@@ -233,17 +294,42 @@ def main() -> int:
             candidates=len(candidates),
             compiled=compiled,
             failed=len(failures),
+            failure_label="Failed" if args.strict else "Non-blocking issues",
         )
     )
 
     if failures:
-        failure_table = Table(title="Compile Failures")
-        failure_table.add_column("Record ID")
-        failure_table.add_column("Error")
+        reported_failures: list[tuple[str, str]] = []
+        suppressed_issue_count = 0
         for record_id, error in failures:
-            failure_table.add_row(record_id, error)
-        console.print(failure_table)
-        return 1
+            if _should_suppress_bulk_compile_error(record_id, error, strict=args.strict):
+                suppressed_issue_count += 1
+                continue
+            reported_failures.append((record_id, error))
+
+        if reported_failures:
+            failure_table = Table(
+                title="Compile Failures" if args.strict else "Compile Issues (non-blocking)"
+            )
+            failure_table.add_column("Record ID")
+            failure_table.add_column("Error")
+            for record_id, error in reported_failures:
+                failure_table.add_row(
+                    record_id,
+                    _format_bulk_compile_error(record_id, error, strict=args.strict),
+                )
+            console.print(failure_table)
+        if suppressed_issue_count:
+            console.print(
+                "[yellow]Suppressed detailed output for "
+                f"{suppressed_issue_count} non-blocking geometry QC issue(s).[/yellow]"
+            )
+        if args.strict:
+            return 1
+        console.print(
+            "[yellow]Finished compiling queued records with non-blocking failures.[/yellow]"
+        )
+        return 0
 
     console.print("[green]Finished compiling queued records.[/green]")
     return 0

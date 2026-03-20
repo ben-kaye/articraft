@@ -122,10 +122,14 @@ function applyLoadedMeshPresentation(root: THREE.Object3D, options: LoadGeometry
     }
 
     if (materialSpec) {
-      child.material = createMaterial(materialSpec, {
-        side,
-        transparent: kind === 'collision',
-      });
+      child.material = kind === 'collision'
+        ? createMaterial(materialSpec, {
+            side,
+            transparent: true,
+          })
+        : createMaterial(materialSpec, {
+            side,
+          });
     }
 
     child.castShadow = kind === 'visual';

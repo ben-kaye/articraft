@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef, type JSX } from "react";
+import { startTransition, useState, useCallback, useEffect, useMemo, useRef, type JSX } from "react";
 import { ChevronLeft } from "lucide-react";
 import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
 import * as THREE from "three";
@@ -26,6 +26,7 @@ import { MissingArtifactsOverlay } from "@/components/layout/MissingArtifactsOve
 const JOINT_POSE_QUERY_PARAM = "pose";
 const INSPECTOR_QUERY_PARAM = "inspector";
 const JOINT_POSE_PRECISION = 1e5;
+const PREVIEW_UI_SYNC_MS = 100;
 
 type JointPoseSnapshot = {
   recordId: string;
@@ -222,6 +223,9 @@ export default function ViewerShell(): JSX.Element {
   });
   const inspectorPanelRef = useRef<PanelImperativeHandle | null>(null);
   const initialInspectorCollapsedRef = useRef(inspectorCollapsed);
+  const jointValuesRef = useRef<Map<string, number>>(new Map());
+  const previewJointValuesRef = useRef<Map<string, number>>(new Map());
+  const previewUiLastSyncRef = useRef(0);
 
   const { jointValues, setJointValue, applyJointValues, resetAll } = useJointController(jointNodes, urdfSpec);
 
@@ -255,6 +259,10 @@ export default function ViewerShell(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    jointValuesRef.current = jointValues;
+  }, [jointValues]);
+
+  useEffect(() => {
     if (!initialInspectorCollapsedRef.current) {
       return;
     }
@@ -282,8 +290,10 @@ export default function ViewerShell(): JSX.Element {
 
   useEffect(() => {
     if (!urdfSpec || !renderOptions.autoAnimate) {
+      previewJointValuesRef.current = new Map();
+      previewUiLastSyncRef.current = 0;
       setPreviewJointValues(new Map());
-      applyJointValues(jointValues);
+      applyJointValues(jointValuesRef.current);
       return;
     }
 
@@ -309,7 +319,13 @@ export default function ViewerShell(): JSX.Element {
         nextValues.set(joint.name, previewJointValue(joint, jointPhase));
       }
 
-      setPreviewJointValues(nextValues);
+      previewJointValuesRef.current = nextValues;
+      if (now - previewUiLastSyncRef.current >= PREVIEW_UI_SYNC_MS) {
+        previewUiLastSyncRef.current = now;
+        startTransition(() => {
+          setPreviewJointValues(new Map(nextValues));
+        });
+      }
       applyJointValues(nextValues);
       frameId = requestAnimationFrame(tick);
     };
@@ -318,10 +334,12 @@ export default function ViewerShell(): JSX.Element {
 
     return () => {
       cancelAnimationFrame(frameId);
+      previewJointValuesRef.current = new Map();
+      previewUiLastSyncRef.current = 0;
       setPreviewJointValues(new Map());
-      applyJointValues(jointValues);
+      applyJointValues(jointValuesRef.current);
     };
-  }, [applyJointValues, jointValues, renderOptions.autoAnimate, urdfSpec]);
+  }, [applyJointValues, renderOptions.autoAnimate, urdfSpec]);
 
   const inspectorRenderOptions = {
     showEdges: renderOptions.showEdges,

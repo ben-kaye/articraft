@@ -61,7 +61,65 @@ def test_workbench_rerun_record_command(
     updated_record = json.loads((record_dir / "record.json").read_text(encoding="utf-8"))
     assert updated_record["record_id"] == record_dir.name
     assert updated_record["source"]["run_id"] != original_run_id
-    assert (repo_root / "data" / "cache" / "search.sqlite").exists()
+    assert (repo_root / "data" / "cache" / "search_index.json").exists()
+
+    captured = capsys.readouterr().out
+    assert f"reran record_id={record_dir.name}" in captured
+    assert "search_index=" in captured
+
+
+def test_workbench_rerun_record_command_accepts_model_and_thinking_overrides(
+    fake_agent: None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_root = tmp_path
+    exit_code = asyncio.run(
+        runner.run_from_input(
+            "make a countertop mixer",
+            prompt_text="make a countertop mixer",
+            display_prompt="make a countertop mixer",
+            repo_root=repo_root,
+            image_path=None,
+            provider="openai",
+            model_id="gpt-5.4",
+            thinking_level="high",
+            max_turns=30,
+            system_prompt_path="designer_system_prompt.txt",
+            sdk_package="sdk",
+            sdk_docs_mode="full",
+            label="mixer rerun",
+            tags=["mixer"],
+        )
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    record_dir = next((repo_root / "data" / "records").iterdir())
+
+    assert (
+        workbench_main(
+            [
+                "--repo-root",
+                str(repo_root),
+                "rerun-record",
+                str(record_dir),
+                "--model-id",
+                "gemini-3-flash-preview",
+                "--thinking-level",
+                "low",
+            ]
+        )
+        == 0
+    )
+
+    updated_record = json.loads((record_dir / "record.json").read_text(encoding="utf-8"))
+    updated_provenance = json.loads((record_dir / "provenance.json").read_text(encoding="utf-8"))
+    assert updated_record["provider"] == "gemini"
+    assert updated_record["model_id"] == "gemini-3-flash-preview"
+    assert updated_provenance["generation"]["provider"] == "gemini"
+    assert updated_provenance["generation"]["model_id"] == "gemini-3-flash-preview"
+    assert updated_provenance["generation"]["thinking_level"] == "low"
 
     captured = capsys.readouterr().out
     assert f"reran record_id={record_dir.name}" in captured
@@ -117,7 +175,7 @@ def test_workbench_rerun_record_command_accepts_legacy_sdk_docs_mode(
     assert "search_index=" in captured
 
 
-def test_workbench_rerun_record_command_removes_legacy_record_root_assets(
+def test_workbench_rerun_record_command_replaces_canonical_derived_assets(
     fake_agent: None,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -144,15 +202,15 @@ def test_workbench_rerun_record_command_removes_legacy_record_root_assets(
     capsys.readouterr()
 
     record_dir = next((repo_root / "data" / "records").iterdir())
-    legacy_meshes_dir = record_dir / "meshes"
-    legacy_glb_dir = record_dir / "glb"
-    legacy_viewer_dir = record_dir / "viewer"
-    legacy_meshes_dir.mkdir(parents=True, exist_ok=True)
-    legacy_glb_dir.mkdir(parents=True, exist_ok=True)
-    legacy_viewer_dir.mkdir(parents=True, exist_ok=True)
-    (legacy_meshes_dir / "stale.obj").write_text("# stale\n", encoding="utf-8")
-    (legacy_glb_dir / "stale.glb").write_bytes(b"stale")
-    (legacy_viewer_dir / "stale.json").write_text("{}", encoding="utf-8")
+    canonical_meshes_dir = record_dir / "assets" / "meshes"
+    canonical_glb_dir = record_dir / "assets" / "glb"
+    canonical_viewer_dir = record_dir / "assets" / "viewer"
+    canonical_meshes_dir.mkdir(parents=True, exist_ok=True)
+    canonical_glb_dir.mkdir(parents=True, exist_ok=True)
+    canonical_viewer_dir.mkdir(parents=True, exist_ok=True)
+    (canonical_meshes_dir / "stale.obj").write_text("# stale\n", encoding="utf-8")
+    (canonical_glb_dir / "stale.glb").write_bytes(b"stale")
+    (canonical_viewer_dir / "stale.json").write_text("{}", encoding="utf-8")
 
     assert (
         workbench_main(
@@ -166,9 +224,9 @@ def test_workbench_rerun_record_command_removes_legacy_record_root_assets(
         == 0
     )
 
-    assert not legacy_meshes_dir.exists()
-    assert not legacy_glb_dir.exists()
-    assert not legacy_viewer_dir.exists()
+    assert not (canonical_meshes_dir / "stale.obj").exists()
+    assert not (canonical_glb_dir / "stale.glb").exists()
+    assert not (canonical_viewer_dir / "stale.json").exists()
     assert (record_dir / "assets" / "meshes" / "part.obj").exists()
 
 
@@ -233,7 +291,7 @@ def test_workbench_init_record_command(
     assert workbench["entries"][0]["label"] == "reading lamp draft"
     assert workbench["entries"][0]["tags"] == ["draft", "lamp"]
 
-    assert (repo_root / "data" / "cache" / "search.sqlite").exists()
+    assert (repo_root / "data" / "cache" / "search_index.json").exists()
 
     captured = capsys.readouterr().out
     assert f"initialized record_id={record_dir.name}" in captured

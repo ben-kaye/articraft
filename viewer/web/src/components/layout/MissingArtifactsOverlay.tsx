@@ -15,7 +15,7 @@ export function MissingArtifactsOverlay({
 }: MissingArtifactsOverlayProps): JSX.Element {
   const title = hasCompileReport ? "Viewer artifacts are missing" : "Viewer artifacts are unavailable";
   const description = hasCompileReport
-    ? "A compile report exists for this record, but the saved URDF or mesh files the viewer needs are missing or stale on disk."
+    ? "A compile report exists for this record, but the saved URDF or mesh files the viewer needs are missing on disk."
     : "This record does not currently have the saved URDF and mesh files the viewer needs.";
 
   return (

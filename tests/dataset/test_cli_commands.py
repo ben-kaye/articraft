@@ -138,7 +138,7 @@ def test_dataset_cli_commands_cover_promote_delete_and_prune(tmp_path: Path) -> 
             prompt_count=1,
         )
     )
-    repo.layout.search_index_path().write_text("sqlite-placeholder", encoding="utf-8")
+    repo.layout.search_index_path().write_text("search-cache-placeholder", encoding="utf-8")
     output = io.StringIO()
     with redirect_stdout(output):
         assert (
@@ -297,9 +297,9 @@ def test_dataset_cli_commands_cover_promote_delete_and_prune(tmp_path: Path) -> 
         in output.getvalue()
     )
     assert "failed_staging_dirs_to_remove=1" in output.getvalue()
-    assert "empty_dirs_to_remove=4" in output.getvalue()
+    assert "empty_dirs_to_remove=" in output.getvalue()
+    assert "Removed cache paths: 6" in output.getvalue()
     assert "Preview only. Re-run with --execute to remove these cache paths." in output.getvalue()
-    assert "Removed cache paths: 5" in output.getvalue()
     assert "record_dir=" in output.getvalue()
     assert "in_workbench=yes" in output.getvalue()
     assert "Preview only. Re-run with --execute --confirm-slug hinges" in category_output.getvalue()

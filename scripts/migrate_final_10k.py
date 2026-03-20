@@ -757,10 +757,15 @@ def _clear_data_root(data_root: Path, *, preserve_dirs: set[str] | None = None) 
 
 def _mesh_subpath_from_manifest_value(mesh_value: str) -> Path:
     normalized = mesh_value.replace("\\", "/")
-    marker = "/meshes/"
+    marker = "/assets/meshes/"
     marker_index = normalized.rfind(marker)
     if marker_index < 0:
-        raise MigrationError(f"Collision cache mesh path does not contain /meshes/: {mesh_value}")
+        marker = "/meshes/"
+        marker_index = normalized.rfind(marker)
+    if marker_index < 0:
+        raise MigrationError(
+            f"Collision cache mesh path does not contain /assets/meshes/ or /meshes/: {mesh_value}"
+        )
     relative_mesh = normalized[marker_index + len(marker) :]
     if not relative_mesh:
         raise MigrationError(

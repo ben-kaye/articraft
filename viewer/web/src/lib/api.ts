@@ -1,5 +1,7 @@
 import type {
+  CategoryOption,
   CostFilter,
+  DatasetEntry,
   DeleteStagingResult,
   DeleteRecordResult,
   OpenRecordFolderResult,
@@ -59,6 +61,10 @@ export async function fetchRepoStats(): Promise<RepoStats> {
   return fetchJson<RepoStats>("/api/stats");
 }
 
+export async function fetchCategories(): Promise<CategoryOption[]> {
+  return fetchJson<CategoryOption[]>("/api/categories");
+}
+
 export async function searchRecords(params: {
   query: string;
   source: "workbench" | "dataset";
@@ -108,6 +114,29 @@ export async function deleteRecord(recordId: string): Promise<DeleteRecordResult
     throw new Error(await readErrorMessage(response));
   }
   return (await response.json()) as DeleteRecordResult;
+}
+
+export async function promoteRecordToDataset(
+  recordId: string,
+  params: {
+    categoryTitle: string;
+    datasetId?: string | null;
+  },
+): Promise<DatasetEntry> {
+  const response = await fetch(`/api/records/${encodeURIComponent(recordId)}/promote`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      category_title: params.categoryTitle,
+      dataset_id: params.datasetId?.trim() ? params.datasetId.trim() : null,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  return (await response.json()) as DatasetEntry;
 }
 
 export async function deleteStagingEntry(

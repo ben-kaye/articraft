@@ -22,6 +22,21 @@ from agent.prompts import normalize_sdk_package
 
 logger = logging.getLogger(__name__)
 
+_EXCEPTION_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)):\s*")
+_GEOMETRY_QC_MARKERS = (
+    "isolated parts detected",
+    "geometry overlap check reported overlaps",
+    "mesh connectivity check failed",
+    "visual connectivity check failed",
+    "visual/collision geometry appear misaligned",
+    "check_no_overlaps(",
+    "expect_aabb_",
+    "expect_xy_distance",
+    "expect_above",
+    "expect_joint_motion_axis",
+    "urdf tests failed:",
+)
+
 
 def _import_sdk_module(sdk_package: str, module_suffix: str = "") -> Any:
     package = normalize_sdk_package(sdk_package)
@@ -38,11 +53,19 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def compile_urdf(script_path: Path, *, sdk_package: str = "sdk") -> str:
+def compile_urdf(
+    script_path: Path,
+    *,
+    sdk_package: str = "sdk",
+    run_checks: bool = True,
+    ignore_geom_qc: bool = False,
+) -> str:
     """Execute a generated script and return the exported XML payload."""
     report = compile_urdf_report_maybe_timeout(
         script_path,
         sdk_package=sdk_package,
+        run_checks=run_checks,
+        ignore_geom_qc=ignore_geom_qc,
     )
     for warning in report.warnings:
         logger.warning("%s", warning)
@@ -80,7 +103,7 @@ def _extract_urdf_xml(globals_dict: dict, *, sdk_package: str = "sdk") -> str | 
     return urdf_xml
 
 
-def _attach_partial_compile_result(
+def _attach_compiled_urdf_on_failure(
     exc: BaseException,
     *,
     urdf_xml: str | None,
@@ -89,7 +112,7 @@ def _attach_partial_compile_result(
 ) -> BaseException:
     wrapped = RuntimeError(f"{type(exc).__name__}: {exc}")
     if isinstance(urdf_xml, str) and urdf_xml.strip():
-        setattr(wrapped, "partial_urdf_xml", urdf_xml)
+        setattr(wrapped, "compiled_urdf_xml", urdf_xml)
     setattr(wrapped, "warnings", list(warnings))
     test_report = getattr(exc, "test_report", None)
     if test_report is not None:
@@ -98,7 +121,43 @@ def _attach_partial_compile_result(
     return wrapped
 
 
-def compile_urdf_report(script_path: Path, *, sdk_package: str = "sdk") -> CompileReport:
+def _strip_exception_prefixes(message: str) -> str:
+    stripped = message.strip()
+    while True:
+        match = _EXCEPTION_PREFIX_RE.match(stripped)
+        if match is None:
+            return stripped
+        stripped = stripped[match.end() :].lstrip()
+
+
+def _nonblocking_geometry_qc_warning_from_exception(exc: BaseException) -> str | None:
+    compiled_urdf_xml = getattr(exc, "compiled_urdf_xml", None)
+    if not isinstance(compiled_urdf_xml, str) or not compiled_urdf_xml.strip():
+        return None
+
+    message = _strip_exception_prefixes(str(exc))
+    lowered = message.lower()
+    if not any(marker in lowered for marker in _GEOMETRY_QC_MARKERS):
+        return None
+
+    if message.startswith("URDF compile failure ("):
+        header_end = message.find("):")
+        if header_end != -1:
+            context = message[len("URDF compile failure (") : header_end]
+            detail = message[header_end + 2 :].lstrip(": ").lstrip()
+            geometry_source = context.split(",", 1)[0].strip() or "geometry"
+            return f"URDF compile warning ({geometry_source}, non-blocking): {detail}"
+
+    return f"URDF compile warning (non-blocking): {message}"
+
+
+def compile_urdf_report(
+    script_path: Path,
+    *,
+    sdk_package: str = "sdk",
+    run_checks: bool = True,
+    ignore_geom_qc: bool = False,
+) -> CompileReport:
     """Execute a generated script and return export XML plus non-blocking warnings."""
     repo_root = Path(__file__).resolve().parents[1]
     script_path = script_path.resolve()
@@ -114,50 +173,70 @@ def compile_urdf_report(script_path: Path, *, sdk_package: str = "sdk") -> Compi
 
     warnings: list[str] = []
     test_report = None
-    try:
-        _warn_cwd_relative_asset_paths(script_path=script_path, warnings=warnings)
-        _warn_geometry_scale_anomalies(
-            globals_dict,
-            script_dir=script_path.parent,
-            warnings=warnings,
-            sdk_package=sdk_package,
-        )
-        overlap_warning = _validate_geometry_overlaps(
-            globals_dict,
-            script_dir=script_path.parent,
-            sdk_package=sdk_package,
-        )
-        if overlap_warning:
-            warnings.append(overlap_warning)
-
-        warnings.extend(
-            _validate_unsupported_parts(
+    if run_checks:
+        try:
+            _warn_cwd_relative_asset_paths(script_path=script_path, warnings=warnings)
+            _warn_geometry_scale_anomalies(
+                globals_dict,
+                script_dir=script_path.parent,
+                warnings=warnings,
+                sdk_package=sdk_package,
+            )
+            overlap_warning = _validate_geometry_overlaps(
                 globals_dict,
                 script_dir=script_path.parent,
                 sdk_package=sdk_package,
             )
-        )
+            if overlap_warning:
+                warnings.append(overlap_warning)
 
-        test_report = _run_required_tests(
-            globals_dict,
-            overlap_warning=overlap_warning,
-            sdk_package=sdk_package,
-        )
-    except Exception as exc:
-        urdf_xml = _extract_urdf_xml(globals_dict, sdk_package=sdk_package)
-        signal_bundle = build_compile_signal_bundle(
-            status="failure",
-            warnings=warnings,
-            test_report=getattr(exc, "test_report", None),
-            exc=exc,
-        )
-        wrapped = _attach_partial_compile_result(
-            exc,
-            urdf_xml=urdf_xml,
-            warnings=warnings,
-            signal_bundle=signal_bundle,
-        )
-        raise wrapped from exc
+            warnings.extend(
+                _validate_unsupported_parts(
+                    globals_dict,
+                    script_dir=script_path.parent,
+                    sdk_package=sdk_package,
+                )
+            )
+
+            test_report = _run_required_tests(
+                globals_dict,
+                overlap_warning=overlap_warning,
+                sdk_package=sdk_package,
+            )
+        except Exception as exc:
+            urdf_xml = _extract_urdf_xml(globals_dict, sdk_package=sdk_package)
+            signal_bundle = build_compile_signal_bundle(
+                status="failure",
+                warnings=warnings,
+                test_report=getattr(exc, "test_report", None),
+                exc=exc,
+            )
+            wrapped = _attach_compiled_urdf_on_failure(
+                exc,
+                urdf_xml=urdf_xml,
+                warnings=warnings,
+                signal_bundle=signal_bundle,
+            )
+            if ignore_geom_qc:
+                nonblocking_warning = _nonblocking_geometry_qc_warning_from_exception(wrapped)
+                compiled_urdf_xml = getattr(wrapped, "compiled_urdf_xml", None)
+                if (
+                    nonblocking_warning is not None
+                    and isinstance(compiled_urdf_xml, str)
+                    and compiled_urdf_xml.strip()
+                ):
+                    warning_lines = list(warnings)
+                    warning_lines.append(nonblocking_warning)
+                    return CompileReport(
+                        urdf_xml=compiled_urdf_xml,
+                        warnings=warning_lines,
+                        signal_bundle=build_compile_signal_bundle(
+                            status="success",
+                            warnings=warning_lines,
+                            test_report=getattr(wrapped, "test_report", None),
+                        ),
+                    )
+            raise wrapped from exc
 
     urdf_xml = _extract_urdf_xml(globals_dict, sdk_package=sdk_package)
     if not isinstance(urdf_xml, str):
@@ -200,8 +279,9 @@ def _warn_cwd_relative_asset_paths(*, script_path: Path, warnings: list[str]) ->
     warnings.append(
         "URDF compile warning (non-blocking): cwd-relative asset paths detected.\n"
         + "\n".join(f"- {item}" for item in findings)
-        + "\nUse script-local paths instead: `HERE = Path(__file__).resolve().parent`, "
-        "write meshes under `HERE / 'meshes'`, and set `TestContext(..., asset_root=HERE)`."
+        + "\nUse script-local paths instead: `ASSETS = AssetContext.from_script(__file__)`, "
+        "`MESH_DIR = ASSETS.mesh_dir`, and set `ArticulatedObject(..., assets=ASSETS)` "
+        "or `TestContext(..., asset_root=ASSETS.asset_root)`."
     )
 
 
@@ -350,11 +430,19 @@ def _warn_geometry_scale_anomalies(
         )
 
 
-def _compile_worker(script_path_str: str, sdk_package: str, conn: object) -> None:
+def _compile_worker(
+    script_path_str: str,
+    sdk_package: str,
+    run_checks: bool,
+    ignore_geom_qc: bool,
+    conn: object,
+) -> None:
     try:
         report = compile_urdf_report(
             Path(script_path_str),
             sdk_package=sdk_package,
+            run_checks=run_checks,
+            ignore_geom_qc=ignore_geom_qc,
         )
         payload = {
             "ok": True,
@@ -369,9 +457,9 @@ def _compile_worker(script_path_str: str, sdk_package: str, conn: object) -> Non
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
         }
-        partial_urdf_xml = getattr(exc, "partial_urdf_xml", None)
-        if isinstance(partial_urdf_xml, str) and partial_urdf_xml.strip():
-            payload["partial_urdf_xml"] = partial_urdf_xml
+        compiled_urdf_xml = getattr(exc, "compiled_urdf_xml", None)
+        if isinstance(compiled_urdf_xml, str) and compiled_urdf_xml.strip():
+            payload["compiled_urdf_xml"] = compiled_urdf_xml
         warnings = getattr(exc, "warnings", None)
         if isinstance(warnings, list):
             payload["warnings"] = [str(w) for w in warnings]
@@ -390,6 +478,8 @@ def compile_urdf_report_maybe_timeout(
     script_path: Path,
     *,
     sdk_package: str = "sdk",
+    run_checks: bool = True,
+    ignore_geom_qc: bool = False,
 ) -> CompileReport:
     """
     Run `compile_urdf_report` with a hard timeout to prevent indefinite hangs.
@@ -398,13 +488,18 @@ def compile_urdf_report_maybe_timeout(
     """
     timeout_seconds = float(_env_float("URDF_COMPILE_TIMEOUT_SECONDS", 300.0))
     if timeout_seconds <= 0:
-        return compile_urdf_report(script_path, sdk_package=sdk_package)
+        return compile_urdf_report(
+            script_path,
+            sdk_package=sdk_package,
+            run_checks=run_checks,
+            ignore_geom_qc=ignore_geom_qc,
+        )
 
     ctx = mp.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     proc = ctx.Process(
         target=_compile_worker,
-        args=(str(script_path), sdk_package, child_conn),
+        args=(str(script_path), sdk_package, run_checks, ignore_geom_qc, child_conn),
         daemon=True,
     )
     proc.start()
@@ -470,9 +565,9 @@ def compile_urdf_report_maybe_timeout(
     if tb_text:
         logger.debug("Compile worker traceback:\n%s", tb_text)
     exc = RuntimeError(error_text or "Unknown compile worker error")
-    partial_urdf_xml = msg.get("partial_urdf_xml")
-    if isinstance(partial_urdf_xml, str) and partial_urdf_xml.strip():
-        setattr(exc, "partial_urdf_xml", partial_urdf_xml)
+    compiled_urdf_xml = msg.get("compiled_urdf_xml")
+    if isinstance(compiled_urdf_xml, str) and compiled_urdf_xml.strip():
+        setattr(exc, "compiled_urdf_xml", compiled_urdf_xml)
     warnings = msg.get("warnings")
     if isinstance(warnings, list):
         setattr(exc, "warnings", [str(w) for w in warnings])
@@ -570,20 +665,24 @@ def _validate_geometry_overlaps(
             f"{exc}\n"
             "If this overlap is acceptable (e.g., conservative false-positive), explicitly allow the specific pair "
             "in `run_tests()` via `ctx.allow_overlap(link_a, link_b, reason=...)` and then run "
-            "`ctx.check_no_overlaps(...)` so the allowance is tracked; otherwise adjust geometry/joints."
+            "`ctx.warn_if_overlaps(...)` so the allowance is tracked; otherwise adjust geometry/joints."
         )
     return None
 
 
-def _format_unsupported_parts_warning(
+def _format_unsupported_parts_message(
     geometry_source: str,
     findings: list[object],
+    *,
+    blocking: bool,
 ) -> str | None:
     if not findings:
         return None
 
+    severity = "failure" if blocking else "warning"
+    blocking_label = "blocking" if blocking else "non-blocking"
     lines = [
-        f"URDF compile warning ({geometry_source}, non-blocking): isolated parts detected "
+        f"URDF compile {severity} ({geometry_source}, {blocking_label}): isolated parts detected "
         "(not contacting any other part in the checked pose)."
     ]
     for finding in findings[:8]:
@@ -613,8 +712,12 @@ def _format_unsupported_parts_warning(
     if len(findings) > 8:
         lines.append(f"... ({len(findings) - 8} more)")
 
+    if blocking:
+        lines.append(
+            "Conservative collision envelopes still do not touch, so this is usually a real floating-part or bad-mount bug."
+        )
     lines.append(
-        "Adjust geometry origins or articulation placement so each isolated part is visibly and physically attached."
+        "Adjust geometry origins or articulation placement so each isolated part is attached."
     )
     return "\n".join(lines)
 
@@ -654,9 +757,17 @@ def _validate_unsupported_parts(
             seed=0,
         )
 
-        warning = _format_unsupported_parts_warning(geometry_source, findings)
-        if warning:
-            warnings.append(warning)
+        is_blocking = geometry_source == "collision"
+        message = _format_unsupported_parts_message(
+            geometry_source,
+            findings,
+            blocking=is_blocking,
+        )
+        if not message:
+            continue
+        if is_blocking:
+            raise RuntimeError(message)
+        warnings.append(message)
 
     return warnings
 

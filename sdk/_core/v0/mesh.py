@@ -3242,16 +3242,17 @@ def _export_friendly_mesh_filename(filename: str) -> str:
     """
     Convert a disk path into a portable export filename when possible.
 
-    If the file lives under a folder named `meshes/`, return a relative path rooted at that folder,
-    e.g. `/abs/.../meshes/part.obj` -> `meshes/part.obj`.
+    Prefer canonical `assets/meshes/...` paths when the file lives under that subtree.
+    Fall back to legacy `meshes/...` relative paths only when the file was actually written there.
     Otherwise, return the input unchanged.
     """
 
     if not isinstance(filename, str) or not filename:
         return filename
 
-    # Already relative to meshes/.
     normalized = filename.replace("\\", "/")
+    if normalized.startswith("assets/meshes/"):
+        return normalized
     if normalized.startswith("meshes/"):
         return normalized
 
@@ -3261,6 +3262,13 @@ def _export_friendly_mesh_filename(filename: str) -> str:
         return filename
 
     parts = list(path.parts)
+    asset_meshes_indices = [
+        i for i in range(len(parts) - 1) if parts[i] == "assets" and parts[i + 1] == "meshes"
+    ]
+    if asset_meshes_indices:
+        i = asset_meshes_indices[-1]
+        return Path(*parts[i:]).as_posix()
+
     meshes_indices = [i for i, p in enumerate(parts) if p == "meshes"]
     if not meshes_indices:
         return filename

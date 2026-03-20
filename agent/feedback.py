@@ -408,7 +408,7 @@ def render_compile_signals(bundle: CompileSignalBundle, *, repeated: bool = Fals
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Fix failures first.",
+        "- Resolve failures either by correcting the current code when the representation is sound, or by rethinking the model when the representation itself is wrong.",
         "- Treat warnings as design and QC sensors, not noise.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",
     ]

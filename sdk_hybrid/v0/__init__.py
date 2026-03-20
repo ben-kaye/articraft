@@ -1,5 +1,5 @@
+from .articulated_object import ArticulatedObject
 from .assets import AssetContext
-from .errors import SDKError, ValidationError
 from .cadquery import (
     CadQueryMeshExport,
     cadquery_local_aabb,
@@ -8,7 +8,11 @@ from .cadquery import (
     save_cadquery_obj,
     tessellate_cadquery,
 )
-from .articulated_object import ArticulatedObject
+from .errors import SDKError, ValidationError
+from .generated_collisions import (
+    CollisionGenerationSettings,
+    collision_generation_settings_from_env,
+)
 from .geometry_qc import (
     GeometryOverlap,
     UnsupportedPartFinding,
@@ -19,28 +23,33 @@ from .geometry_qc import (
     find_unsupported_parts,
     validate_no_geometry_overlaps,
 )
-from .generated_collisions import CollisionGenerationSettings, collision_generation_settings_from_env
-from .testing import TestContext, TestFailure, TestReport
 from .placement import (
+    SurfaceFrame,
+    SurfaceWrapMapping,
     align_centers_xy,
     part_local_aabb,
     place_in_front_of,
     place_on_face,
     place_on_face_uv,
+    place_on_surface,
     place_on_top,
     proud_for_flush_mount,
+    surface_frame,
+    wrap_mesh_onto_surface,
+    wrap_profile_onto_surface,
 )
+from .testing import TestContext, TestFailure, TestReport
 from .types import (
-    Box,
-    Cylinder,
-    MotionProperties,
-    Inertia,
-    Inertial,
     Articulation,
     ArticulationType,
-    MotionLimits,
+    Box,
+    Cylinder,
+    Inertia,
+    Inertial,
     Material,
     Mesh,
+    MotionLimits,
+    MotionProperties,
     Origin,
     Part,
     Sphere,
@@ -82,13 +91,19 @@ __all__ = [
     "TestContext",
     "TestFailure",
     "TestReport",
+    "SurfaceFrame",
+    "SurfaceWrapMapping",
     "align_centers_xy",
     "part_local_aabb",
     "place_in_front_of",
     "place_on_face",
     "place_on_face_uv",
+    "place_on_surface",
     "place_on_top",
     "proud_for_flush_mount",
+    "surface_frame",
+    "wrap_profile_onto_surface",
+    "wrap_mesh_onto_surface",
     "Box",
     "Cylinder",
     "MotionProperties",

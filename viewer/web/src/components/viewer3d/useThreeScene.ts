@@ -13,6 +13,10 @@ export interface ThreeSceneState {
   sceneReady: boolean;
 }
 
+export interface ThreeSceneOptions {
+  maxPixelRatio?: number;
+}
+
 /**
  * Hook that manages the Three.js renderer lifecycle.
  *
@@ -22,6 +26,7 @@ export interface ThreeSceneState {
  */
 export function useThreeScene(
   containerRef: React.RefObject<HTMLDivElement | null>,
+  options: ThreeSceneOptions = {},
 ): ThreeSceneState {
   const [sceneReady, setSceneReady] = useState(false);
 
@@ -42,7 +47,7 @@ export function useThreeScene(
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.3;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, options.maxPixelRatio ?? 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
     rendererRef.current = renderer;
@@ -132,6 +137,17 @@ export function useThreeScene(
       axisGroupRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const container = containerRef.current;
+    if (!renderer || !container) {
+      return;
+    }
+
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, options.maxPixelRatio ?? 2));
+    renderer.setSize(container.clientWidth, container.clientHeight, false);
+  }, [containerRef, options.maxPixelRatio, sceneReady]);
 
   return {
     scene: sceneRef.current,

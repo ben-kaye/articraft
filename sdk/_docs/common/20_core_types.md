@@ -32,7 +32,7 @@ from sdk import (
 - `Box(size=(sx, sy, sz))`
 - `Cylinder(radius=r, length=l)`
 - `Sphere(radius=r)`
-- `Mesh(filename="meshes/part.obj", scale=(sx, sy, sz) | None)`
+- `Mesh(filename="assets/meshes/part.obj", scale=(sx, sy, sz) | None)`
 
 Primitive geometry constructors describe shape only. Put transforms on the containing element.
 

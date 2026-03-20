@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from storage.models import AssetStatus
+from storage.models import AssetStatus, MaterializationStatus
 from storage.repo import StorageRepo
 
 
@@ -38,3 +40,56 @@ class MaterializationStore:
             glb_present=self.repo.layout.record_asset_glb_dir(record_id).exists(),
             viewer_present=self.repo.layout.record_asset_viewer_dir(record_id).exists(),
         )
+
+
+def _record_artifact_path(
+    record_dir: Path, record: dict[str, Any] | None, key: str, default: str
+) -> Path:
+    artifacts = record.get("artifacts") if isinstance(record, dict) else None
+    if isinstance(artifacts, dict):
+        value = artifacts.get(key)
+        if isinstance(value, str) and value.strip():
+            return record_dir / value
+    return record_dir / default
+
+
+def _has_nonempty_dir(path: Path) -> bool:
+    return path.exists() and path.is_dir() and any(path.iterdir())
+
+
+def record_has_materialized_assets(repo: StorageRepo, record_id: str) -> bool:
+    return any(
+        _has_nonempty_dir(path)
+        for path in (
+            repo.layout.record_asset_meshes_dir(record_id),
+            repo.layout.record_asset_glb_dir(record_id),
+            repo.layout.record_asset_viewer_dir(record_id),
+        )
+    )
+
+
+def urdf_references_external_meshes(urdf_path: Path) -> bool:
+    if not urdf_path.exists() or not urdf_path.is_file():
+        return False
+    try:
+        text = urdf_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    lowered = text.lower()
+    return "<mesh" in lowered and "filename=" in lowered
+
+
+def infer_materialization_status(
+    repo: StorageRepo,
+    record_id: str,
+    *,
+    record: dict[str, Any] | None = None,
+) -> MaterializationStatus:
+    if record_has_materialized_assets(repo, record_id):
+        return "available"
+
+    record_dir = repo.layout.record_dir(record_id)
+    urdf_path = _record_artifact_path(record_dir, record, "model_urdf", "model.urdf")
+    if urdf_path.exists() and not urdf_references_external_meshes(urdf_path):
+        return "available"
+    return "missing"

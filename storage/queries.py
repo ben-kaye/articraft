@@ -42,7 +42,14 @@ class StorageQueries:
             run = self.repo.read_json(self.repo.layout.run_metadata_path(run_dir.name))
             if not isinstance(run, dict):
                 continue
-            if str(run.get("category_slug") or "") == category_slug:
+            category_slug_value = str(run.get("category_slug") or "")
+            category_slugs = run.get("category_slugs")
+            if category_slug_value == category_slug:
+                run_ids.append(run_dir.name)
+                continue
+            if isinstance(category_slugs, list) and category_slug in {
+                str(value) for value in category_slugs if str(value).strip()
+            }:
                 run_ids.append(run_dir.name)
         return run_ids
 

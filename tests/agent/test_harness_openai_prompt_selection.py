@@ -62,6 +62,8 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "wrong geometric representation" in instructions
     assert "prompt-named visible features" in instructions
     assert "silhouette-critical visible forms" in instructions
+    assert "If the real object should be hollow, thin-walled, or cavity-bearing" in instructions
+    assert "Do not omit important internal structures" in instructions
     assert "## sdk/_docs/common/00_quickstart.md" in docs_message
     assert "## sdk/_docs/common/80_testing.md" in docs_message
 
@@ -116,3 +118,7 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     assert "wrong geometric representation" in gemini_instructions
     assert "prompt-named visible features" in gemini_instructions
     assert "silhouette-critical visible forms" in gemini_instructions
+    assert (
+        "If the real object should be hollow, thin-walled, or cavity-bearing" in gemini_instructions
+    )
+    assert "Do not omit important internal structures" in gemini_instructions

@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
-
 AssetContextLike = Union["AssetContext", str, Path]
+_LEGACY_MESH_PREFIX = "meshes/"
 
 
 @dataclass(frozen=True)
 class AssetContext:
     root: Path
-    mesh_subdir: str = "meshes"
+    mesh_subdir: str = "assets/meshes"
 
     def __post_init__(self) -> None:
-        mesh_subdir = str(self.mesh_subdir or "meshes").strip().strip("/\\")
+        mesh_subdir = str(self.mesh_subdir or "assets/meshes").strip().strip("/\\")
         if not mesh_subdir:
             raise ValueError("mesh_subdir must be non-empty")
         object.__setattr__(self, "root", Path(self.root).resolve())
@@ -47,6 +47,8 @@ class AssetContext:
             normalized = path.as_posix()
             if normalized.startswith(f"{self.mesh_subdir}/"):
                 path = self.root / path
+            elif normalized.startswith(_LEGACY_MESH_PREFIX):
+                path = self.mesh_dir / normalized[len(_LEGACY_MESH_PREFIX) :]
             else:
                 path = self.mesh_dir / path
         if ensure_dir:
@@ -64,6 +66,8 @@ class AssetContext:
             normalized = path.as_posix()
             if normalized.startswith(f"{self.mesh_subdir}/"):
                 rel = path
+            elif normalized.startswith(_LEGACY_MESH_PREFIX):
+                rel = Path(self.mesh_subdir) / normalized[len(_LEGACY_MESH_PREFIX) :]
             else:
                 rel = Path(self.mesh_subdir) / path
         return rel.as_posix()

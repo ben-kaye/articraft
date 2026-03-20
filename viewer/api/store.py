@@ -12,13 +12,17 @@ from pathlib import Path
 from typing import Any
 
 from storage.collections import CollectionStore
+from storage.dataset_workflow import promote_record_workflow
 from storage.datasets import DatasetStore
+from storage.materialize import infer_materialization_status
 from storage.models import CompileReport as StorageCompileReport
 from storage.models import CompileWarning
+from storage.queries import StorageQueries
 from storage.records import RecordStore
 from storage.repo import StorageRepo
 from storage.search import SearchIndex
 from viewer.api.schemas import (
+    CategoryOptionResponse,
     CategoryStatsResponse,
     DatasetEntryResponse,
     RecordDetailResponse,
@@ -173,6 +177,15 @@ def _replace_tree_from_source(source: Path, destination: Path) -> None:
     shutil.move(str(source), str(destination))
 
 
+def _remove_path_if_exists(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+        return
+    path.unlink()
+
+
 @dataclass(slots=True, frozen=True)
 class MaterializeRecordAssetsResult:
     record_id: str
@@ -238,28 +251,28 @@ class ViewerStore:
             record_dir / provenance_name,
         )
 
-    def _materialization_status_for_record(self, record_id: str) -> str:
-        assets_root = self.repo.layout.record_assets_dir(record_id)
-        for child_name in ("meshes", "glb", "viewer"):
-            child = assets_root / child_name
-            if child.exists() and any(child.iterdir()):
-                return "available"
-        return "missing"
+    def _materialization_status_for_record(
+        self,
+        record_id: str,
+        record: dict[str, Any] | None = None,
+    ) -> str:
+        return infer_materialization_status(self.repo, record_id, record=record)
 
-    def _normalize_derived_asset_dirs(self, record_id: str) -> None:
-        record_dir = self.repo.layout.record_dir(record_id)
-        _replace_tree_from_source(
-            record_dir / "meshes",
+    def _clear_derived_asset_outputs(
+        self,
+        record_id: str,
+        *,
+        urdf_path: Path,
+        compile_path: Path,
+    ) -> None:
+        for path in (
+            urdf_path,
+            compile_path,
             self.repo.layout.record_asset_meshes_dir(record_id),
-        )
-        _replace_tree_from_source(
-            record_dir / "glb",
             self.repo.layout.record_asset_glb_dir(record_id),
-        )
-        _replace_tree_from_source(
-            record_dir / "viewer",
             self.repo.layout.record_asset_viewer_dir(record_id),
-        )
+        ):
+            _remove_path_if_exists(path)
 
     def _write_compile_report(
         self,
@@ -309,7 +322,7 @@ class ViewerStore:
             derived_assets = {}
             record["derived_assets"] = derived_assets
         derived_assets["assets_dir"] = str(derived_assets.get("assets_dir") or "assets")
-        materialization_status = self._materialization_status_for_record(record_id)
+        materialization_status = self._materialization_status_for_record(record_id, record)
         derived_assets["materialization_status"] = materialization_status
 
         self.repo.write_json(self.repo.layout.record_metadata_path(record_id), record)
@@ -335,14 +348,11 @@ class ViewerStore:
         record_id: str,
         *,
         force: bool = False,
+        ignore_geom_qc: bool = True,
     ) -> MaterializeRecordAssetsResult:
         record = self.records.load_record(record_id)
         if not isinstance(record, dict):
             raise FileNotFoundError(f"Record not found: {record_id}")
-
-        # Legacy records may still have derived assets at the record root; move them
-        # into the canonical assets tree before deciding whether more work is needed.
-        self._normalize_derived_asset_dirs(record_id)
 
         model_path, urdf_path, compile_path, provenance_path = self._record_compile_paths(
             record_id,
@@ -404,6 +414,13 @@ class ViewerStore:
                     materialization_status=materialization_status,
                 )
 
+            if force:
+                self._clear_derived_asset_outputs(
+                    record_id,
+                    urdf_path=urdf_path,
+                    compile_path=compile_path,
+                )
+
             from agent.compiler import compile_urdf_report_maybe_timeout
 
             sdk_package = str(refreshed_record.get("sdk_package") or "sdk")
@@ -411,6 +428,7 @@ class ViewerStore:
                 compile_result = compile_urdf_report_maybe_timeout(
                     model_path,
                     sdk_package=sdk_package,
+                    ignore_geom_qc=ignore_geom_qc,
                 )
             except Exception as exc:
                 warnings = getattr(exc, "warnings", None)
@@ -435,7 +453,6 @@ class ViewerStore:
                 raise RuntimeError(f"Failed to compile assets for {record_id}: {exc}") from exc
 
             self.repo.write_text(urdf_path, compile_result.urdf_xml)
-            self._normalize_derived_asset_dirs(record_id)
             warning_lines = [str(item) for item in compile_result.warnings]
             self._write_compile_report(
                 record_id=record_id,
@@ -507,7 +524,6 @@ class ViewerStore:
         display = record.get("display") or {}
         source = record.get("source") or {}
         artifacts = record.get("artifacts") or {}
-        derived_assets = record.get("derived_assets") or {}
         record_dir = self.repo.layout.record_dir(record_id)
 
         compile_name = artifacts.get("compile_report_json") or "compile_report.json"
@@ -515,6 +531,7 @@ class ViewerStore:
         cost_name = artifacts.get("cost_json")
         provenance = self.repo.read_json(record_dir / str(provenance_name))
         cost = self.repo.read_json(record_dir / str(cost_name)) if cost_name else None
+        materialization_status = self._materialization_status_for_record(record_id, record)
 
         turn_count: int | None = None
         if isinstance(provenance, dict):
@@ -545,7 +562,7 @@ class ViewerStore:
             category_slug=record.get("category_slug"),
             run_id=source.get("run_id"),
             collections=[str(item) for item in record.get("collections", [])],
-            materialization_status=derived_assets.get("materialization_status"),
+            materialization_status=materialization_status,
             has_compile_report=(record_dir / str(compile_name)).exists(),
             has_provenance=(record_dir / str(provenance_name)).exists(),
             has_cost=(record_dir / str(cost_name)).exists() if cost_name else False,
@@ -614,6 +631,72 @@ class ViewerStore:
                 )
             )
         return entries
+
+    def list_categories(self) -> list[CategoryOptionResponse]:
+        categories_by_slug: dict[str, str] = {}
+
+        for category_path in self.repo.layout.categories_root.glob("*/category.json"):
+            category = self.repo.read_json(category_path)
+            if not isinstance(category, dict):
+                continue
+            slug = str(category.get("slug") or "").strip()
+            if not slug:
+                continue
+            title = (
+                str(category.get("title") or "").strip()
+                or slug.replace("_", " ").replace("-", " ").title()
+            )
+            categories_by_slug[slug] = title
+
+        records_root = self.repo.layout.records_root
+        if records_root.exists():
+            for record_dir in records_root.iterdir():
+                if not record_dir.is_dir():
+                    continue
+                record = self.repo.read_json(record_dir / "record.json")
+                if not isinstance(record, dict):
+                    continue
+                slug = str(record.get("category_slug") or "").strip()
+                if not slug or slug in categories_by_slug:
+                    continue
+                categories_by_slug[slug] = slug.replace("_", " ").replace("-", " ").title()
+
+        return [
+            CategoryOptionResponse(slug=slug, title=title)
+            for slug, title in sorted(
+                categories_by_slug.items(),
+                key=lambda item: (item[1].lower(), item[0]),
+            )
+        ]
+
+    def promote_record_to_dataset(
+        self,
+        record_id: str,
+        *,
+        category_title: str,
+        dataset_id: str | None = None,
+    ) -> DatasetEntryResponse:
+        normalized_category_title = category_title.strip()
+        if not normalized_category_title:
+            raise ValueError("Category title is required.")
+
+        normalized_dataset_id = dataset_id.strip() if dataset_id else None
+        entry, _, _, _ = promote_record_workflow(
+            self.repo,
+            self.datasets,
+            StorageQueries(self.repo),
+            record_id=record_id,
+            category_title=normalized_category_title,
+            dataset_id=normalized_dataset_id or None,
+            promoted_at=_utc_now(),
+        )
+        return DatasetEntryResponse(
+            record_id=str(entry.get("record_id") or record_id),
+            dataset_id=str(entry.get("dataset_id") or ""),
+            category_slug=str(entry.get("category_slug") or ""),
+            promoted_at=str(entry.get("promoted_at") or ""),
+            record=self._record_summary(record_id),
+        )
 
     def list_staging_entries(self) -> list[StagingEntryResponse]:
         runs_root = self.repo.layout.runs_root
@@ -1017,7 +1100,7 @@ class ViewerStore:
         deleted = self.records.delete_record(record_id)
         if deleted:
             self.datasets.write_dataset_manifest()
-            self.search.ensure_current()
+            self.search.rebuild()
         return deleted
 
     def delete_staging_entry(self, run_id: str, record_id: str) -> bool:

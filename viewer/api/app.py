@@ -11,12 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from viewer.api.schemas import (
+    CategoryOptionResponse,
     DatasetEntryResponse,
     DeleteRecordResponse,
     DeleteStagingResponse,
     HealthResponse,
     OpenRecordFolderResponse,
     OpenStagingFolderResponse,
+    PromoteRecordRequest,
     RecordRatingRequest,
     RecordRatingResponse,
     RecordSummaryResponse,
@@ -95,8 +97,8 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         requested_path = Path(file_path)
         if requested_path.parts == ("model.urdf",):
             return True
-        if requested_path.parts and requested_path.parts[0] in {"meshes", "glb", "viewer"}:
-            return True
+        if len(requested_path.parts) >= 2 and requested_path.parts[0] == "assets":
+            return requested_path.parts[1] in {"meshes", "glb", "viewer"}
         return False
 
     def resolve_record_target(record_id: str, file_path: str) -> tuple[Path, Path]:
@@ -115,11 +117,7 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         if requested_path.is_absolute() or ".." in requested_path.parts:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        direct_target = (record_dir / requested_path).resolve()
-        if requested_path.parts and requested_path.parts[0] in {"meshes", "glb", "viewer"}:
-            target = (record_dir / "assets" / requested_path).resolve()
-        else:
-            target = direct_target
+        target = (record_dir / requested_path).resolve()
 
         try:
             target.relative_to(record_dir.resolve())
@@ -134,13 +132,37 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
     async def resolve_record_target_with_materialization(
         record_id: str, file_path: str
     ) -> tuple[Path, Path]:
+        requested_path = Path(file_path)
         try:
             return resolve_record_target(record_id, file_path)
         except HTTPException as exc:
             if exc.status_code != 404 or not should_attempt_materialize_for_record_path(file_path):
                 raise
         try:
-            await asyncio.to_thread(app.state.viewer_store.materialize_record_assets, record_id)
+            await asyncio.to_thread(
+                app.state.viewer_store.materialize_record_assets,
+                record_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        try:
+            return resolve_record_target(record_id, file_path)
+        except HTTPException as exc:
+            needs_forced_rebuild = exc.status_code == 404 and (
+                len(requested_path.parts) >= 2
+                and requested_path.parts[0] == "assets"
+                and requested_path.parts[1] in {"meshes", "glb", "viewer"}
+            )
+            if not needs_forced_rebuild:
+                raise
+        try:
+            await asyncio.to_thread(
+                app.state.viewer_store.materialize_record_assets,
+                record_id,
+                force=True,
+            )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -217,6 +239,10 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
     async def dataset_entries() -> list[DatasetEntryResponse]:
         return app.state.viewer_store.list_dataset_entries()
 
+    @app.get("/api/categories", response_model=list[CategoryOptionResponse])
+    async def categories() -> list[CategoryOptionResponse]:
+        return app.state.viewer_store.list_categories()
+
     @app.get("/api/staging", response_model=list[StagingEntryResponse])
     async def staging_entries() -> list[StagingEntryResponse]:
         return app.state.viewer_store.list_staging_entries()
@@ -268,6 +294,21 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
 
         return DeleteRecordResponse(status="deleted", record_id=record_id)
+
+    @app.post("/api/records/{record_id}/promote", response_model=DatasetEntryResponse)
+    async def promote_record(record_id: str, payload: PromoteRecordRequest) -> DatasetEntryResponse:
+        if not record_id.startswith("rec_"):
+            raise HTTPException(status_code=400, detail="Invalid record ID format")
+
+        try:
+            return await asyncio.to_thread(
+                app.state.viewer_store.promote_record_to_dataset,
+                record_id,
+                category_title=payload.category_title,
+                dataset_id=payload.dataset_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.delete("/api/staging/{run_id}/{record_id}", response_model=DeleteStagingResponse)
     async def delete_staging_entry(run_id: str, record_id: str) -> DeleteStagingResponse:
@@ -389,7 +430,7 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
 
     @app.get("/api/records/{record_id}/files/{file_path:path}")
     async def record_file(record_id: str, file_path: str) -> FileResponse:
-        """Serve files from a record directory (URDF, meshes, code, etc.)"""
+        """Serve files from a record directory (URDF, assets, code, etc.)"""
         _, target = await resolve_record_target_with_materialization(record_id, file_path)
         suffix = target.suffix.lower()
         media_type = media_type_map.get(suffix, "application/octet-stream")

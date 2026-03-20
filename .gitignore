@@ -211,6 +211,7 @@ data/cache/
 data/local/
 data/records/*/model.urdf
 data/records/*/assets/
+performance/results/
 
 # Viewer frontend dependencies/build output
 .mcp.json

@@ -7,13 +7,15 @@ from typing import Any, Literal
 CollectionName = Literal["dataset", "workbench"]
 PromptKind = Literal["single_prompt", "prompt_series"]
 RunMode = Literal["dataset_batch", "dataset_single", "workbench_batch", "workbench_single"]
-MaterializationStatus = Literal["missing", "available", "stale"]
+MaterializationStatus = Literal["missing", "available"]
 
 
 @dataclass(slots=True, frozen=True)
 class SourceRef:
     run_id: str | None = None
     prompt_batch_id: str | None = None
+    batch_spec_id: str | None = None
+    row_id: str | None = None
     prompt_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -318,9 +320,12 @@ class RunRecord:
     sdk_package: str
     status: str = "pending"
     category_slug: str | None = None
+    category_slugs: list[str] = field(default_factory=list)
     prompt_batch_id: str | None = None
+    batch_spec_id: str | None = None
     prompt_count: int = 0
     results_file: str = "results.jsonl"
+    settings_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

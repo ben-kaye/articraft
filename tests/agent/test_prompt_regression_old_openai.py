@@ -26,7 +26,13 @@ def test_compiled_openai_prompt_keeps_tool_policy_and_design_charter() -> None:
         assert "prompt-named visible features" in text
         assert "wrong geometric representation" in text
         assert "wrong overall composition" in text
+        assert "warn_if_articulation_origin_near_geometry" in text
+        assert "warn_if_part_geometry_connected" in text
+        assert "deliberately dumb static sensors" in text
+        assert "semantic regression" in text
         assert "Do not preserve a scaffold just because parts of it compile" in text
         assert "silhouette-critical visible forms" in text
         assert "Plain primitives are acceptable for hidden structure" in text
+        assert "If the real object should be hollow, thin-walled, or cavity-bearing" in text
+        assert "Do not omit important internal structures" in text
         assert "most defining 3-6" in text

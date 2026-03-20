@@ -53,8 +53,30 @@ export function resolveVisualMaterialSpec(visual: UrdfVisual): MaterialSpec {
 function applyNamedMaterialPreset(spec: MaterialSpec): MaterialSpec {
   const name = spec.name?.toLowerCase() ?? '';
   const tuned = { ...spec };
+  const tokens = name.split(/[^a-z0-9]+/).filter(Boolean);
+  const hasToken = (token: string): boolean => tokens.includes(token);
+  const hasAnyToken = (...candidates: string[]): boolean => candidates.some(hasToken);
+  const mentionsTransparentDescriptor = hasAnyToken(
+    'clear',
+    'glass',
+    'transparent',
+    'translucent',
+    'smoked',
+    'frosted',
+  );
+  const mentionsTransparentPlasticFamily = hasAnyToken(
+    'polycarbonate',
+    'acrylic',
+    'plexi',
+    'plexiglass',
+    'lexan',
+  );
+  const isClearRigidMaterial = (
+    mentionsTransparentDescriptor
+    || (mentionsTransparentPlasticFamily && tuned.opacity < 0.999)
+  );
 
-  if (name.includes('glass')) {
+  if (isClearRigidMaterial) {
     tuned.metalness = 0.0;
     tuned.roughness = 0.08;
     tuned.transmission = Math.max(0.45, 1.0 - tuned.opacity * 0.55);

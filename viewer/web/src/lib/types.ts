@@ -36,6 +36,11 @@ export type DatasetEntry = {
   record: RecordSummary | null;
 };
 
+export type CategoryOption = {
+  slug: string;
+  title: string;
+};
+
 export type StagingEntry = {
   run_id: string;
   record_id: string;

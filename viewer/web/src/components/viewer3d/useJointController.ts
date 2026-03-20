@@ -9,6 +9,15 @@ export interface JointControllerState {
   resetAll: () => void;
 }
 
+interface JointRuntime {
+  spec: UrdfJoint;
+  axis: THREE.Vector3;
+}
+
+const DEFAULT_AXIS: [number, number, number] = [0, 0, 1];
+const tempQuaternion = new THREE.Quaternion();
+const tempOffset = new THREE.Vector3();
+
 /**
  * Hook for managing joint values and applying them to the Three.js scene graph.
  *
@@ -22,18 +31,21 @@ export function useJointController(
 ): JointControllerState {
   const [jointValues, setJointValues] = useState<Map<string, number>>(new Map());
 
-  // Cache the joint spec lookup for quick access.
-  const jointSpecMap = useRef<Map<string, UrdfJoint>>(new Map());
+  // Cache the normalized joint axis and spec so animation does not allocate per frame.
+  const jointRuntimeMap = useRef<Map<string, JointRuntime>>(new Map());
 
-  // Rebuild the spec lookup whenever the urdfSpec changes.
+  // Rebuild the runtime cache whenever the urdfSpec changes.
   useEffect(() => {
-    const map = new Map<string, UrdfJoint>();
+    const map = new Map<string, JointRuntime>();
     if (urdfSpec) {
       for (const joint of urdfSpec.joints) {
-        map.set(joint.name, joint);
+        map.set(joint.name, {
+          spec: joint,
+          axis: new THREE.Vector3(...(joint.axis ?? DEFAULT_AXIS)).normalize(),
+        });
       }
     }
-    jointSpecMap.current = map;
+    jointRuntimeMap.current = map;
 
     // Reset values when the spec changes (new model loaded).
     setJointValues(new Map());
@@ -41,16 +53,13 @@ export function useJointController(
 
   const setJointValue = useCallback(
     (name: string, value: number) => {
-      if (!jointNodes || !jointSpecMap.current) return;
+      if (!jointNodes) return;
 
       const node = jointNodes.get(name);
-      const spec = jointSpecMap.current.get(name);
-      if (!node || !spec) return;
+      const runtime = jointRuntimeMap.current.get(name);
+      if (!node || !runtime) return;
 
-      // Default axis is Z (0, 0, 1) per URDF specification.
-      const axis = new THREE.Vector3(...(spec.axis ?? [0, 0, 1])).normalize();
-
-      applyJointValue(node, spec, axis, value);
+      applyJointValue(node, runtime.spec, runtime.axis, value);
 
       setJointValues((prev) => {
         const next = new Map(prev);
@@ -63,16 +72,15 @@ export function useJointController(
 
   const applyJointValues = useCallback(
     (values: Map<string, number>, options?: { commit?: boolean }) => {
-      if (!jointNodes || !jointSpecMap.current) return;
+      if (!jointNodes) return;
 
       for (const [name, node] of jointNodes) {
-        const spec = jointSpecMap.current.get(name);
-        if (!spec) {
+        const runtime = jointRuntimeMap.current.get(name);
+        if (!runtime) {
           continue;
         }
 
-        const axis = new THREE.Vector3(...(spec.axis ?? [0, 0, 1])).normalize();
-        applyJointValue(node, spec, axis, values.get(name) ?? 0);
+        applyJointValue(node, runtime.spec, runtime.axis, values.get(name) ?? 0);
       }
 
       if (options?.commit) {
@@ -104,15 +112,14 @@ function applyJointValue(
   switch (spec.type) {
     case 'revolute':
     case 'continuous': {
-      const quaternion = new THREE.Quaternion();
-      quaternion.setFromAxisAngle(axis, value);
-      node.quaternion.copy(quaternion);
+      tempQuaternion.setFromAxisAngle(axis, value);
+      node.quaternion.copy(tempQuaternion);
       break;
     }
     case 'prismatic': {
       // Reset to origin translation then apply offset along axis.
-      const offset = axis.clone().multiplyScalar(value);
-      node.position.set(offset.x, offset.y, offset.z);
+      tempOffset.copy(axis).multiplyScalar(value);
+      node.position.copy(tempOffset);
       break;
     }
     default:

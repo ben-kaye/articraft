@@ -2,7 +2,7 @@
 
 The SDK includes a lightweight procedural triangle-mesh builder. This is primarily used to generate `.obj` meshes that are then referenced from exported object assets via `sdk.Mesh(filename=...)`.
 
-When a mesh is written under a `meshes/` directory, the SDK will usually export it as a relative reference like `meshes/part.obj`. That is the preferred URDF form, but QC and test code still need an asset root to open that file later. In practice, attach `assets=AssetContext.from_script(__file__)` to the model or pass `asset_root=HERE` to `TestContext(...)`.
+When a mesh is written under `assets/meshes/`, the SDK exports it as a relative reference like `assets/meshes/part.obj`. Attach `assets=AssetContext.from_script(__file__)` to the model or pass `asset_root=ASSETS.asset_root` to `TestContext(...)` so QC and tests can resolve it later.
 
 Important naming distinction:
 
@@ -142,6 +142,9 @@ ExtrudeGeometry.from_z0(profile, height, cap=True, closed=True)
 - Extrudes a 2D `(x, y)` profile along Z.
 - If `center=True`, extrusion spans `[-height/2, +height/2]`; otherwise it spans `[0, height]`.
 - Capped closed extrusions use the same cap triangulation path as `LoftGeometry`.
+- For thin parts that need to hug curved targets, prefer `wrap_profile_onto_surface(...)`
+  from `50_placement.md` over manually extruding first and then reasoning about
+  rigid placement.
 
 ### `ExtrudeWithHolesGeometry`
 
@@ -162,6 +165,8 @@ ExtrudeWithHolesGeometry(
   triangulation for the top and bottom caps when available.
 - Hole winding is normalized internally. You do not need to reverse hole loops.
 - If `cap=False` or `closed=False`, the helper falls back to side walls only.
+- This pairs naturally with `wrap_profile_onto_surface(..., hole_profiles=...)`
+  when you need a wrapped badge, vent, or panel cutout on a curved target.
 
 ### `SweepGeometry`
 
@@ -367,7 +372,7 @@ from sdk import Mesh, mesh_from_geometry
 ### `mesh_from_geometry`
 
 ```python
-mesh = mesh_from_geometry(geometry, filename=".../meshes/part.obj")  # -> sdk.Mesh
+mesh = mesh_from_geometry(geometry, filename=".../assets/meshes/part.obj")  # -> sdk.Mesh
 ```
 
 `mesh_from_geometry(...)` accepts either a string path or a `pathlib.Path`:
@@ -375,7 +380,7 @@ mesh = mesh_from_geometry(geometry, filename=".../meshes/part.obj")  # -> sdk.Me
 ```python
 from pathlib import Path
 
-mesh_dir = Path(__file__).resolve().parent / "meshes"
+mesh_dir = Path(__file__).resolve().parent / "assets" / "meshes"
 mesh = mesh_from_geometry(geometry, mesh_dir / "part.obj")
 ```
 
@@ -383,8 +388,8 @@ Behavior:
 
 - Saves the OBJ file to `filename`.
 - Returns a `Mesh(filename=...)` reference.
-- If the output path contains a folder named `meshes`, the returned `Mesh.filename` is made relative to that folder, e.g.:
-  - `/abs/.../meshes/part.obj` -> `meshes/part.obj`
+- If the output path lives under `assets/meshes`, the returned `Mesh.filename` is made relative to that subtree, e.g.:
+  - `/abs/.../assets/meshes/part.obj` -> `assets/meshes/part.obj`
 
 This is the recommended way to ensure portable script-relative mesh filenames.
 

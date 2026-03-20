@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent.compiler import persist_compile_success_artifacts, update_manifest
+import pytest
+
+from agent.compiler import compile_urdf_report, persist_compile_success_artifacts, update_manifest
 from agent.runner import compile_urdf
 
 
@@ -63,3 +65,90 @@ def test_compile_artifacts_update_manifest(tmp_path: Path) -> None:
     }
 
     assert callable(compile_urdf)
+
+
+def test_compile_urdf_report_can_skip_required_checks(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin",
+                "",
+                "object_model = ArticulatedObject(name='unsafe')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Missing required `run_tests\\(\\)`"):
+        compile_urdf_report(script_path)
+
+    report = compile_urdf_report(script_path, run_checks=False)
+    assert "<robot" in report.urdf_xml
+    assert report.warnings == []
+    assert report.signal_bundle.status == "success"
+
+
+def test_compile_urdf_report_can_ignore_geometry_qc_after_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin",
+                "",
+                "object_model = ArticulatedObject(name='qc_ok')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_required_tests(*_args, **_kwargs):
+        raise RuntimeError(
+            "URDF compile failure (collision, blocking): isolated parts detected "
+            "(not contacting any other part in the checked pose)."
+        )
+
+    monkeypatch.setattr("agent.compiler._run_required_tests", fake_run_required_tests)
+
+    with pytest.raises(RuntimeError, match="URDF compile failure \\(collision, blocking\\)"):
+        compile_urdf_report(script_path)
+
+    report = compile_urdf_report(script_path, ignore_geom_qc=True)
+    assert "<robot" in report.urdf_xml
+    assert any(
+        "URDF compile warning (collision, non-blocking): isolated parts detected" in warning
+        for warning in report.warnings
+    )
+    assert report.signal_bundle.status == "success"
+
+
+def test_compile_urdf_report_does_not_ignore_non_geometry_failures(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin",
+                "",
+                "object_model = ArticulatedObject(name='unsafe')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="Missing required `run_tests\\(\\)`"):
+        compile_urdf_report(script_path, ignore_geom_qc=True)

@@ -80,9 +80,9 @@ def run_tests() -> TestReport:
     ctx = TestContext(object_model)
     ctx.check_model_valid()
     ctx.check_mesh_files_exist()
-    ctx.check_articulation_origin_near_geometry(tol=0.015)
-    ctx.check_part_geometry_connected(use="visual")
-    ctx.check_no_overlaps(max_pose_samples=64)
+    ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
+    ctx.warn_if_part_geometry_connected(use="visual")
+    ctx.warn_if_overlaps(max_pose_samples=64)
     return ctx.report()
 ```
 
@@ -126,6 +126,6 @@ If you intentionally model in millimeters inside CadQuery, pass `unit_scale=0.00
 - Use CadQuery primarily for visual meshes.
 - Use `mesh_from_cadquery(...)` to export a visual mesh, then attach it with `part.visual(...)`.
 - Keep inertials explicit rather than inferring them from CadQuery mesh bounds.
-- Keep `assets=AssetContext.from_script(__file__)` attached to the model so relative mesh refs under `meshes/` remain resolvable during QC and tests.
+- Keep `assets=AssetContext.from_script(__file__)` attached to the model so relative mesh refs under `assets/meshes/` remain resolvable during QC and tests.
 - Do not try to infer URDF joints from CadQuery assemblies. Declare joints explicitly in `ArticulatedObject`.
 - Be careful with repeated `faces(...).workplane()` feature loops: the workplane origin can drift between iterations, so repeated cuts are often safer when built from a fixed global plane and subtracted explicitly.

@@ -284,10 +284,10 @@ class ArticraftAgent:
             logger.warning("Failed to persist compile-success checkpoint: %s", exc)
 
     async def _persist_compile_failure_checkpoint_async(self, exc: BaseException) -> bool:
-        partial_urdf_xml = getattr(exc, "partial_urdf_xml", None)
-        if not isinstance(partial_urdf_xml, str) or not partial_urdf_xml.strip():
+        compiled_urdf_xml = getattr(exc, "compiled_urdf_xml", None)
+        if not isinstance(compiled_urdf_xml, str) or not compiled_urdf_xml.strip():
             return False
-        await self._persist_compile_success_checkpoint_async(partial_urdf_xml)
+        await self._persist_compile_success_checkpoint_async(compiled_urdf_xml)
         return True
 
     def _build_system_prompt(self, prompt_path: str) -> tuple[Path, str]:

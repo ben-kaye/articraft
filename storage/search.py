@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
+import json
 import os
 import re
-import sqlite3
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +12,6 @@ from storage.repo import StorageRepo
 
 _INDEX_SCHEMA_VERSION = 1
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-_SCORE_WEIGHTS = (4.5, 5.5, 4.5, 4.5, 4.5, 1.5, 3.0, 1.0)
 
 
 @dataclass(slots=True, frozen=True)
@@ -38,55 +36,55 @@ def _phrase_text(value: str) -> str:
     return " ".join(_tokenize(value))
 
 
-def _escape_token(token: str) -> str:
-    return token.replace('"', '""')
+def _unique_tokens(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for group in groups:
+        for token in group:
+            if token in seen:
+                continue
+            seen.add(token)
+            unique.append(token)
+    return unique
 
 
-def _query_expression(query: str) -> str | None:
-    tokens = _tokenize(query)
-    if not tokens:
-        return None
-    return " AND ".join(f"{_escape_token(token)}*" for token in tokens)
+def _field_document(value: str) -> dict[str, Any]:
+    return {
+        "text": _phrase_text(value),
+        "tokens": _tokenize(value),
+    }
 
 
-def _signature_for_paths(paths: list[Path], repo_root: Path) -> str:
-    digest = hashlib.sha1()
-    for path in sorted(paths):
-        stat = path.stat()
-        digest.update(path.resolve().relative_to(repo_root.resolve()).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(stat.st_mtime_ns).encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(stat.st_size).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
+def _field_token_score(
+    token: str,
+    field: dict[str, Any],
+    *,
+    exact_score: float,
+    prefix_score: float,
+) -> float:
+    tokens = field.get("tokens")
+    if not isinstance(tokens, list):
+        return 0.0
+    normalized_tokens = [str(item) for item in tokens]
+    if token in normalized_tokens:
+        return exact_score
+    if any(field_token.startswith(token) for field_token in normalized_tokens):
+        return prefix_score
+    return 0.0
+
+
+def _field_has_phrase(phrase_query: str, field: dict[str, Any]) -> bool:
+    text = field.get("text")
+    if not isinstance(text, str) or not phrase_query:
+        return False
+    return phrase_query in text
 
 
 @dataclass(slots=True)
 class SearchIndex:
     repo: StorageRepo
-
-    def _source_paths(self) -> list[Path]:
-        paths: list[Path] = []
-        workbench_path = self.repo.layout.local_workbench_path()
-        if workbench_path.exists():
-            paths.append(workbench_path)
-        if self.repo.layout.categories_root.exists():
-            for category_path in self.repo.layout.categories_root.glob("*/category.json"):
-                if category_path.exists():
-                    paths.append(category_path)
-        if self.repo.layout.records_root.exists():
-            for record_dir in self.repo.layout.records_root.iterdir():
-                if not record_dir.is_dir():
-                    continue
-                for name in ("record.json", "dataset_entry.json", "prompt.txt"):
-                    candidate = record_dir / name
-                    if candidate.exists():
-                        paths.append(candidate)
-        return paths
-
-    def _current_signature(self) -> str:
-        return _signature_for_paths(self._source_paths(), self.repo.root)
+    _cached_path_mtime_ns: int | None = field(default=None, init=False, repr=False)
+    _cached_documents: list[dict[str, Any]] | None = field(default=None, init=False, repr=False)
 
     def _load_workbench_entries(self) -> dict[str, dict[str, str]]:
         raw = self.repo.read_json(self.repo.layout.local_workbench_path(), default={}) or {}
@@ -116,10 +114,10 @@ class SearchIndex:
             }
         return categories
 
-    def _build_documents(self) -> tuple[list[tuple[Any, ...]], int, int]:
+    def _build_documents(self) -> tuple[list[dict[str, Any]], int, int]:
         workbench_entries = self._load_workbench_entries()
         categories = self._load_categories()
-        documents: list[tuple[Any, ...]] = []
+        documents: list[dict[str, Any]] = []
 
         records_root = self.repo.layout.records_root
         if records_root.exists():
@@ -148,138 +146,235 @@ class SearchIndex:
             if isinstance(dataset_entry, dict):
                 dataset_id = str(dataset_entry.get("dataset_id") or "")
 
+            title = str(display.get("title") or "")
+            label = str(workbench.get("label") or "")
+            tags = str(workbench.get("tags") or "")
+            category_title = str(category.get("title") or "")
+
+            title_field = _field_document(title)
+            label_field = _field_document(label)
+            tags_field = _field_document(tags)
+            category_slug_field = _field_document(category_slug)
+            category_title_field = _field_document(category_title)
+            record_id_field = _field_document(record_id)
+            dataset_id_field = _field_document(dataset_id)
+            prompt_field = _field_document(prompt_text)
+
             documents.append(
-                (
-                    record_id,
-                    str(display.get("title") or ""),
-                    str(workbench.get("label") or ""),
-                    str(workbench.get("tags") or ""),
-                    category_slug,
-                    str(category.get("title") or ""),
-                    dataset_id,
-                    prompt_text,
-                    str(source.get("run_id") or ""),
-                    str(record.get("created_at") or ""),
-                    1 if record_id in workbench_entries else 0,
-                    1 if dataset_id else 0,
-                )
+                {
+                    "record_id": record_id,
+                    "run_id": str(source.get("run_id") or ""),
+                    "created_at": str(record.get("created_at") or ""),
+                    "in_workbench": record_id in workbench_entries,
+                    "in_dataset": bool(dataset_id),
+                    "title": title_field,
+                    "label": label_field,
+                    "tags": tags_field,
+                    "category_slug": category_slug_field,
+                    "category_title": category_title_field,
+                    "record_id_field": record_id_field,
+                    "dataset_id": dataset_id_field,
+                    "prompt_full": prompt_field,
+                    "all_tokens": _unique_tokens(
+                        title_field["tokens"],
+                        label_field["tokens"],
+                        tags_field["tokens"],
+                        category_slug_field["tokens"],
+                        category_title_field["tokens"],
+                        record_id_field["tokens"],
+                        dataset_id_field["tokens"],
+                        prompt_field["tokens"],
+                    ),
+                }
             )
 
         return documents, len(categories), len(workbench_entries)
 
-    def rebuild(self) -> SearchIndexStats:
-        documents, category_count, workbench_entry_count = self._build_documents()
-        signature = self._current_signature()
+    def _write_cache(
+        self,
+        *,
+        documents: list[dict[str, Any]],
+        category_count: int,
+        workbench_entry_count: int,
+    ) -> None:
         path = self.repo.layout.search_index_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         if temporary_path.exists():
             temporary_path.unlink()
 
-        with sqlite3.connect(temporary_path) as connection:
-            connection.execute("PRAGMA synchronous=NORMAL")
-            connection.execute(
-                """
-                CREATE TABLE search_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE record_lookup (
-                    record_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    in_workbench INTEGER NOT NULL,
-                    in_dataset INTEGER NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE VIRTUAL TABLE records_fts USING fts5(
-                    record_id,
-                    title,
-                    label,
-                    tags,
-                    category_slug,
-                    category_title,
-                    dataset_id,
-                    prompt_full,
-                    tokenize = 'unicode61 remove_diacritics 2'
-                )
-                """
-            )
-            connection.executemany(
-                "INSERT INTO search_meta (key, value) VALUES (?, ?)",
-                (
-                    ("schema_version", str(_INDEX_SCHEMA_VERSION)),
-                    ("signature", signature),
-                ),
-            )
-            connection.executemany(
-                """
-                INSERT INTO record_lookup (
-                    record_id,
-                    run_id,
-                    created_at,
-                    in_workbench,
-                    in_dataset
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                [(doc[0], doc[8], doc[9], doc[10], doc[11]) for doc in documents],
-            )
-            connection.executemany(
-                """
-                INSERT INTO records_fts (
-                    record_id,
-                    title,
-                    label,
-                    tags,
-                    category_slug,
-                    category_title,
-                    dataset_id,
-                    prompt_full
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [doc[:8] for doc in documents],
-            )
-            connection.commit()
-
+        payload = {
+            "schema_version": _INDEX_SCHEMA_VERSION,
+            "record_count": len(documents),
+            "category_count": category_count,
+            "workbench_entry_count": workbench_entry_count,
+            "documents": documents,
+        }
+        temporary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary_path, path)
 
+    def _cache_stats(
+        self,
+        *,
+        record_count: int,
+        category_count: int,
+        workbench_entry_count: int,
+    ) -> SearchIndexStats:
         return SearchIndexStats(
+            record_count=record_count,
+            category_count=category_count,
+            workbench_entry_count=workbench_entry_count,
+            path=self.repo.layout.search_index_path(),
+        )
+
+    def _prime_cache(
+        self,
+        *,
+        documents: list[dict[str, Any]],
+        path_mtime_ns: int | None,
+    ) -> None:
+        self._cached_path_mtime_ns = path_mtime_ns
+        self._cached_documents = documents
+
+    def rebuild(self) -> SearchIndexStats:
+        documents, category_count, workbench_entry_count = self._build_documents()
+        self._write_cache(
+            documents=documents,
+            category_count=category_count,
+            workbench_entry_count=workbench_entry_count,
+        )
+        stats = self._cache_stats(
             record_count=len(documents),
             category_count=category_count,
             workbench_entry_count=workbench_entry_count,
-            path=path,
         )
+        try:
+            path_mtime_ns = self.repo.layout.search_index_path().stat().st_mtime_ns
+        except OSError:
+            path_mtime_ns = None
+        self._prime_cache(documents=documents, path_mtime_ns=path_mtime_ns)
+        return stats
 
-    def _stored_meta(self) -> tuple[str | None, str | None]:
+    def _load_cached_payload(self) -> tuple[dict[str, Any], int | None] | None:
         path = self.repo.layout.search_index_path()
         if not path.exists():
-            return None, None
+            return None
         try:
-            with sqlite3.connect(path) as connection:
-                rows = connection.execute(
-                    "SELECT key, value FROM search_meta WHERE key IN ('schema_version', 'signature')"
-                ).fetchall()
-        except sqlite3.Error:
-            return None, None
-        values = {str(key): str(value) for key, value in rows}
-        return values.get("schema_version"), values.get("signature")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            path_mtime_ns = path.stat().st_mtime_ns
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema_version") != _INDEX_SCHEMA_VERSION:
+            return None
+        documents = payload.get("documents")
+        if not isinstance(documents, list):
+            return None
+        return payload, path_mtime_ns
 
     def ensure_current(self) -> SearchIndexStats | None:
         path = self.repo.layout.search_index_path()
-        signature = self._current_signature()
-        if not path.exists():
+        try:
+            current_mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            current_mtime_ns = None
+        if (
+            current_mtime_ns is not None
+            and self._cached_path_mtime_ns == current_mtime_ns
+            and self._cached_documents is not None
+        ):
+            return None
+        cached = self._load_cached_payload()
+        if cached is None:
             return self.rebuild()
-        stored_schema_version, stored_signature = self._stored_meta()
-        if stored_schema_version != str(_INDEX_SCHEMA_VERSION) or stored_signature != signature:
-            return self.rebuild()
+        payload, path_mtime_ns = cached
+        self._prime_cache(
+            documents=[doc for doc in payload["documents"] if isinstance(doc, dict)],
+            path_mtime_ns=path_mtime_ns,
+        )
         return None
+
+    def _score_document(
+        self, document: dict[str, Any], query_tokens: list[str], phrase_query: str
+    ) -> float:
+        all_tokens = document.get("all_tokens")
+        if not isinstance(all_tokens, list):
+            return 0.0
+        searchable_tokens = [str(token) for token in all_tokens]
+        if not all(
+            token in searchable_tokens
+            or any(candidate.startswith(token) for candidate in searchable_tokens)
+            for token in query_tokens
+        ):
+            return 0.0
+
+        score = 0.0
+        for token in query_tokens:
+            score += max(
+                _field_token_score(
+                    token, document.get("title", {}), exact_score=140.0, prefix_score=100.0
+                ),
+                _field_token_score(
+                    token, document.get("label", {}), exact_score=130.0, prefix_score=90.0
+                ),
+                _field_token_score(
+                    token, document.get("tags", {}), exact_score=110.0, prefix_score=75.0
+                ),
+                _field_token_score(
+                    token,
+                    document.get("category_title", {}),
+                    exact_score=110.0,
+                    prefix_score=75.0,
+                ),
+                _field_token_score(
+                    token,
+                    document.get("category_slug", {}),
+                    exact_score=100.0,
+                    prefix_score=70.0,
+                ),
+            )
+            score += max(
+                _field_token_score(
+                    token,
+                    document.get("record_id_field", {}),
+                    exact_score=85.0,
+                    prefix_score=60.0,
+                ),
+                _field_token_score(
+                    token,
+                    document.get("dataset_id", {}),
+                    exact_score=85.0,
+                    prefix_score=60.0,
+                ),
+            )
+            if len(token) >= 3:
+                score += _field_token_score(
+                    token,
+                    document.get("prompt_full", {}),
+                    exact_score=15.0,
+                    prefix_score=8.0,
+                )
+
+        if phrase_query:
+            if _field_has_phrase(phrase_query, document.get("title", {})):
+                score += 90.0
+            elif _field_has_phrase(phrase_query, document.get("label", {})):
+                score += 80.0
+            elif _field_has_phrase(phrase_query, document.get("category_title", {})):
+                score += 70.0
+            elif _field_has_phrase(phrase_query, document.get("category_slug", {})):
+                score += 60.0
+            elif _field_has_phrase(phrase_query, document.get("record_id_field", {})):
+                score += 50.0
+            elif _field_has_phrase(phrase_query, document.get("dataset_id", {})):
+                score += 50.0
+            elif len(phrase_query) >= 5 and _field_has_phrase(
+                phrase_query, document.get("prompt_full", {})
+            ):
+                score += 20.0
+
+        return score
 
     def search_record_ids(
         self,
@@ -290,121 +385,32 @@ class SearchIndex:
         limit: int = 200,
     ) -> list[str]:
         self.ensure_current()
-        expression = _query_expression(query)
-        if expression is None:
-            return []
-
-        sql_parts = [
-            """
-            SELECT
-                records_fts.record_id,
-                records_fts.title,
-                records_fts.label,
-                records_fts.tags,
-                records_fts.category_slug,
-                records_fts.category_title,
-                records_fts.dataset_id,
-                records_fts.prompt_full,
-                record_lookup.created_at,
-                bm25(records_fts, ?, ?, ?, ?, ?, ?, ?, ?) AS rank_score
-            FROM records_fts
-            JOIN record_lookup USING (record_id)
-            WHERE records_fts MATCH ?
-            """
-        ]
-        parameters: list[Any] = [*_SCORE_WEIGHTS, expression]
-
-        if source_filter == "workbench":
-            sql_parts.append("AND record_lookup.in_workbench = 1")
-        elif source_filter == "dataset":
-            sql_parts.append("AND record_lookup.in_dataset = 1")
-
-        if run_id:
-            sql_parts.append("AND record_lookup.run_id = ?")
-            parameters.append(run_id)
-
-        sql_parts.append("LIMIT ?")
-        parameters.append(limit)
-
-        path = self.repo.layout.search_index_path()
-        with sqlite3.connect(path) as connection:
-            rows = connection.execute("\n".join(sql_parts), parameters).fetchall()
-
         query_tokens = _tokenize(query)
+        if not query_tokens:
+            return []
         phrase_query = " ".join(query_tokens)
+        documents = self._cached_documents or []
         ranked_rows: list[tuple[float, str, str]] = []
-        for row in rows:
-            (
-                record_id,
-                title,
-                label,
-                tags,
-                category_slug,
-                category_title,
-                dataset_id,
-                prompt_full,
-                created_at,
-                rank_score,
-            ) = row
 
-            title_tokens = _tokenize(title)
-            label_tokens = _tokenize(label)
-            tag_tokens = _tokenize(tags)
-            category_slug_tokens = _tokenize(category_slug)
-            category_title_tokens = _tokenize(category_title)
-            record_id_tokens = _tokenize(str(record_id))
-            dataset_id_tokens = _tokenize(dataset_id)
-            prompt_tokens = _tokenize(prompt_full)
-
-            bonus = 0.0
-            for token in query_tokens:
-                high_signal_groups = (
-                    title_tokens,
-                    label_tokens,
-                    tag_tokens,
-                    category_slug_tokens,
-                    category_title_tokens,
+        for document in documents:
+            if source_filter == "workbench" and not document.get("in_workbench"):
+                continue
+            if source_filter == "dataset" and not document.get("in_dataset"):
+                continue
+            if run_id and str(document.get("run_id") or "") != run_id:
+                continue
+            score = self._score_document(document, query_tokens, phrase_query)
+            if score <= 0:
+                continue
+            ranked_rows.append(
+                (
+                    score,
+                    str(document.get("created_at") or ""),
+                    str(document.get("record_id") or ""),
                 )
-                identifier_groups = (record_id_tokens, dataset_id_tokens)
+            )
 
-                if any(token in group for group in high_signal_groups):
-                    bonus += 24.0
-                elif any(
-                    group_token.startswith(token)
-                    for group in high_signal_groups
-                    for group_token in group
-                ):
-                    bonus += 14.0
-
-                if any(token in group for group in identifier_groups):
-                    bonus += 12.0
-                elif any(
-                    group_token.startswith(token)
-                    for group in identifier_groups
-                    for group_token in group
-                ):
-                    bonus += 8.0
-
-                if len(token) >= 3:
-                    if token in prompt_tokens:
-                        bonus += 3.0
-                    elif any(group_token.startswith(token) for group_token in prompt_tokens):
-                        bonus += 1.0
-
-            if phrase_query:
-                if phrase_query in _phrase_text(title):
-                    bonus += 10.0
-                elif phrase_query in _phrase_text(label):
-                    bonus += 8.0
-                elif phrase_query in _phrase_text(category_title):
-                    bonus += 8.0
-                elif len(phrase_query) >= 5 and phrase_query in _phrase_text(prompt_full):
-                    bonus += 2.0
-
-            final_score = float(rank_score) - bonus
-            ranked_rows.append((final_score, str(created_at or ""), str(record_id)))
-
-        ranked_rows.sort(key=lambda item: (item[0], item[1]), reverse=False)
+        ranked_rows.sort(key=lambda item: item[2])
         ranked_rows.sort(key=lambda item: item[1], reverse=True)
-        ranked_rows.sort(key=lambda item: item[0])
-        return [record_id for _, _, record_id in ranked_rows]
+        ranked_rows.sort(key=lambda item: item[0], reverse=True)
+        return [record_id for _, _, record_id in ranked_rows[:limit]]

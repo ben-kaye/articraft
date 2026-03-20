@@ -23,34 +23,50 @@ ctx = TestContext(
 
 If the model was constructed with `ArticulatedObject(..., assets=AssetContext.from_script(__file__))`, `TestContext(object_model, ...)` can infer the mesh root automatically. If not, pass `asset_root=HERE` explicitly whenever the model uses mesh files.
 
-## Required checks
+## Default broad sensors and backstops
 
-Every generated model should include all of these:
+Every generated model should start from these broad sensors and backstops:
 
 ```python
 ctx.check_model_valid()
 ctx.check_mesh_files_exist()
-ctx.check_articulation_origin_near_geometry(tol=0.015)
-ctx.check_part_geometry_connected(use="visual")
-ctx.check_no_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
+ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
+ctx.warn_if_part_geometry_connected(use="visual")
+ctx.warn_if_coplanar_surfaces(use="visual")
+ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
 ```
 
 Mesh-backed models:
 
-- If any part uses `Mesh(filename="meshes/...")` or `mesh_from_geometry(...)`, keep either model assets or `asset_root=...` wired into `TestContext`.
+- If any part uses `Mesh(filename="assets/meshes/...")` or `mesh_from_geometry(...)`, keep either model assets or `asset_root=...` wired into `TestContext`.
 - Without that, mesh-aware checks can fail because the SDK cannot resolve relative mesh paths or write generated collision hulls.
 
 What they catch:
 
-- `check_articulation_origin_near_geometry`: the articulation origin is near real geometry in both parent and child frames; default to `tol=0.015`. The harness truncates this tolerance to 3 decimals and caps it at `0.15`.
-- `check_part_geometry_connected`: a single part is not made of disconnected visual geometry islands.
-- `check_no_overlaps`: generated collision geometry does not intersect across sampled articulation poses. Recommended usage is as a broad backstop with `ignore_adjacent=True, ignore_fixed=True`, then explicit intent checks for attachment and for pairs that must stay separate.
+- `warn_if_articulation_origin_near_geometry`: a deliberately dumb static heuristic that checks whether the articulation origin is near real geometry in both parent and child frames; default `tol=0.015`. The harness truncates this tolerance to 3 decimals and caps it at `0.15`.
+- `warn_if_part_geometry_connected`: a deliberately dumb static heuristic that checks whether a single part appears to contain disconnected visual geometry islands.
+- `warn_if_coplanar_surfaces`: a deliberately noisy visual heuristic that looks for nearly coplanar element AABB faces with strong in-plane overlap. Flush mounts, bezels, grilles, and panel seams can trigger it even when the model is acceptable.
+- `warn_if_overlaps`: a deliberately broad overlap sensor over generated collision geometry. It relies on generated collisions, AABB reasoning, and convex decomposition, so it can be noisy for thin wires, thin blades, concave shells, and other awkward geometry.
 
-The harness also runs an automatic isolated-part warning pass at compile time:
+These broad checks are warning-tier sensors, not semantic proof. The agent still needs to reason about the object and add prompt-specific `expect_*` assertions as actual regression tests for silhouette, structure, proportions, and mechanism behavior.
+
+Recommended default:
+
+- Include `warn_if_overlaps(...)` on every generated model as a broad warning-tier sensor, even when you do not want overlap findings to fail the run.
+- Include `warn_if_coplanar_surfaces(...)` on every generated model as a warning-tier sensor, then decide case-by-case whether any warning actually merits changing the geometry.
+
+Important:
+
+- `warn_if_articulation_origin_near_geometry(...)` is not scale-aware; its tolerance is a fixed metric distance in meters.
+- A tolerance that is sensible for a compact consumer object may be too strict, too loose, or simply irrelevant for a very large assembly.
+- For large objects, treat it as a loose warning sensor or omit it, then use prompt-specific `expect_*` checks to prove the actual mounting and placement claims you care about.
+
+The harness also runs automatic isolated-part checks at compile time:
 
 - it checks multi-part objects for parts that are not contacting any other part in the checked pose
-- it emits both `visual` and `collision` warnings when it finds isolated parts
-- it is non-blocking, but should usually be treated as evidence of floating geometry or a bad mount
+- `visual` isolated-part findings are warnings because they use broad visible-envelope contact
+- `collision` isolated-part findings are blocking by default because even the conservative generated collision envelopes still do not touch
+- a collision isolated-part failure should usually be treated as a real floating-geometry or bad-mount bug
 
 ## Overlap allowances
 
@@ -58,7 +74,7 @@ The harness also runs an automatic isolated-part warning pass at compile time:
 ctx.allow_overlap("door", "body", reason="hinge adjacency")
 ```
 
-Use allowances narrowly. Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look attached instead of floating. Still call `ctx.check_no_overlaps(...)` so the allowance is tracked.
+Use allowances narrowly. Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look attached instead of floating. Still call `ctx.warn_if_overlaps(...)` so the allowance is tracked.
 
 ## Pose-aware queries
 
@@ -130,9 +146,10 @@ For pairs that truly must not intersect across motion, add selective separation 
 ```python
 ctx.check_model_valid()
 ctx.check_mesh_files_exist()
-ctx.check_articulation_origin_near_geometry(tol=0.015)
-ctx.check_part_geometry_connected(use="visual")
-ctx.check_no_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
+ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
+ctx.warn_if_part_geometry_connected(use="visual")
+ctx.warn_if_coplanar_surfaces(use="visual")
+ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
 ctx.expect_aabb_overlap("lid", "base", axes="xy", min_overlap=0.05)
 ctx.expect_origin_distance("lid", "base", axes="xy", max_dist=0.02)
 ctx.expect_aabb_gap("lid", "base", axis="z", max_gap=0.001, max_penetration=0.0)

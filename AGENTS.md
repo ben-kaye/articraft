@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`agent/` contains the generation runtime, providers, prompt compiler, and TUI helpers. `storage/` owns the canonical `data/` layout, record models, and query helpers used by the dataset and workbench flows. `sdk/`, `sdk_hybrid/`, and `sdk/_core/` define the articulated-object SDK layers and shared geometry/export logic. `viewer/api/` exposes the FastAPI surface. `cli/` contains the repository entry points, while `tests/` mirrors the main packages with smoke-style checks such as `tests/storage/test_repo.py`.
+`agent/` contains the generation runtime, providers, prompt compiler, and TUI helpers. `storage/` owns the canonical `data/` layout, batch spec storage, record models, and query helpers used by the dataset and workbench flows. `sdk/`, `sdk_hybrid/`, and `sdk/_core/` define the articulated-object SDK layers and shared geometry/export logic. `viewer/api/` exposes the FastAPI surface. `cli/` contains the repository entry points, while `tests/` mirrors the main packages with smoke-style checks such as `tests/storage/test_repo.py`.
 
 ## Build, Test, and Development Commands
 Use `uv` for direct Python workflows, and `just` for the agent-facing shortcuts that speed up common iteration loops. For additional shortcuts, run `just` or check [`justfile`](/Users/matthewzhou/articraft/justfile).
@@ -10,11 +10,15 @@ When a `just` recipe supports optional settings, pass them as overrides before t
 - `uv sync --group dev` installs the project and development dependencies.
 - `uv build` creates the wheel and source distribution in `dist/`.
 - `uv run articraft-dataset --repo-root . init-storage` creates the canonical `data/` tree for dataset work.
+- `uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --concurrency 8` runs a tracked dataset batch CSV into canonical records.
+- `uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --concurrency 8 --resume` resumes the latest prior run for that batch spec.
 - `uv run articraft-workbench --repo-root . status` inspects the workbench store state.
 - `uv run uvicorn viewer.api.app:app --reload --host 127.0.0.1 --port 8765` starts the local API directly.
 - `uv run --group dev pytest -q` runs the current smoke-test suite.
 - `just setup` handles first-time repo setup and storage initialization.
 - `just smoke-tests` runs the smoke-test suite.
+- `just name=<batch-id> batch-spec-new` creates `data/batch_specs/<batch-id>.csv` with the canonical batch CSV header.
+- `just spec=data/batch_specs/<batch-id>.csv concurrency=8 dataset-batch` runs the dataset batch shortcut; batch row provider/model settings come from the CSV.
 - `just wb-init "prompt text"` creates a draft workbench record without running generation, which is useful when you want an empty record directory to work in.
 - `just image=reference.png wb-init "prompt text"` stores a reference image with the draft so later reruns keep the same conditioning.
 - `just compile data/records/<id>` recompiles a record's `model.py` into `model.urdf`.
@@ -34,4 +38,4 @@ Tests run under `pytest`. Add new coverage under the mirrored package path, name
 Recent commits use short, imperative subjects such as `Move prompt compiler under agent` and `Consolidate SDK around canonical core profiles`. Keep commit titles concise and scoped to one logical change. PRs should describe the affected surface (`agent`, `storage`, `sdk`, or `viewer`), include the exact `uv` commands run, and attach screenshots only when API or viewer behavior changes.
 
 ## Configuration Tips
-Provider code loads environment variables from `.env`. Set `OPENAI_API_KEYS` (preferred) or `OPENAI_API_KEY` for OpenAI flows and `GEMINI_API_KEYS` for Gemini flows before running the agent runtime.
+Provider code loads environment variables from `.env`. Set `OPENAI_API_KEYS` (preferred) or `OPENAI_API_KEY` for OpenAI flows and `GEMINI_API_KEYS` for Gemini flows before running the agent runtime. Dataset batch specs live under `data/batch_specs/`; each row sets its own `provider`, `model_id`, `thinking_level`, `max_turns`, and `sdk_package`, while `concurrency` is supplied at invocation time.
