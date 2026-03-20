@@ -1482,3 +1482,104 @@ def test_viewer_store_full_materialize_can_enable_validation(
     compile_report = repo.read_json(record_dir / "compile_report.json")
     assert compile_report["metrics"]["compile_level"] == "full"
     assert compile_report["metrics"]["validation_level"] == "full"
+
+
+def test_viewer_store_can_skip_nested_compile_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    record_store = RecordStore(repo)
+
+    record = Record(
+        schema_version=1,
+        record_id="rec_direct_compile_001",
+        created_at="2026-03-20T10:00:00Z",
+        updated_at="2026-03-20T10:00:00Z",
+        rating=None,
+        kind="generated_model",
+        prompt_kind="single_prompt",
+        category_slug="hinges",
+        source=SourceRef(run_id="run_direct_compile_001"),
+        sdk_package="sdk",
+        provider="openai",
+        model_id="gpt-5.4",
+        display=DisplayMetadata(
+            title="Direct compile model",
+            prompt_preview="record compiled without nested timeout wrapper",
+        ),
+        artifacts=RecordArtifacts(
+            prompt_txt="prompt.txt",
+            prompt_series_json=None,
+            model_py="model.py",
+            model_urdf="model.urdf",
+            compile_report_json="compile_report.json",
+            provenance_json="provenance.json",
+            cost_json=None,
+        ),
+        collections=["workbench"],
+    )
+    record_store.write_record(record)
+    record_dir = repo.layout.record_dir("rec_direct_compile_001")
+    (record_dir / "prompt.txt").write_text("direct compile", encoding="utf-8")
+    (record_dir / "model.py").write_text("from __future__ import annotations\n", encoding="utf-8")
+    repo.write_json(
+        record_dir / "provenance.json",
+        {
+            "schema_version": 1,
+            "record_id": "rec_direct_compile_001",
+            "materialization": {
+                "fingerprint_inputs": {
+                    "model_py_sha256": None,
+                    "model_urdf_sha256": None,
+                }
+            },
+        },
+    )
+
+    direct_compile_calls: list[tuple[Path, bool, str]] = []
+
+    def fake_direct_compile(
+        script_path: Path,
+        *,
+        sdk_package: str = "sdk",
+        ignore_geom_qc: bool = False,
+        run_checks: bool = True,
+        target: str = "full",
+    ) -> SimpleNamespace:
+        direct_compile_calls.append((script_path, run_checks, target))
+        return SimpleNamespace(
+            urdf_xml=(
+                "<robot name='direct'>"
+                "<link name='base'>"
+                "<visual><geometry><box size='1 1 1'/></geometry></visual>"
+                "<collision><geometry><box size='1 1 1'/></geometry></collision>"
+                "</link>"
+                "</robot>"
+            ),
+            warnings=[],
+        )
+
+    def fail_if_timeout_wrapper_called(*args, **kwargs):
+        raise AssertionError("timeout wrapper should not be used in direct bulk compile mode")
+
+    monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report",
+        fake_direct_compile,
+    )
+    monkeypatch.setattr(
+        "agent.compiler.compile_urdf_report_maybe_timeout",
+        fail_if_timeout_wrapper_called,
+    )
+
+    viewer_store = ViewerStore(tmp_path)
+    result = viewer_store.materialize_record_assets(
+        "rec_direct_compile_001",
+        force=True,
+        target="full",
+        use_compile_timeout=False,
+    )
+
+    assert result.compiled is True
+    assert direct_compile_calls == [(record_dir / "model.py", False, "full")]

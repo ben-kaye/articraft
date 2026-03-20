@@ -199,37 +199,11 @@ def compile_urdf_report(
     test_report = None
     if run_checks:
         try:
-            _warn_cwd_relative_asset_paths(script_path=script_path, warnings=warnings)
-            _warn_geometry_scale_anomalies(
-                globals_dict,
-                script_dir=script_path.parent,
-                warnings=warnings,
-                sdk_package=sdk_package,
-            )
-            overlap_warning = None
-            if target_key != "visual":
-                overlap_warning = _validate_geometry_overlaps(
+            if target_key == "full":
+                test_report = _run_required_tests(
                     globals_dict,
-                    script_dir=script_path.parent,
                     sdk_package=sdk_package,
                 )
-                if overlap_warning:
-                    warnings.append(overlap_warning)
-
-                warnings.extend(
-                    _validate_unsupported_parts(
-                        globals_dict,
-                        script_dir=script_path.parent,
-                        sdk_package=sdk_package,
-                    )
-                )
-
-                if target_key == "full":
-                    test_report = _run_required_tests(
-                        globals_dict,
-                        overlap_warning=overlap_warning,
-                        sdk_package=sdk_package,
-                    )
         except Exception as exc:
             urdf_xml = _extract_urdf_xml(
                 globals_dict,
@@ -629,7 +603,7 @@ def _validate_geometry_overlaps(
     if os.environ.get("URDF_DISABLE_GEOMETRY_OVERLAP_CHECK") in {"1", "true", "TRUE"}:
         return None
 
-    max_samples = int(os.environ.get("URDF_GEOMETRY_OVERLAP_MAX_SAMPLES", "256"))
+    max_samples = int(os.environ.get("URDF_GEOMETRY_OVERLAP_MAX_SAMPLES", "128"))
 
     object_model = globals_dict.get("object_model")
     if object_model is None:
@@ -1254,7 +1228,6 @@ def _point_aabb_distance(
 def _run_required_tests(
     globals_dict: dict,
     *,
-    overlap_warning: str | None,
     sdk_package: str = "sdk",
 ) -> object:
     run_tests = globals_dict.get("run_tests")

@@ -834,10 +834,6 @@ def _find_collision_overlaps_fcl(
                     continue
                 for ia, (aabb_a, obj_a, item_a) in enumerate(link_elem_bounds[a]):
                     for ib, (aabb_b, obj_b, item_b) in enumerate(link_elem_bounds[b]):
-                        result = fcl.CollisionResult()
-                        collided = fcl.collide(obj_a, obj_b, collision_request, result)
-                        if int(collided) <= 0:
-                            continue
                         depth = _aabb_intersection_depth(aabb_a, aabb_b)
                         volume = _aabb_intersection_volume(aabb_a, aabb_b)
                         if not (
@@ -847,6 +843,10 @@ def _find_collision_overlaps_fcl(
                         ):
                             continue
                         if volume <= overlap_volume_tol:
+                            continue
+                        result = fcl.CollisionResult()
+                        collided = fcl.collide(obj_a, obj_b, collision_request, result)
+                        if int(collided) <= 0:
                             continue
                         overlaps.append(
                             GeometryOverlap(

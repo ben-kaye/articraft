@@ -15,6 +15,7 @@ sdk_package := "sdk"
 viewer_target := "/"
 spec := ""
 concurrency := "5"
+limit := ""
 name := ""
 
 setup:
@@ -453,16 +454,49 @@ compile-unsafe record_dir:
     PY
 
 compile-all:
-    uv run python scripts/compile_all_records.py --repo-root .
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(uv run python scripts/compile_all_records.py --repo-root . --concurrency {{ quote(concurrency) }})
+    if [ -n {{ quote(limit) }} ]; then
+      cmd+=(--limit {{ quote(limit) }})
+    fi
+    exec "${cmd[@]}"
 
 compile-all-visual:
-    uv run python scripts/compile_all_records.py --repo-root . --target visual
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(uv run python scripts/compile_all_records.py --repo-root . --target visual --concurrency {{ quote(concurrency) }})
+    if [ -n {{ quote(limit) }} ]; then
+      cmd+=(--limit {{ quote(limit) }})
+    fi
+    exec "${cmd[@]}"
 
 force-compile-all:
-    uv run python scripts/compile_all_records.py --repo-root . --force
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(uv run python scripts/compile_all_records.py --repo-root . --force --concurrency {{ quote(concurrency) }})
+    if [ -n {{ quote(limit) }} ]; then
+      cmd+=(--limit {{ quote(limit) }})
+    fi
+    exec "${cmd[@]}"
+
+force-compile-all-visual:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(uv run python scripts/compile_all_records.py --repo-root . --target visual --force --concurrency {{ quote(concurrency) }})
+    if [ -n {{ quote(limit) }} ]; then
+      cmd+=(--limit {{ quote(limit) }})
+    fi
+    exec "${cmd[@]}"
 
 compile-all-strict:
-    uv run python scripts/compile_all_records.py --repo-root . --strict
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmd=(uv run python scripts/compile_all_records.py --repo-root . --strict --concurrency {{ quote(concurrency) }})
+    if [ -n {{ quote(limit) }} ]; then
+      cmd+=(--limit {{ quote(limit) }})
+    fi
+    exec "${cmd[@]}"
 
 viewer-web-install:
     npm --prefix viewer/web install

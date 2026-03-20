@@ -133,6 +133,46 @@ def test_compile_urdf_report_can_ignore_geometry_qc_after_materialization(
     assert report.signal_bundle.status == "success"
 
 
+def test_compile_urdf_report_full_validation_runs_only_run_tests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin, TestContext",
+                "from pathlib import Path",
+                "",
+                "HERE = Path(__file__).resolve().parent",
+                "object_model = ArticulatedObject(name='tests_only')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "",
+                "def run_tests():",
+                "    ctx = TestContext(object_model, asset_root=HERE, geometry_source='collision')",
+                "    return ctx.report()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("compiler-owned QC should not run during full validation")
+
+    monkeypatch.setattr("agent.compiler._warn_cwd_relative_asset_paths", fail_if_called)
+    monkeypatch.setattr("agent.compiler._warn_geometry_scale_anomalies", fail_if_called)
+    monkeypatch.setattr("agent.compiler._validate_geometry_overlaps", fail_if_called)
+    monkeypatch.setattr("agent.compiler._validate_unsupported_parts", fail_if_called)
+
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert report.signal_bundle.status == "success"
+
+
 def test_compile_urdf_report_does_not_ignore_non_geometry_failures(tmp_path: Path) -> None:
     script_path = tmp_path / "model.py"
     script_path.write_text(

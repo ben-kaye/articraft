@@ -227,7 +227,7 @@ class MaterializeRecordAssetsResult:
 
 
 class ViewerStore:
-    def __init__(self, repo_root: Path) -> None:
+    def __init__(self, repo_root: Path, *, ensure_search_index: bool = True) -> None:
         self.repo_root = repo_root.resolve()
         self.repo = StorageRepo(self.repo_root)
         self.repo.ensure_layout()
@@ -235,7 +235,8 @@ class ViewerStore:
         self.datasets = DatasetStore(self.repo)
         self.records = RecordStore(self.repo)
         self.search = SearchIndex(self.repo)
-        self.search.ensure_current()
+        if ensure_search_index:
+            self.search.ensure_current()
         self._compile_locks_guard = threading.Lock()
         self._compile_locks: dict[str, threading.Lock] = {}
 
@@ -386,6 +387,7 @@ class ViewerStore:
         ignore_geom_qc: bool = True,
         validate: bool = False,
         target: str = "full",
+        use_compile_timeout: bool = True,
     ) -> MaterializeRecordAssetsResult:
         if target not in {"full", "visual"}:
             raise ValueError(f"Unsupported materialization target: {target!r}")
@@ -460,7 +462,7 @@ class ViewerStore:
                     compile_path=compile_path,
                 )
 
-            from agent.compiler import compile_urdf_report_maybe_timeout
+            from agent.compiler import compile_urdf_report, compile_urdf_report_maybe_timeout
 
             sdk_package = str(refreshed_record.get("sdk_package") or "sdk")
             run_checks = bool(validate and target == "full")
@@ -472,8 +474,11 @@ class ViewerStore:
                 if run_checks
                 else ["compile_urdf_fast"]
             )
+            compile_fn = (
+                compile_urdf_report_maybe_timeout if use_compile_timeout else compile_urdf_report
+            )
             try:
-                compile_result = compile_urdf_report_maybe_timeout(
+                compile_result = compile_fn(
                     model_path,
                     sdk_package=sdk_package,
                     ignore_geom_qc=ignore_geom_qc if run_checks else False,

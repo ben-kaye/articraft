@@ -5,10 +5,14 @@ import json
 from rich.console import Console
 
 from scripts.compile_all_records import (
+    CompileCandidate,
     _build_summary_table,
     _collect_candidates,
     _format_bulk_compile_error,
+    _limit_candidates,
+    _resolve_worker_count,
     _should_suppress_bulk_compile_error,
+    _sort_candidates_for_compile,
 )
 from storage.repo import StorageRepo
 
@@ -93,6 +97,73 @@ def test_summary_uses_failure_label() -> None:
     rendered = console.export_text()
 
     assert "Failed" in rendered
+
+
+def test_sort_candidates_for_compile_prefers_heavier_records() -> None:
+    candidates = [
+        CompileCandidate(
+            "rec_light", "missing model.urdf", estimated_mesh_bytes=10, mesh_file_count=1
+        ),
+        CompileCandidate(
+            "rec_heavy", "missing model.urdf", estimated_mesh_bytes=100, mesh_file_count=2
+        ),
+        CompileCandidate(
+            "rec_medium", "missing model.urdf", estimated_mesh_bytes=50, mesh_file_count=4
+        ),
+    ]
+
+    ordered = _sort_candidates_for_compile(candidates)
+
+    assert [candidate.record_id for candidate in ordered] == [
+        "rec_heavy",
+        "rec_medium",
+        "rec_light",
+    ]
+
+
+def test_limit_candidates_applies_after_heavy_first_sort() -> None:
+    candidates = [
+        CompileCandidate(
+            "rec_light", "missing model.urdf", estimated_mesh_bytes=10, mesh_file_count=1
+        ),
+        CompileCandidate(
+            "rec_heavy", "missing model.urdf", estimated_mesh_bytes=100, mesh_file_count=2
+        ),
+        CompileCandidate(
+            "rec_medium", "missing model.urdf", estimated_mesh_bytes=50, mesh_file_count=4
+        ),
+    ]
+
+    limited = _limit_candidates(candidates, limit=2)
+
+    assert [candidate.record_id for candidate in limited] == [
+        "rec_heavy",
+        "rec_medium",
+    ]
+
+
+def test_resolve_worker_count_auto_respects_memory_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "scripts.compile_all_records._logical_cpu_count",
+        lambda: 12,
+    )
+    monkeypatch.setattr(
+        "scripts.compile_all_records._total_memory_bytes",
+        lambda: 9 * 1024**3,
+    )
+    monkeypatch.setattr(
+        "scripts.compile_all_records._available_memory_bytes",
+        lambda: 3 * 1024**3,
+    )
+
+    resolved = _resolve_worker_count(
+        "auto",
+        candidate_count=20,
+        reserve_mem_gb=1.0,
+        mem_per_worker_gb=2.0,
+    )
+
+    assert resolved == 4
 
 
 def test_collect_candidates_skips_primitive_only_success_records_without_assets(tmp_path) -> None:
