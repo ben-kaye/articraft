@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import json
 
+import pytest
 from rich.console import Console
 
 from scripts.compile_all_records import (
@@ -12,10 +14,12 @@ from scripts.compile_all_records import (
     _collect_candidates,
     _effective_mem_per_worker_gb,
     _format_bulk_compile_error,
+    _is_open_file_limit_error,
     _limit_candidates,
     _resolve_worker_count,
     _should_suppress_bulk_compile_error,
     _sort_candidates_for_compile,
+    _spawn_initial_workers,
 )
 from storage.repo import StorageRepo
 
@@ -199,17 +203,17 @@ def test_build_concurrency_message_includes_open_file_cap(monkeypatch) -> None:
     monkeypatch.setattr(
         "scripts.compile_all_records._open_file_worker_cap",
         lambda: OpenFileWorkerCap(
-            worker_cap=43,
+            worker_cap=23,
             soft_limit=256,
             open_files=18,
             reserve_files=64,
-            per_worker_budget=4,
+            per_worker_budget=8,
         ),
     )
 
     message = _build_concurrency_message(
         requested="auto",
-        resolved_workers=43,
+        resolved_workers=23,
         target="visual",
         candidate_count=264,
         reserve_mem_gb=2.0,
@@ -218,7 +222,13 @@ def test_build_concurrency_message_includes_open_file_cap(monkeypatch) -> None:
 
     assert "open files soft limit 256" in message
     assert "open now 18" in message
-    assert "fd cap 43" in message
+    assert "fd cap 23" in message
+
+
+def test_is_open_file_limit_error_matches_emfile_and_enfile() -> None:
+    assert _is_open_file_limit_error(OSError(errno.EMFILE, "Too many open files"))
+    assert _is_open_file_limit_error(OSError(errno.ENFILE, "File table overflow"))
+    assert not _is_open_file_limit_error(OSError(errno.EINVAL, "Invalid argument"))
 
 
 def test_sort_candidates_for_compile_prefers_heavier_records() -> None:
@@ -364,11 +374,11 @@ def test_resolve_worker_count_visual_auto_is_clamped_by_open_file_limit(monkeypa
     monkeypatch.setattr(
         "scripts.compile_all_records._open_file_worker_cap",
         lambda: OpenFileWorkerCap(
-            worker_cap=43,
+            worker_cap=23,
             soft_limit=256,
             open_files=18,
             reserve_files=64,
-            per_worker_budget=4,
+            per_worker_budget=8,
         ),
     )
 
@@ -380,7 +390,7 @@ def test_resolve_worker_count_visual_auto_is_clamped_by_open_file_limit(monkeypa
         target="visual",
     )
 
-    assert resolved == 43
+    assert resolved == 23
 
 
 def test_resolve_worker_count_explicit_numeric_is_clamped_by_open_file_limit(monkeypatch) -> None:
@@ -389,11 +399,11 @@ def test_resolve_worker_count_explicit_numeric_is_clamped_by_open_file_limit(mon
     monkeypatch.setattr(
         "scripts.compile_all_records._open_file_worker_cap",
         lambda: OpenFileWorkerCap(
-            worker_cap=43,
+            worker_cap=23,
             soft_limit=256,
             open_files=18,
             reserve_files=64,
-            per_worker_budget=4,
+            per_worker_budget=8,
         ),
     )
 
@@ -405,7 +415,51 @@ def test_resolve_worker_count_explicit_numeric_is_clamped_by_open_file_limit(mon
         target="visual",
     )
 
-    assert resolved == 43
+    assert resolved == 23
+
+
+def test_spawn_initial_workers_backs_off_after_open_file_limit(monkeypatch, tmp_path) -> None:
+    calls = {"count": 0}
+
+    def fake_spawn_worker(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return object()
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr("scripts.compile_all_records._spawn_worker", fake_spawn_worker)
+
+    workers, warning = _spawn_initial_workers(
+        object(),  # type: ignore[arg-type]
+        requested_worker_count=5,
+        repo_root=tmp_path,
+        strict=False,
+        target="visual",
+        result_queue=object(),
+    )
+
+    assert len(workers) == 1
+    assert warning is not None
+    assert "continuing with 1 active workers instead of the requested 5" in warning
+
+
+def test_spawn_initial_workers_raises_if_no_worker_can_start(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "scripts.compile_all_records._spawn_worker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError(errno.EMFILE, "Too many open files")),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Open-file limit reached before any bulk compile worker"
+    ):
+        _spawn_initial_workers(
+            object(),  # type: ignore[arg-type]
+            requested_worker_count=5,
+            repo_root=tmp_path,
+            strict=False,
+            target="visual",
+            result_queue=object(),
+        )
 
 
 def test_collect_candidates_skips_primitive_only_success_records_without_assets(tmp_path) -> None:

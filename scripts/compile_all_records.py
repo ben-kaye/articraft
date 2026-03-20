@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib
 import multiprocessing as mp
 import os
@@ -32,7 +33,12 @@ from agent.mp_utils import (
     mp_start_method_env_var,
     resolve_mp_start_method,
 )
-from storage.materialize import infer_materialization_status, record_artifact_paths
+from storage.materialize import (
+    canonical_record_paths,
+    infer_materialization_status,
+    materialization_paths,
+    urdf_references_external_meshes,
+)
 from storage.repo import StorageRepo
 
 _GIB = 1024**3
@@ -41,7 +47,7 @@ _DEFAULT_VISUAL_MEM_PER_WORKER_GB = 1.5
 _DEFAULT_RESERVE_MEM_GB = 2.0
 _VISUAL_AUTO_WORKER_HARD_CAP = 512
 _OPEN_FILE_WORKER_RESERVE = 64
-_OPEN_FILE_WORKER_FD_BUDGET = 4
+_OPEN_FILE_WORKER_FD_BUDGET = 8
 _COMPILE_TARGETS = {"full", "visual"}
 _BASE_BULK_PRELOAD_MODULES = ("agent.compiler", "viewer.api.store")
 _CADQUERY_BULK_PRELOAD_MODULES = ("cadquery", "OCP", "sdk_hybrid")
@@ -121,11 +127,11 @@ def _compile_level(payload: object) -> str | None:
         value = metrics.get("compile_level")
         if isinstance(value, str) and value in {"visual", "full"}:
             return value
-    return "full"
+    return None
 
 
 def _estimate_visual_mesh_footprint(repo: StorageRepo, record_id: str) -> tuple[int, int]:
-    mesh_root = repo.layout.record_asset_meshes_dir(record_id)
+    mesh_root = repo.layout.record_materialization_asset_meshes_dir(record_id)
     if not mesh_root.exists():
         return 0, 0
 
@@ -174,6 +180,20 @@ def _normalize_sdk_package(value: object) -> str:
     return normalized or "sdk"
 
 
+def _artifact_materialization_status(
+    repo: StorageRepo,
+    record_id: str,
+    *,
+    urdf_path: Path,
+) -> str:
+    status = infer_materialization_status(repo, record_id)
+    if status == "available":
+        return status
+    if urdf_path.exists() and not urdf_references_external_meshes(urdf_path):
+        return "available"
+    return status
+
+
 def _collect_candidates(
     repo_root: Path,
     *,
@@ -195,10 +215,9 @@ def _collect_candidates(
         sdk_package = _normalize_sdk_package(
             record.get("sdk_package") if isinstance(record, dict) else "sdk"
         )
-        artifact_paths = record_artifact_paths(repo, record_id, record=record)
-        script_path = artifact_paths["model_py"]
-        urdf_path = artifact_paths["model_urdf"]
-        compile_report_path = artifact_paths["compile_report_json"]
+        script_path = canonical_record_paths(repo, record_id)["model_py"]
+        urdf_path = materialization_paths(repo, record_id)["model_urdf"]
+        compile_report_path = materialization_paths(repo, record_id)["compile_report_json"]
         compile_report = repo.read_json(compile_report_path)
         compile_status = _compile_status(compile_report)
         compile_level = _compile_level(compile_report)
@@ -230,7 +249,11 @@ def _collect_candidates(
             )
             continue
 
-        materialization_status = infer_materialization_status(repo, record_id, record=record)
+        materialization_status = _artifact_materialization_status(
+            repo,
+            record_id,
+            urdf_path=urdf_path,
+        )
 
         if not urdf_path.exists():
             candidates.append(
@@ -486,6 +509,10 @@ def _open_file_worker_cap() -> OpenFileWorkerCap | None:
         reserve_files=_OPEN_FILE_WORKER_RESERVE,
         per_worker_budget=_OPEN_FILE_WORKER_FD_BUDGET,
     )
+
+
+def _is_open_file_limit_error(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and exc.errno in {errno.EMFILE, errno.ENFILE}
 
 
 def _auto_worker_memory_cap(
@@ -745,26 +772,71 @@ def _spawn_worker(
     result_queue: Any,
 ) -> WorkerState:
     task_queue = ctx.Queue(maxsize=1)
-    process = ctx.Process(
-        target=_worker_loop,
-        args=(
-            worker_id,
-            generation,
-            str(repo_root),
-            strict,
-            target,
-            task_queue,
-            result_queue,
-        ),
-        daemon=True,
-    )
-    process.start()
+    try:
+        process = ctx.Process(
+            target=_worker_loop,
+            args=(
+                worker_id,
+                generation,
+                str(repo_root),
+                strict,
+                target,
+                task_queue,
+                result_queue,
+            ),
+            daemon=True,
+        )
+        process.start()
+    except Exception:
+        try:
+            task_queue.close()
+        except Exception:
+            pass
+        raise
     return WorkerState(
         worker_id=worker_id,
         generation=generation,
         process=process,
         task_queue=task_queue,
     )
+
+
+def _spawn_initial_workers(
+    ctx: mp.context.BaseContext,
+    *,
+    requested_worker_count: int,
+    repo_root: Path,
+    strict: bool,
+    target: str,
+    result_queue: Any,
+) -> tuple[dict[int, WorkerState], str | None]:
+    workers: dict[int, WorkerState] = {}
+    for worker_id in range(requested_worker_count):
+        try:
+            workers[worker_id] = _spawn_worker(
+                ctx,
+                worker_id=worker_id,
+                generation=1,
+                repo_root=repo_root,
+                strict=strict,
+                target=target,
+                result_queue=result_queue,
+            )
+        except OSError as exc:
+            if not _is_open_file_limit_error(exc):
+                raise
+            if not workers:
+                raise RuntimeError(
+                    "Open-file limit reached before any bulk compile worker could start. "
+                    "Lower --concurrency or raise the OS open-file limit."
+                ) from exc
+            warning = (
+                "Open-file limit reached while starting bulk compile workers; "
+                f"continuing with {len(workers)} active workers instead of the requested "
+                f"{requested_worker_count}."
+            )
+            return workers, warning
+    return workers, None
 
 
 def _shutdown_worker(worker: WorkerState, *, terminate: bool) -> None:
@@ -837,23 +909,29 @@ def _run_compile_pool(
     if start_method == "fork":
         _preload_modules_in_parent(preload_modules)
     ctx = get_mp_context(prefer_fork=True, forkserver_preload=preload_modules)
-    result_queue = ctx.Queue()
-    workers: dict[int, WorkerState] = {}
+    try:
+        result_queue = ctx.Queue()
+    except OSError as exc:
+        if not _is_open_file_limit_error(exc):
+            raise
+        raise RuntimeError(
+            "Open-file limit reached while creating bulk compile queues. "
+            "Lower --concurrency or raise the OS open-file limit."
+        ) from exc
     pending: deque[CompileCandidate] = deque(_sort_candidates_for_compile(candidates))
     compiled = 0
     failures: list[tuple[str, str]] = []
     completed = 0
-
-    for worker_id in range(worker_count):
-        workers[worker_id] = _spawn_worker(
-            ctx,
-            worker_id=worker_id,
-            generation=1,
-            repo_root=repo_root,
-            strict=strict,
-            target=target,
-            result_queue=result_queue,
-        )
+    workers, startup_warning = _spawn_initial_workers(
+        ctx,
+        requested_worker_count=worker_count,
+        repo_root=repo_root,
+        strict=strict,
+        target=target,
+        result_queue=result_queue,
+    )
+    if startup_warning is not None:
+        console.print(f"[yellow]{startup_warning}[/yellow]")
 
     with Progress(
         SpinnerColumn(),
@@ -882,16 +960,31 @@ def _run_compile_pool(
                         completed += 1
                         progress.advance(task_id)
                     _shutdown_worker(worker, terminate=False)
-                    workers[worker_id] = _spawn_worker(
-                        ctx,
-                        worker_id=worker_id,
-                        generation=worker.generation + 1,
-                        repo_root=repo_root,
-                        strict=strict,
-                        target=target,
-                        result_queue=result_queue,
-                    )
-                    _dispatch_candidate(workers[worker_id], pending)
+                    try:
+                        workers[worker_id] = _spawn_worker(
+                            ctx,
+                            worker_id=worker_id,
+                            generation=worker.generation + 1,
+                            repo_root=repo_root,
+                            strict=strict,
+                            target=target,
+                            result_queue=result_queue,
+                        )
+                        _dispatch_candidate(workers[worker_id], pending)
+                    except OSError as exc:
+                        if not _is_open_file_limit_error(exc):
+                            raise
+                        workers.pop(worker_id, None)
+                        console.print(
+                            "[yellow]Open-file limit reached while restarting a bulk compile worker; "
+                            f"continuing with {len(workers)} active workers.[/yellow]"
+                        )
+                        if not workers and pending:
+                            raise RuntimeError(
+                                "Open-file limit reached while restarting bulk compile workers and "
+                                "no active workers remain. Lower --concurrency or raise the OS "
+                                "open-file limit."
+                            ) from exc
 
             if worker_timeout_seconds > 0:
                 for worker_id, worker in list(workers.items()):
@@ -910,16 +1003,31 @@ def _run_compile_pool(
                         completed += 1
                         progress.advance(task_id)
                         _shutdown_worker(worker, terminate=True)
-                        workers[worker_id] = _spawn_worker(
-                            ctx,
-                            worker_id=worker_id,
-                            generation=worker.generation + 1,
-                            repo_root=repo_root,
-                            strict=strict,
-                            target=target,
-                            result_queue=result_queue,
-                        )
-                        _dispatch_candidate(workers[worker_id], pending)
+                        try:
+                            workers[worker_id] = _spawn_worker(
+                                ctx,
+                                worker_id=worker_id,
+                                generation=worker.generation + 1,
+                                repo_root=repo_root,
+                                strict=strict,
+                                target=target,
+                                result_queue=result_queue,
+                            )
+                            _dispatch_candidate(workers[worker_id], pending)
+                        except OSError as exc:
+                            if not _is_open_file_limit_error(exc):
+                                raise
+                            workers.pop(worker_id, None)
+                            console.print(
+                                "[yellow]Open-file limit reached while restarting a timed-out bulk "
+                                f"compile worker; continuing with {len(workers)} active workers.[/yellow]"
+                            )
+                            if not workers and pending:
+                                raise RuntimeError(
+                                    "Open-file limit reached while restarting timed-out bulk compile "
+                                    "workers and no active workers remain. Lower --concurrency or "
+                                    "raise the OS open-file limit."
+                                ) from exc
 
             try:
                 event = result_queue.get(timeout=0.25)
