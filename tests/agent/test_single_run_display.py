@@ -53,3 +53,27 @@ def test_add_tool_call_shows_compilation_error_details() -> None:
     output = buffer.getvalue()
     assert "compilation.status: error" in output
     assert "compilation.error: Syntax error: invalid syntax (line 12)" in output
+
+
+def test_add_tool_call_shows_all_find_examples_titles() -> None:
+    display, buffer = _make_display()
+
+    display.add_tool_call(
+        tool_name="find_examples",
+        args={"query": "pcb assembly", "limit": 3},
+        success=True,
+        duration=0.02,
+        result=[
+            {"title": "Raspberry Pi 3 Model B Assembly", "path": "sdk/_examples/hybrid/foo.md"},
+            {"title": "Parametric Pin Header", "path": "sdk/_examples/hybrid/bar.md"},
+            {"title": "RJ45 Surface-mount Jack", "path": "sdk/_examples/hybrid/baz.md"},
+        ],
+    )
+
+    output = buffer.getvalue()
+    assert "tool    find_examples ✓" in output
+    assert "titles:" in output
+    assert "- Raspberry Pi 3 Model B Assembly" in output
+    assert "- Parametric Pin Header" in output
+    assert "- RJ45 Surface-mount Jack" in output
+    assert "result: [{" not in output

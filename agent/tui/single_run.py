@@ -67,6 +67,19 @@ class SingleRunDisplay:
             line.append(raw_line, style=style)
             self.console.print(line)
 
+    def _find_examples_titles(self, result: Any) -> list[str]:
+        """Extract returned example titles from a successful find_examples result."""
+        if not isinstance(result, list):
+            return []
+        titles: list[str] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title")
+            if isinstance(title, str) and title.strip():
+                titles.append(title.strip())
+        return titles
+
     def _supports_live_timer(self) -> bool:
         stream = getattr(self.console, "file", None)
         if stream is None:
@@ -241,7 +254,11 @@ class SingleRunDisplay:
             detail.append(truncate_text(", ".join(formatted), 80), style="dim")
             self.console.print(detail)
 
-        if result is not None:
+        example_titles = self._find_examples_titles(result) if tool_name == "find_examples" else []
+        if example_titles:
+            titles_block = "titles:\n" + "\n".join(f"- {title}" for title in example_titles)
+            self._print_indented_block(titles_block, style="green")
+        elif result is not None:
             result_line = Text()
             result_line.append("            ", style="dim")
             result_line.append(truncate_text(f"result: {result}", 120), style="green")
