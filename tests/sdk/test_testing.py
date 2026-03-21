@@ -67,6 +67,27 @@ def _build_coplanar_surface_model() -> ArticulatedObject:
     return model
 
 
+def _build_adjacent_coplanar_surface_model() -> ArticulatedObject:
+    model = ArticulatedObject(name="adjacent_coplanar_surfaces")
+
+    base = model.part("base")
+    base.visual(Box((0.2, 0.2, 0.2)), origin=Origin(xyz=(0.0, 0.0, 0.1)))
+
+    door = model.part("door")
+    door.visual(Box((0.12, 0.12, 0.02)), origin=Origin(xyz=(0.0, 0.0, 0.19)))
+
+    model.articulation(
+        "base_to_door",
+        ArticulationType.REVOLUTE,
+        parent=base,
+        child=door,
+        origin=Origin(xyz=(0.0, 0.0, 0.19)),
+        axis=(0.0, 1.0, 0.0),
+        motion_limits=MotionLimits(effort=1.0, velocity=1.0, lower=0.0, upper=1.0),
+    )
+    return model
+
+
 def test_articulation_origin_tolerance_is_truncated_to_three_decimals() -> None:
     ctx = SDKTestContext(_build_joint_origin_model(joint_z=0.115), geometry_source="visual")
 
@@ -139,18 +160,61 @@ def test_warn_if_coplanar_surfaces_records_warning_only() -> None:
         use="visual",
         plane_tol=0.001,
         min_overlap=0.05,
+        min_overlap_ratio=0.35,
+        ignore_adjacent=False,
+        ignore_fixed=False,
     )
 
     report = ctx.report()
     assert report.passed
     assert report.failures == ()
     assert report.checks == (
-        "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,ignore_adjacent=False,ignore_fixed=False)",
+        "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,min_overlap_ratio=0.35,ignore_adjacent=False,ignore_fixed=False)",
     )
     assert len(report.warnings) == 1
     assert (
-        "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,ignore_adjacent=False,ignore_fixed=False)"
+        "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,min_overlap_ratio=0.35,ignore_adjacent=False,ignore_fixed=False)"
         in report.warnings[0]
     )
-    assert "Coplanar or nearly coplanar surfaces detected" in report.warnings[0]
-    assert "pair=('base','cap')" in report.warnings[0]
+    assert "Coplanar or nearly coplanar surfaces detected (max_risk=medium" in report.warnings[0]
+    assert "risk=medium relation=unrelated pair=('base','cap')" in report.warnings[0]
+
+
+def test_warn_if_coplanar_surfaces_defaults_ignore_adjacent_pairs() -> None:
+    ctx = SDKTestContext(_build_adjacent_coplanar_surface_model(), geometry_source="visual")
+
+    assert ctx.warn_if_coplanar_surfaces(
+        max_pose_samples=1,
+        use="visual",
+        plane_tol=0.001,
+        min_overlap=0.05,
+    )
+
+    report = ctx.report()
+    assert report.passed
+    assert report.failures == ()
+    assert report.warnings == ()
+    assert report.checks == (
+        "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,min_overlap_ratio=0.35,ignore_adjacent=True,ignore_fixed=True)",
+    )
+
+
+def test_allow_coplanar_surfaces_suppresses_reported_pair() -> None:
+    ctx = SDKTestContext(_build_coplanar_surface_model(), geometry_source="visual")
+    ctx.allow_coplanar_surfaces("base", "cap", reason="flush mounted cap")
+
+    assert ctx.warn_if_coplanar_surfaces(
+        max_pose_samples=1,
+        use="visual",
+        plane_tol=0.001,
+        min_overlap=0.05,
+        min_overlap_ratio=0.35,
+        ignore_adjacent=False,
+        ignore_fixed=False,
+    )
+
+    report = ctx.report()
+    assert report.passed
+    assert report.failures == ()
+    assert report.warnings == ()
+    assert report.allowances == ("allow_coplanar_surfaces('base', 'cap'): flush mounted cap",)

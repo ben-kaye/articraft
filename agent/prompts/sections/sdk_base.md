@@ -54,10 +54,11 @@
 - `warn_if_articulation_origin_near_geometry(...)` is not scale-aware; its tolerance is a fixed metric distance in meters.
 - A tolerance that is sensible for a compact object may be meaningless for a vehicle-sized or aircraft-sized assembly.
 - Use `ctx.warn_if_part_geometry_connected(use="visual")` as the default disconnected-geometry sensor.
-- Use `ctx.warn_if_coplanar_surfaces(use="visual")` as the default coplanar-surface sensor.
+- Use `ctx.warn_if_coplanar_surfaces(use="visual", ignore_adjacent=True, ignore_fixed=True)` only when it is likely to add value for the current object.
 - Use `ctx.warn_if_overlaps(max_pose_samples=..., ignore_adjacent=True, ignore_fixed=True)` as the default overlap sensor.
 - `warn_if_coplanar_surfaces(...)` is a deliberately noisy visual heuristic based on element AABB faces; flush mounts, bezels, grilles, and panel seams can trigger it even when the model is acceptable.
-- Include `ctx.warn_if_coplanar_surfaces(...)` on every model as a warning-tier sensor unless you have a specific reason not to, then decide case-by-case whether the warning justifies geometry changes.
+- Prefer relation-aware defaults for coplanar checks. Adjacent/fixed panel mounts are usually low-confidence hints, not proof that geometry is wrong.
+- Use `ctx.allow_coplanar_surfaces("a", "b", reason="...")` narrowly for intentional flush mounts or panel seams that the heuristic still reports.
 - Treat these `warn_if_*` sensors as warning-tier evidence only. They may or may not be useful for the current object, and they must not carry the burden of proving realism.
 - Include `ctx.warn_if_overlaps(...)` on every model as a broad warning-tier sensor unless you have a very specific reason not to.
 - Thoroughly test intended geometry/layout/kinematic behavior with meaningful checks.
@@ -74,6 +75,7 @@
 - Treat tests as support for realism and motion, not as a reason to degrade the visible model into primitive geometry.
 - Treat `warn_if_articulation_origin_near_geometry(...)` and `warn_if_part_geometry_connected(...)` as deliberately dumb static sensors.
 - Treat `warn_if_coplanar_surfaces(...)` the same way: it is a deliberately noisy flush-surface sensor, not semantic proof.
+- A coplanar warning alone is not a reason to add visible air gaps or distort a legitimate mounted panel.
 - Treat `warn_if_overlaps(...)` the same way: it is a deliberately broad collision/QC sensor, not semantic proof.
 - They can surface suspicious composition, but they are not semantic regression tests and may be misleading for perfectly acceptable geometry.
 - Add prompt-specific checks for the primary hero features, the prompt-named visible features, and the dominant visible forms so the most important visual commitments are enforced, not just generic structural sanity.
@@ -108,7 +110,7 @@
 
 <recommended_test_structure>
 1) Sanity: `check_model_valid`, `check_mesh_files_exist`
-2) Broad warning sensors: include `warn_if_overlaps`, `warn_if_coplanar_surfaces`, and include `warn_if_articulation_origin_near_geometry` / `warn_if_part_geometry_connected` when they are useful
+2) Broad warning sensors: include `warn_if_overlaps`, and include `warn_if_coplanar_surfaces` / `warn_if_articulation_origin_near_geometry` / `warn_if_part_geometry_connected` when they are useful
 3) Geometry warning backstop: `warn_if_overlaps(max_pose_samples=..., ignore_adjacent=True, ignore_fixed=True)`
 4) Intent: multiple prompt-specific `expect_*` semantic regression checks, with attachment checks as primary evidence of realism
 5) Pose coverage: for each important joint, include checks at lower/upper limits using `with ctx.pose({"joint_name": value}): ...` or `with ctx.pose(joint_name=value): ...`

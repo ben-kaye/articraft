@@ -77,6 +77,29 @@ def test_compile_signal_bundle_includes_test_warnings_and_allowances() -> None:
     assert any(signal.kind == "allowance" for signal in bundle.signals)
 
 
+def test_compile_signal_bundle_downgrades_low_risk_coplanar_warning_to_note() -> None:
+    bundle = build_compile_signal_bundle(
+        status="success",
+        test_report=SDKTestReport(
+            passed=True,
+            checks_run=1,
+            checks=("warn_if_coplanar_surfaces",),
+            failures=(),
+            warnings=(
+                "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,min_overlap_ratio=0.35,ignore_adjacent=True,ignore_fixed=True): "
+                "Low-confidence coplanar-surface hints detected (max_risk=low; warning-tier heuristic; adjacent flush mounts can be intentional):\n"
+                "risk=low relation=adjacent-revolute pair=('body','door') pose_index=0 axis=z faces=(max,max) plane_delta=0 "
+                "x_overlap=0.2 y_overlap=0.2 overlap_ratio=1 thin_pair=True elem_a='panel':Box elem_b='door':Box pose={}",
+            ),
+            allowances=(),
+        ),
+    )
+
+    signal = next(signal for signal in bundle.signals if signal.kind == "coplanar_surface_hint")
+    assert signal.severity == "note"
+    assert signal.summary == "Low-confidence coplanar-surface hint."
+
+
 def test_harness_injects_structured_compile_signals() -> None:
     agent = ArticraftAgent.__new__(ArticraftAgent)
     agent._seen_compile_signal_sigs = set()
@@ -121,6 +144,35 @@ def test_harness_injects_structured_compile_signals() -> None:
     assert "Geometry outlier dimensions detected." in conversation[0]["content"]
     assert "visual connectivity drift detected" in conversation[0]["content"]
     assert "hinge nesting" in conversation[0]["content"]
+
+
+def test_harness_does_not_inject_only_low_risk_coplanar_notes() -> None:
+    agent = ArticraftAgent.__new__(ArticraftAgent)
+    agent._seen_compile_signal_sigs = set()
+    agent.trace_writer = None
+
+    bundle = build_compile_signal_bundle(
+        status="success",
+        test_report=SDKTestReport(
+            passed=True,
+            checks_run=1,
+            checks=("warn_if_coplanar_surfaces",),
+            failures=(),
+            warnings=(
+                "warn_if_coplanar_surfaces(samples=1,use=visual,plane_tol=0.001,min_overlap=0.05,min_overlap_ratio=0.35,ignore_adjacent=True,ignore_fixed=True): "
+                "Low-confidence coplanar-surface hints detected (max_risk=low; warning-tier heuristic; adjacent flush mounts can be intentional):\n"
+                "risk=low relation=adjacent-fixed pair=('bezel','body') pose_index=0 axis=z faces=(max,max) plane_delta=0 "
+                "x_overlap=0.1 y_overlap=0.1 overlap_ratio=1 thin_pair=True elem_a='bezel':Box elem_b='body':Box pose={}",
+            ),
+            allowances=(),
+        ),
+    )
+
+    conversation: list[dict] = []
+    injected = agent._maybe_inject_compile_signals(conversation, bundle=bundle)
+
+    assert injected is False
+    assert conversation == []
 
 
 def test_validate_unsupported_parts_keeps_visual_findings_as_warnings(

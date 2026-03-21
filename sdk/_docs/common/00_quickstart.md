@@ -24,7 +24,7 @@ Do not emit URDF XML yourself. The harness compiles `object_model`, generates co
    - `ctx.check_mesh_files_exist()`
    - `ctx.warn_if_articulation_origin_near_geometry(tol=0.015)`
    - `ctx.warn_if_part_geometry_connected(use="visual")`
-   - `ctx.warn_if_coplanar_surfaces(use="visual")`
+   - `ctx.warn_if_coplanar_surfaces(use="visual", ignore_adjacent=True, ignore_fixed=True)` when it is useful
    - `ctx.warn_if_overlaps(..., ignore_adjacent=True, ignore_fixed=True)`
 
 Joint authoring rules:
@@ -118,7 +118,7 @@ def run_tests() -> TestReport:
     ctx.check_mesh_files_exist()
     ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
     ctx.warn_if_part_geometry_connected(use="visual")
-    ctx.warn_if_coplanar_surfaces(use="visual")
+    ctx.warn_if_coplanar_surfaces(use="visual", ignore_adjacent=True, ignore_fixed=True)
     ctx.warn_if_overlaps(
         max_pose_samples=128,
         overlap_tol=0.005,
@@ -184,6 +184,7 @@ Important:
 - The harness truncates articulation-origin tolerances to 3 decimals and caps them at `0.15`.
 - `warn_if_articulation_origin_near_geometry(...)` is not scale-aware; its tolerance is a fixed metric distance in meters.
 - `warn_if_coplanar_surfaces(...)` is intentionally noisy: it looks for nearly coplanar visual-envelope faces and can fire on perfectly acceptable flush seams or mounted panels.
+- Prefer relation-aware defaults such as `ignore_adjacent=True` and `ignore_fixed=True`, and use `allow_coplanar_surfaces(...)` narrowly for intentional flush mounts that still get reported.
 - A tolerance that is sensible for a compact hinge may be meaningless for a vehicle-sized or aircraft-sized assembly.
 - Only relax articulation-origin tolerance when the geometry genuinely needs it, and keep it tight.
 - Use prompt-specific `expect_*` assertions as the real regression tests for visible structure, proportions, and mechanism behavior.

@@ -32,7 +32,7 @@ ctx.check_model_valid()
 ctx.check_mesh_files_exist()
 ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
 ctx.warn_if_part_geometry_connected(use="visual")
-ctx.warn_if_coplanar_surfaces(use="visual")
+ctx.warn_if_coplanar_surfaces(use="visual", ignore_adjacent=True, ignore_fixed=True)
 ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
 ```
 
@@ -53,7 +53,7 @@ These broad checks are warning-tier sensors, not semantic proof. The agent still
 Recommended default:
 
 - Include `warn_if_overlaps(...)` on every generated model as a broad warning-tier sensor, even when you do not want overlap findings to fail the run.
-- Include `warn_if_coplanar_surfaces(...)` on every generated model as a warning-tier sensor, then decide case-by-case whether any warning actually merits changing the geometry.
+- Use `warn_if_coplanar_surfaces(...)` when flush-surface duplication is genuinely a useful sensor for the object, and prefer `ignore_adjacent=True, ignore_fixed=True` unless you have a specific reason not to.
 
 Important:
 
@@ -72,6 +72,7 @@ The harness also runs automatic isolated-part checks at compile time:
 
 ```python
 ctx.allow_overlap("door", "body", reason="hinge adjacency")
+ctx.allow_coplanar_surfaces("door", "body", reason="flush mounted panel")
 ```
 
 Use allowances narrowly. Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look attached instead of floating. Still call `ctx.warn_if_overlaps(...)` so the allowance is tracked.
@@ -148,7 +149,7 @@ ctx.check_model_valid()
 ctx.check_mesh_files_exist()
 ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
 ctx.warn_if_part_geometry_connected(use="visual")
-ctx.warn_if_coplanar_surfaces(use="visual")
+ctx.warn_if_coplanar_surfaces(use="visual", ignore_adjacent=True, ignore_fixed=True)
 ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)
 ctx.expect_aabb_overlap("lid", "base", axes="xy", min_overlap=0.05)
 ctx.expect_origin_distance("lid", "base", axes="xy", max_dist=0.02)

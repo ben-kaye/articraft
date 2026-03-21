@@ -43,6 +43,31 @@ class TestReport:
     allowances: Tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _CoplanarFinding:
+    link_a: str
+    link_b: str
+    relation: str
+    risk: str
+    pose_index: int
+    pose: Dict[str, float]
+    axis_name: str
+    overlap_axis_0: str
+    overlap_axis_1: str
+    face_a: str
+    face_b: str
+    plane_delta: float
+    overlap_0: float
+    overlap_1: float
+    area: float
+    overlap_ratio: float
+    thin_pair: bool
+    elem_a_name: Optional[str]
+    elem_a_geometry: Optional[str]
+    elem_b_name: Optional[str]
+    elem_b_geometry: Optional[str]
+
+
 def _parse_xyz(xyz: str) -> Optional[Vec3]:
     parts = (xyz or "").strip().split()
     if len(parts) != 3:
@@ -68,6 +93,10 @@ def _aabb_union(aabbs: Sequence[AABB]) -> Optional[AABB]:
 def _aabb_center(aabb: AABB) -> Vec3:
     (mn, mx) = aabb
     return ((mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5, (mn[2] + mx[2]) * 0.5)
+
+
+def _pair_key(name_a: str, name_b: str) -> Tuple[str, str]:
+    return (name_a, name_b) if name_a <= name_b else (name_b, name_a)
 
 
 def _aabbs_touch_or_overlap(a: AABB, b: AABB, *, tol: float) -> bool:
@@ -206,6 +235,11 @@ def _aabb_axis_overlap(aabb_a: AABB, aabb_b: AABB, *, axis: str) -> float:
     )
 
 
+def _aabb_axis_span(aabb: AABB, *, axis: str) -> float:
+    idx = _axis_index(axis)
+    return max(0.0, float(aabb[1][idx]) - float(aabb[0][idx]))
+
+
 def _aabb_axis_gap(
     positive_aabb: AABB,
     negative_aabb: AABB,
@@ -268,6 +302,10 @@ class TestContext:
     _allow_pairs: Dict[Tuple[str, str], str] = field(default_factory=dict)
     _allowances: List[str] = field(default_factory=list)
     _allow_elems: List[Tuple[Tuple[str, str], Optional[str], Optional[str], str]] = field(
+        default_factory=list, repr=False
+    )
+    _allow_coplanar_pairs: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    _allow_coplanar_elems: List[Tuple[Tuple[str, str], Optional[str], Optional[str], str]] = field(
         default_factory=list, repr=False
     )
 
@@ -481,6 +519,35 @@ class TestContext:
         else:
             self._allowances.append(f"allow_overlap({key[0]!r}, {key[1]!r}): {r}")
         self._allow_elems.append((key, ea, eb, r))
+
+    def allow_coplanar_surfaces(
+        self,
+        link_a: object,
+        link_b: object,
+        *,
+        reason: str,
+        elem_a: Optional[str] = None,
+        elem_b: Optional[str] = None,
+    ) -> None:
+        """Allow a specific coplanar-surface finding with justification."""
+
+        a = _named_ref(link_a, kind="link_a")
+        b = _named_ref(link_b, kind="link_b")
+        r = (reason or "").strip()
+        if not r:
+            raise ValueError("allow_coplanar_surfaces requires a non-empty reason")
+        key = _pair_key(a, b)
+        self._allow_coplanar_pairs[key] = r
+
+        ea = (str(elem_a) if elem_a is not None else "").strip() or None
+        eb = (str(elem_b) if elem_b is not None else "").strip() or None
+        if ea or eb:
+            self._allowances.append(
+                f"allow_coplanar_surfaces({key[0]!r}, {key[1]!r}, elem_a={ea!r}, elem_b={eb!r}): {r}"
+            )
+        else:
+            self._allowances.append(f"allow_coplanar_surfaces({key[0]!r}, {key[1]!r}): {r}")
+        self._allow_coplanar_elems.append((key, ea, eb, r))
 
     @contextmanager
     def pose(
@@ -1091,8 +1158,9 @@ class TestContext:
         use: str = "visual",
         plane_tol: float = 0.001,
         min_overlap: float = 0.02,
-        ignore_adjacent: bool = False,
-        ignore_fixed: bool = False,
+        min_overlap_ratio: float = 0.35,
+        ignore_adjacent: bool = True,
+        ignore_fixed: bool = True,
         name: Optional[str] = None,
     ) -> bool:
         use_key = _normalize_geometry_source(use, field_name="use")
@@ -1102,6 +1170,7 @@ class TestContext:
             f"use={use_key},"
             f"plane_tol={float(plane_tol):.4g},"
             f"min_overlap={float(min_overlap):.4g},"
+            f"min_overlap_ratio={float(min_overlap_ratio):.4g},"
             f"ignore_adjacent={bool(ignore_adjacent)},"
             f"ignore_fixed={bool(ignore_fixed)})"
         )
@@ -1115,23 +1184,82 @@ class TestContext:
         min_overlap_f = float(min_overlap)
         if not math.isfinite(min_overlap_f) or min_overlap_f < 0.0:
             return record(resolved_name, False, "min_overlap must be finite and non-negative")
+        min_overlap_ratio_f = float(min_overlap_ratio)
+        if (
+            not math.isfinite(min_overlap_ratio_f)
+            or min_overlap_ratio_f < 0.0
+            or min_overlap_ratio_f > 1.0
+        ):
+            return record(
+                resolved_name,
+                False,
+                "min_overlap_ratio must be finite and between 0 and 1",
+            )
 
         links = getattr(self.model, "parts", None)
         joints = getattr(self.model, "articulations", None)
         if not isinstance(links, list) or not isinstance(joints, list):
             return record(resolved_name, False, "model.parts/articulations missing")
 
+        pair_relations: Dict[Tuple[str, str], str] = {}
         ignored_pairs: set[Tuple[str, str]] = set()
-        if ignore_adjacent or ignore_fixed:
-            for joint in joints:
-                parent = getattr(joint, "parent", None)
-                child = getattr(joint, "child", None)
-                if not isinstance(parent, str) or not isinstance(child, str):
+        for joint in joints:
+            parent = getattr(joint, "parent", None)
+            child = getattr(joint, "child", None)
+            if not isinstance(parent, str) or not isinstance(child, str):
+                continue
+            joint_type = getattr(joint, "articulation_type", None)
+            key = _pair_key(parent, child)
+            if isinstance(joint_type, ArticulationType):
+                relation = f"adjacent-{joint_type.value.lower()}"
+            else:
+                relation = "adjacent"
+            pair_relations[key] = relation
+            if ignore_adjacent or (ignore_fixed and joint_type == ArticulationType.FIXED):
+                ignored_pairs.add(key)
+
+        def is_coplanar_allowed(finding: _CoplanarFinding) -> bool:
+            key = _pair_key(finding.link_a, finding.link_b)
+            if key not in self._allow_coplanar_pairs:
+                return False
+            for allowed_key, elem_a, elem_b, _reason in self._allow_coplanar_elems:
+                if allowed_key != key:
                     continue
-                joint_type = getattr(joint, "articulation_type", None)
-                if ignore_adjacent or (ignore_fixed and joint_type == ArticulationType.FIXED):
-                    key = (parent, child) if parent <= child else (child, parent)
-                    ignored_pairs.add(key)
+                if elem_a is None and elem_b is None:
+                    return True
+                names = (finding.elem_a_name, finding.elem_b_name)
+                if (elem_a in names) and (elem_b in names):
+                    return True
+            return False
+
+        risk_rank = {"low": 0, "medium": 1, "high": 2}
+
+        def classify_risk(
+            *,
+            relation: str,
+            plane_delta: float,
+            overlap_ratio: float,
+            thin_pair: bool,
+        ) -> str:
+            if relation.startswith("adjacent-"):
+                return "low"
+            strong_plane = plane_delta <= max(plane_tol_f * 0.25, 1e-5)
+            strong_overlap = overlap_ratio >= max(min_overlap_ratio_f + 0.25, 0.75)
+            moderate_overlap = overlap_ratio >= max(min_overlap_ratio_f + 0.1, 0.5)
+            if strong_plane and strong_overlap and thin_pair:
+                return "high"
+            if (strong_plane and moderate_overlap) or (strong_overlap and thin_pair):
+                return "medium"
+            return "low"
+
+        def better_finding(candidate: _CoplanarFinding, current: _CoplanarFinding) -> bool:
+            if risk_rank[candidate.risk] != risk_rank[current.risk]:
+                return risk_rank[candidate.risk] > risk_rank[current.risk]
+            if abs(candidate.plane_delta - current.plane_delta) > 1e-9:
+                return candidate.plane_delta < current.plane_delta
+            if abs(candidate.overlap_ratio - current.overlap_ratio) > 1e-9:
+                return candidate.overlap_ratio > current.overlap_ratio
+            return candidate.area > current.area
 
         try:
             poses = generate_pose_samples(
@@ -1142,26 +1270,7 @@ class TestContext:
         except Exception as exc:
             return record(resolved_name, False, str(exc))
 
-        findings_by_pair: Dict[
-            Tuple[str, str],
-            Tuple[
-                int,
-                Dict[str, float],
-                str,
-                str,
-                str,
-                str,
-                str,
-                float,
-                float,
-                float,
-                float,
-                Optional[str],
-                Optional[str],
-                Optional[str],
-                Optional[str],
-            ],
-        ] = {}
+        findings_by_pair: Dict[Tuple[str, str], _CoplanarFinding] = {}
         for pose_index, pose in enumerate(poses):
             world_tfs = compute_part_world_transforms(self.model, dict(pose))
             part_elem_bounds: Dict[str, List[Tuple[Optional[str], Optional[str], AABB]]] = {}
@@ -1185,30 +1294,13 @@ class TestContext:
                 for j in range(i + 1, len(names)):
                     link_a = names[i]
                     link_b = names[j]
-                    if (link_a, link_b) in ignored_pairs:
+                    key = _pair_key(link_a, link_b)
+                    if key in ignored_pairs:
                         continue
-                    best_pair: Optional[
-                        Tuple[
-                            str,
-                            str,
-                            str,
-                            str,
-                            str,
-                            float,
-                            float,
-                            float,
-                            float,
-                            Optional[str],
-                            Optional[str],
-                            Optional[str],
-                            Optional[str],
-                        ]
-                    ] = None
+                    relation = pair_relations.get(key, "unrelated")
+                    best_pair: Optional[_CoplanarFinding] = None
                     for elem_a_name, elem_a_geometry, aabb_a in part_elem_bounds[link_a]:
                         for elem_b_name, elem_b_geometry, aabb_b in part_elem_bounds[link_b]:
-                            best: Optional[
-                                Tuple[str, str, str, str, str, float, float, float, float]
-                            ] = None
                             for axis_name in ("x", "y", "z"):
                                 orth_axes = tuple(
                                     axis for axis in ("x", "y", "z") if axis != axis_name
@@ -1256,124 +1348,94 @@ class TestContext:
                                     continue
 
                                 area = overlap_0 * overlap_1
-                                candidate = (
-                                    axis_name,
-                                    orth_axes[0],
-                                    orth_axes[1],
-                                    face_a,
-                                    face_b,
-                                    plane_delta,
-                                    overlap_0,
-                                    overlap_1,
-                                    area,
-                                )
-                                if (
-                                    best is None
-                                    or candidate[5] < best[5]
-                                    or (
-                                        abs(candidate[5] - best[5]) <= 1e-9
-                                        and candidate[8] > best[8]
-                                    )
-                                ):
-                                    best = candidate
+                                face_area_a = _aabb_axis_span(
+                                    aabb_a, axis=orth_axes[0]
+                                ) * _aabb_axis_span(aabb_a, axis=orth_axes[1])
+                                face_area_b = _aabb_axis_span(
+                                    aabb_b, axis=orth_axes[0]
+                                ) * _aabb_axis_span(aabb_b, axis=orth_axes[1])
+                                smaller_face_area = max(min(face_area_a, face_area_b), 1e-9)
+                                overlap_ratio = area / smaller_face_area
+                                if overlap_ratio < min_overlap_ratio_f:
+                                    continue
 
-                            if best is None:
-                                continue
-                            candidate_pair = (
-                                best[0],
-                                best[1],
-                                best[2],
-                                best[3],
-                                best[4],
-                                best[5],
-                                best[6],
-                                best[7],
-                                best[8],
-                                elem_a_name,
-                                elem_a_geometry,
-                                elem_b_name,
-                                elem_b_geometry,
-                            )
-                            if (
-                                best_pair is None
-                                or candidate_pair[5] < best_pair[5]
-                                or (
-                                    abs(candidate_pair[5] - best_pair[5]) <= 1e-9
-                                    and candidate_pair[8] > best_pair[8]
+                                thickness_a = _aabb_axis_span(aabb_a, axis=axis_name)
+                                thickness_b = _aabb_axis_span(aabb_b, axis=axis_name)
+                                in_plane_min_a = max(
+                                    min(
+                                        _aabb_axis_span(aabb_a, axis=orth_axes[0]),
+                                        _aabb_axis_span(aabb_a, axis=orth_axes[1]),
+                                    ),
+                                    1e-9,
                                 )
-                            ):
-                                best_pair = candidate_pair
+                                in_plane_min_b = max(
+                                    min(
+                                        _aabb_axis_span(aabb_b, axis=orth_axes[0]),
+                                        _aabb_axis_span(aabb_b, axis=orth_axes[1]),
+                                    ),
+                                    1e-9,
+                                )
+                                thin_pair = (
+                                    thickness_a / in_plane_min_a <= 0.12
+                                    and thickness_b / in_plane_min_b <= 0.12
+                                )
+                                candidate = _CoplanarFinding(
+                                    link_a=link_a,
+                                    link_b=link_b,
+                                    relation=relation,
+                                    risk=classify_risk(
+                                        relation=relation,
+                                        plane_delta=plane_delta,
+                                        overlap_ratio=overlap_ratio,
+                                        thin_pair=thin_pair,
+                                    ),
+                                    pose_index=pose_index,
+                                    pose=dict(pose),
+                                    axis_name=axis_name,
+                                    overlap_axis_0=orth_axes[0],
+                                    overlap_axis_1=orth_axes[1],
+                                    face_a=face_a,
+                                    face_b=face_b,
+                                    plane_delta=plane_delta,
+                                    overlap_0=overlap_0,
+                                    overlap_1=overlap_1,
+                                    area=area,
+                                    overlap_ratio=overlap_ratio,
+                                    thin_pair=thin_pair,
+                                    elem_a_name=elem_a_name,
+                                    elem_a_geometry=elem_a_geometry,
+                                    elem_b_name=elem_b_name,
+                                    elem_b_geometry=elem_b_geometry,
+                                )
+                                if best_pair is None or better_finding(candidate, best_pair):
+                                    best_pair = candidate
 
                     if best_pair is None:
                         continue
-                    (
-                        pose_index_best,
-                        pose_best,
-                        axis_name,
-                        overlap_axis_0,
-                        overlap_axis_1,
-                        face_a,
-                        face_b,
-                        plane_delta,
-                        overlap_0,
-                        overlap_1,
-                        _area,
-                        elem_a_name,
-                        elem_a_geometry,
-                        elem_b_name,
-                        elem_b_geometry,
-                    ) = (
-                        pose_index,
-                        dict(pose),
-                        best_pair[0],
-                        best_pair[1],
-                        best_pair[2],
-                        best_pair[3],
-                        best_pair[4],
-                        best_pair[5],
-                        best_pair[6],
-                        best_pair[7],
-                        best_pair[8],
-                        best_pair[9],
-                        best_pair[10],
-                        best_pair[11],
-                        best_pair[12],
-                    )
-                    key = (link_a, link_b)
+                    if is_coplanar_allowed(best_pair):
+                        continue
                     current = findings_by_pair.get(key)
-                    candidate = (
-                        pose_index_best,
-                        pose_best,
-                        axis_name,
-                        overlap_axis_0,
-                        overlap_axis_1,
-                        face_a,
-                        face_b,
-                        plane_delta,
-                        overlap_0,
-                        overlap_1,
-                        _area,
-                        elem_a_name,
-                        elem_a_geometry,
-                        elem_b_name,
-                        elem_b_geometry,
-                    )
-                    if (
-                        current is None
-                        or candidate[7] < current[7]
-                        or (abs(candidate[7] - current[7]) <= 1e-9 and candidate[10] > current[10])
-                    ):
-                        findings_by_pair[key] = candidate
+                    if current is None or better_finding(best_pair, current):
+                        findings_by_pair[key] = best_pair
 
         if findings_by_pair:
+            max_risk = max(findings_by_pair.values(), key=lambda item: risk_rank[item.risk]).risk
+            headline = (
+                "Low-confidence coplanar-surface hints detected"
+                if max_risk == "low"
+                else "Coplanar or nearly coplanar surfaces detected"
+            )
             findings = [
-                f"pair=({link_a!r},{link_b!r}) pose_index={candidate[0]} "
-                f"axis={candidate[2]} faces=({candidate[5]},{candidate[6]}) "
-                f"plane_delta={candidate[7]:.4g} "
-                f"{candidate[3]}_overlap={candidate[8]:.4g} "
-                f"{candidate[4]}_overlap={candidate[9]:.4g} "
-                f"elem_a={candidate[11]!r}:{candidate[12] or '?'} "
-                f"elem_b={candidate[13]!r}:{candidate[14] or '?'} pose={candidate[1]}"
+                f"risk={candidate.risk} relation={candidate.relation} "
+                f"pair=({link_a!r},{link_b!r}) pose_index={candidate.pose_index} "
+                f"axis={candidate.axis_name} faces=({candidate.face_a},{candidate.face_b}) "
+                f"plane_delta={candidate.plane_delta:.4g} "
+                f"{candidate.overlap_axis_0}_overlap={candidate.overlap_0:.4g} "
+                f"{candidate.overlap_axis_1}_overlap={candidate.overlap_1:.4g} "
+                f"overlap_ratio={candidate.overlap_ratio:.4g} thin_pair={candidate.thin_pair} "
+                f"elem_a={candidate.elem_a_name!r}:{candidate.elem_a_geometry or '?'} "
+                f"elem_b={candidate.elem_b_name!r}:{candidate.elem_b_geometry or '?'} "
+                f"pose={candidate.pose}"
                 for (link_a, link_b), candidate in sorted(findings_by_pair.items())
             ]
             preview = "\n".join(findings[:8])
@@ -1381,8 +1443,8 @@ class TestContext:
             return record(
                 resolved_name,
                 False,
-                "Coplanar or nearly coplanar surfaces detected "
-                "(warning-tier heuristic; flush visible mounts can be intentional):\n"
+                f"{headline} "
+                f"(max_risk={max_risk}; warning-tier heuristic; adjacent flush mounts can be intentional):\n"
                 f"{preview}{more}",
             )
         return record(resolved_name, True)

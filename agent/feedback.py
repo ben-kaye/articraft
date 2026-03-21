@@ -253,6 +253,36 @@ def _iter_test_warnings(test_report: object | None) -> Iterable[CompileSignal]:
         text = str(warning).strip()
         if not text:
             continue
+        if "coplanar" in text.lower():
+            max_risk = "medium"
+            risk_match = re.search(r"max_risk=(low|medium|high)", text, re.IGNORECASE)
+            if risk_match is not None:
+                max_risk = risk_match.group(1).lower()
+            if max_risk == "low":
+                signals.append(
+                    _make_signal(
+                        severity="note",
+                        kind="coplanar_surface_hint",
+                        code="NOTE_COPLANAR_SURFACE",
+                        summary="Low-confidence coplanar-surface hint.",
+                        details=text,
+                        source="tests",
+                        group="qc",
+                    )
+                )
+                continue
+            signals.append(
+                _make_signal(
+                    severity="warning",
+                    kind="coplanar_surface",
+                    code="WARN_COPLANAR_SURFACE",
+                    summary=f"Coplanar-surface heuristic reported {max_risk}-risk pair(s).",
+                    details=text,
+                    source="tests",
+                    group="qc",
+                )
+            )
+            continue
         signals.append(
             _make_signal(
                 severity="warning",
