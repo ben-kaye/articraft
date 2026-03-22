@@ -139,6 +139,12 @@ ISOLATED_PART_WARNING_SPEC = SignalSpec(
     code="WARN_ISOLATED_PART",
     group="design",
 )
+ALLOWED_ISOLATED_PART_SPEC = SignalSpec(
+    severity="note",
+    kind="allowed_isolated_part",
+    code="NOTE_ALLOWED_ISOLATED_PART",
+    group="design",
+)
 TEST_FAILURE_SPEC = SignalSpec(
     severity="failure",
     kind="test_failure",
@@ -380,6 +386,12 @@ def _warning_signal_from_text(warning: str) -> CompileSignal:
         )
 
     parsed = _parse_text_block(text)
+    if "isolated parts allowed by justification" in parsed.text:
+        return _signal_from_spec(
+            ALLOWED_ISOLATED_PART_SPEC,
+            summary="Isolated-part findings were allowed by justification.",
+            details=parsed.details,
+        )
     if "isolated parts detected" in parsed.text:
         return _signal_from_spec(
             ISOLATED_PART_WARNING_SPEC,
@@ -557,6 +569,15 @@ def _iter_allowance_notes(test_report: TestReportLike | None) -> Iterable[Compil
     for allowance in test_report.allowances:
         text = str(allowance).strip()
         if not text:
+            continue
+        if text.startswith("allow_isolated_part("):
+            signals.append(
+                _signal_from_spec(
+                    ALLOWED_ISOLATED_PART_SPEC,
+                    summary="Isolated-part allowance declared.",
+                    details=text,
+                )
+            )
             continue
         signals.append(
             _signal_from_spec(

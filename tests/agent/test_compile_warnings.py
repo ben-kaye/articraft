@@ -236,6 +236,31 @@ def test_compile_signal_bundle_accepts_protocol_shaped_test_report() -> None:
     assert any(signal.kind == "allowance" for signal in bundle.signals)
 
 
+def test_compile_signal_bundle_renders_allowed_isolated_part_distinctly() -> None:
+    bundle = build_compile_signal_bundle(
+        status="success",
+        warnings=[
+            "URDF compile note (physical, allowed): isolated parts allowed by justification.\n"
+            "- part='antenna' nearest_part='base' approx_gap=0.6m pose_index=0 pose=() backend=fcl"
+        ],
+        test_report=SDKTestReport(
+            passed=True,
+            checks_run=1,
+            checks=("custom_check",),
+            failures=(),
+            warnings=(),
+            allowances=(
+                "allow_isolated_part('antenna'): intentionally freestanding decorative part",
+            ),
+        ),
+    )
+
+    signals = [signal for signal in bundle.signals if signal.kind == "allowed_isolated_part"]
+    assert len(signals) == 2
+    assert any("allowed by justification" in signal.summary.lower() for signal in signals)
+    assert any("allow_isolated_part('antenna')" in signal.details for signal in signals)
+
+
 def test_harness_injects_structured_compile_signals() -> None:
     agent = ArticraftAgent.__new__(ArticraftAgent)
     agent._seen_compile_signal_sigs = set()

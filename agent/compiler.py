@@ -235,6 +235,13 @@ def compile_urdf_report(
                     globals_dict,
                     sdk_package=sdk_package,
                 )
+                _check_for_isolated_parts(
+                    globals_dict,
+                    script_dir=script_path.parent,
+                    sdk_package=sdk_package,
+                    warnings=warnings,
+                    test_report=test_report,
+                )
         except Exception as exc:
             urdf_xml = _extract_urdf_xml(
                 globals_dict,
@@ -933,6 +940,124 @@ def _run_required_tests(
         raise exc
 
     return report
+
+
+def _allowed_isolated_parts_from_test_report(test_report: object | None) -> tuple[str, ...]:
+    raw = getattr(test_report, "allowed_isolated_parts", ())
+    if not isinstance(raw, tuple):
+        return ()
+    allowed: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name:
+            continue
+        allowed.append(name)
+    return tuple(allowed)
+
+
+def _format_unsupported_part_finding(finding: object) -> str:
+    part = getattr(finding, "part", None)
+    nearest_part = getattr(finding, "nearest_part", None)
+    min_distance = getattr(finding, "min_distance", None)
+    pose_index = getattr(finding, "pose_index", None)
+    pose = getattr(finding, "pose", None)
+    backend = getattr(finding, "backend", None)
+
+    gap_text = "unknown"
+    if isinstance(min_distance, (int, float)) and math.isfinite(float(min_distance)):
+        gap_text = f"{float(min_distance):.4g}m"
+
+    pose_preview = ""
+    if isinstance(pose, dict):
+        pairs: list[str] = []
+        for key, value in sorted(pose.items()):
+            try:
+                pairs.append(f"{key}={float(value):.4g}")
+            except Exception:
+                pairs.append(f"{key}={value}")
+        pose_preview = ", ".join(pairs)
+
+    return (
+        f"- part={part!r} nearest_part={nearest_part!r} approx_gap={gap_text} "
+        f"pose_index={pose_index} pose=({pose_preview}) backend={backend}"
+    )
+
+
+def _check_for_isolated_parts(
+    globals_dict: dict,
+    *,
+    script_dir: Path,
+    sdk_package: str,
+    warnings: list[str],
+    test_report: object | None,
+) -> None:
+    object_model = globals_dict.get("object_model")
+    if object_model is None:
+        return
+
+    links = _iter_model_links(object_model)
+    if len(links) <= 1:
+        return
+
+    normalized_sdk_package = normalize_sdk_package(sdk_package)
+    module_names = [f"{normalized_sdk_package}.v0.geometry_qc"]
+    if normalized_sdk_package == "sdk":
+        module_names.append("sdk._core.v0.geometry_qc")
+    geometry_qc = None
+    last_exc: ModuleNotFoundError | None = None
+    for module_name in module_names:
+        try:
+            geometry_qc = importlib.import_module(module_name)
+            break
+        except ModuleNotFoundError as exc:
+            last_exc = exc
+    if geometry_qc is None:
+        assert last_exc is not None
+        raise last_exc
+
+    find_unsupported_parts = getattr(geometry_qc, "find_unsupported_parts")
+    default_contact_tol_from_env = getattr(geometry_qc, "default_contact_tol_from_env")
+
+    findings = find_unsupported_parts(
+        object_model,
+        asset_root=script_dir,
+        max_pose_samples=1,
+        contact_tol=float(default_contact_tol_from_env()),
+        seed=0,
+    )
+    if not findings:
+        return
+
+    allowed_parts = set(_allowed_isolated_parts_from_test_report(test_report))
+    allowed_findings = [
+        finding for finding in findings if getattr(finding, "part", None) in allowed_parts
+    ]
+    remaining_findings = [
+        finding for finding in findings if getattr(finding, "part", None) not in allowed_parts
+    ]
+
+    if allowed_findings:
+        detail_lines = "\n".join(
+            _format_unsupported_part_finding(finding) for finding in allowed_findings
+        )
+        warnings.append(
+            "URDF compile note (physical, allowed): isolated parts allowed by justification.\n"
+            f"{detail_lines}"
+        )
+
+    if not remaining_findings:
+        return
+
+    detail_lines = "\n".join(
+        _format_unsupported_part_finding(finding) for finding in remaining_findings
+    )
+    raise ValueError(
+        "URDF compile failure (physical, blocking): isolated parts detected "
+        "(not contacting any other part in the checked pose).\n"
+        f"{detail_lines}"
+    )
 
 
 def update_manifest(outputs_root: Path) -> None:

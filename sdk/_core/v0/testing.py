@@ -40,6 +40,7 @@ class TestReport:
     failures: Tuple[TestFailure, ...]
     warnings: Tuple[str, ...] = ()
     allowances: Tuple[str, ...] = ()
+    allowed_isolated_parts: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -280,6 +281,7 @@ class TestContext:
     _warnings: List[str] = field(default_factory=list)
     _allow_pairs: Dict[Tuple[str, str], str] = field(default_factory=dict)
     _allowances: List[str] = field(default_factory=list)
+    _allow_isolated_parts: Dict[str, str] = field(default_factory=dict)
     _allow_elems: List[Tuple[Tuple[str, str], Optional[str], Optional[str], str]] = field(
         default_factory=list, repr=False
     )
@@ -304,6 +306,7 @@ class TestContext:
             failures=failures,
             warnings=tuple(self._warnings),
             allowances=tuple(self._allowances),
+            allowed_isolated_parts=tuple(self._allow_isolated_parts),
         )
 
     def _record(self, name: str, ok: bool, details: str = "") -> bool:
@@ -415,8 +418,8 @@ class TestContext:
         link_b: object,
         *,
         reason: str,
-        elem_a: Optional[str] = None,
-        elem_b: Optional[str] = None,
+        elem_a: Optional[object] = None,
+        elem_b: Optional[object] = None,
     ) -> None:
         """
         Allow a specific overlap with justification.
@@ -434,8 +437,8 @@ class TestContext:
         key = (a, b) if a <= b else (b, a)
         self._allow_pairs[key] = r
 
-        ea = (str(elem_a) if elem_a is not None else "").strip() or None
-        eb = (str(elem_b) if elem_b is not None else "").strip() or None
+        ea = None if elem_a is None else _named_ref(elem_a, kind="elem_a")
+        eb = None if elem_b is None else _named_ref(elem_b, kind="elem_b")
         if ea or eb:
             self._allowances.append(
                 f"allow_overlap({key[0]!r}, {key[1]!r}, elem_a={ea!r}, elem_b={eb!r}): {r}"
@@ -444,14 +447,29 @@ class TestContext:
             self._allowances.append(f"allow_overlap({key[0]!r}, {key[1]!r}): {r}")
         self._allow_elems.append((key, ea, eb, r))
 
+    def allow_isolated_part(
+        self,
+        part: object,
+        *,
+        reason: str,
+    ) -> None:
+        """Allow a specific part to remain isolated in the checked pose."""
+
+        part_name = _named_ref(part, kind="part")
+        r = (reason or "").strip()
+        if not r:
+            raise ValueError("allow_isolated_part requires a non-empty reason")
+        self._allow_isolated_parts[part_name] = r
+        self._allowances.append(f"allow_isolated_part({part_name!r}): {r}")
+
     def allow_coplanar_surfaces(
         self,
         link_a: object,
         link_b: object,
         *,
         reason: str,
-        elem_a: Optional[str] = None,
-        elem_b: Optional[str] = None,
+        elem_a: Optional[object] = None,
+        elem_b: Optional[object] = None,
     ) -> None:
         """Allow a specific coplanar-surface finding with justification."""
 
@@ -463,8 +481,8 @@ class TestContext:
         key = _pair_key(a, b)
         self._allow_coplanar_pairs[key] = r
 
-        ea = (str(elem_a) if elem_a is not None else "").strip() or None
-        eb = (str(elem_b) if elem_b is not None else "").strip() or None
+        ea = None if elem_a is None else _named_ref(elem_a, kind="elem_a")
+        eb = None if elem_b is None else _named_ref(elem_b, kind="elem_b")
         if ea or eb:
             self._allowances.append(
                 f"allow_coplanar_surfaces({key[0]!r}, {key[1]!r}, elem_a={ea!r}, elem_b={eb!r}): {r}"

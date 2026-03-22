@@ -1840,6 +1840,121 @@ def test_viewer_store_full_materialize_can_enable_validation(
     assert compile_report["metrics"]["validation_level"] == "full"
 
 
+def test_viewer_store_full_materialize_persists_allowed_isolated_part_note(
+    tmp_path: Path,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    record_store = RecordStore(repo)
+
+    record = Record(
+        schema_version=1,
+        record_id="rec_allowed_isolated_001",
+        created_at="2026-03-20T10:00:00Z",
+        updated_at="2026-03-20T10:00:00Z",
+        rating=None,
+        kind="generated_model",
+        prompt_kind="single_prompt",
+        category_slug="hinges",
+        source=SourceRef(run_id="run_allowed_isolated_001"),
+        sdk_package="sdk",
+        provider="openai",
+        model_id="gpt-5.4",
+        display=DisplayMetadata(
+            title="Allowed isolated part",
+            prompt_preview="record compiled with an explicit isolated-part allowance",
+        ),
+        artifacts=RecordArtifacts(
+            prompt_txt="prompt.txt",
+            prompt_series_json=None,
+            model_py="model.py",
+            provenance_json="provenance.json",
+            cost_json=None,
+        ),
+        collections=["workbench"],
+    )
+    record_store.write_record(record)
+    record_dir = repo.layout.record_dir("rec_allowed_isolated_001")
+    (record_dir / "prompt.txt").write_text("allowed isolated part", encoding="utf-8")
+    (record_dir / "model.py").write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from pathlib import Path",
+                "",
+                "from sdk import ArticulatedObject, ArticulationType, Box, Origin, TestContext",
+                "",
+                "HERE = Path(__file__).resolve().parent",
+                "object_model = ArticulatedObject(name='allowed_isolated')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "support = object_model.part('support')",
+                "support.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "antenna = object_model.part('antenna')",
+                "antenna.visual(Box((0.04, 0.04, 0.2)), origin=Origin(xyz=(0.0, 0.0, 0.1)))",
+                "object_model.articulation(",
+                "    'base_to_support',",
+                "    ArticulationType.FIXED,",
+                "    parent=base,",
+                "    child=support,",
+                "    origin=Origin(xyz=(0.0, 0.0, 0.0)),",
+                ")",
+                "object_model.articulation(",
+                "    'base_to_antenna',",
+                "    ArticulationType.FIXED,",
+                "    parent=base,",
+                "    child=antenna,",
+                "    origin=Origin(xyz=(0.6, 0.0, 0.0)),",
+                ")",
+                "",
+                "def run_tests():",
+                "    ctx = TestContext(object_model, asset_root=HERE)",
+                "    ctx.allow_isolated_part(",
+                "        antenna,",
+                "        reason='intentionally freestanding decorative part',",
+                "    )",
+                "    return ctx.report()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    repo.write_json(
+        record_dir / "provenance.json",
+        {
+            "schema_version": 1,
+            "record_id": "rec_allowed_isolated_001",
+            "materialization": {
+                "fingerprint_inputs": {
+                    "model_py_sha256": None,
+                    "model_urdf_sha256": None,
+                }
+            },
+        },
+    )
+
+    viewer_store = ViewerStore(tmp_path)
+
+    result = viewer_store.materialize_record_assets(
+        "rec_allowed_isolated_001",
+        force=True,
+        validate=True,
+        ignore_geom_qc=False,
+        target="full",
+    )
+
+    assert result.compiled is True
+    assert any("isolated parts allowed by justification" in warning for warning in result.warnings)
+    compile_report = repo.read_json(
+        repo.layout.record_materialization_compile_report_path("rec_allowed_isolated_001")
+    )
+    assert compile_report["status"] == "success"
+    assert any(
+        "isolated parts allowed by justification" in item["message"]
+        for item in compile_report["warnings"]
+    )
+
+
 def test_viewer_store_can_skip_nested_compile_timeout(
     tmp_path: Path,
     monkeypatch,

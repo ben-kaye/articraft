@@ -9,6 +9,67 @@ from agent.compiler import compile_urdf_report, persist_compile_success_artifact
 from agent.runner import compile_urdf
 
 
+def _write_isolated_part_model_script(
+    script_path: Path,
+    *,
+    allowed_part: str | None = None,
+    disconnected_base: bool = False,
+) -> None:
+    base_visuals = [
+        "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+    ]
+    if disconnected_base:
+        base_visuals.append(
+            "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.4, 0.0, 0.05)))"
+        )
+
+    lines = [
+        "from __future__ import annotations",
+        "",
+        "from pathlib import Path",
+        "",
+        "from sdk import ArticulatedObject, ArticulationType, Box, Origin, TestContext",
+        "",
+        "HERE = Path(__file__).resolve().parent",
+        "object_model = ArticulatedObject(name='isolated_allowance')",
+        "base = object_model.part('base')",
+        *base_visuals,
+        "support = object_model.part('support')",
+        "support.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+        "antenna = object_model.part('antenna')",
+        "antenna.visual(Box((0.04, 0.04, 0.2)), origin=Origin(xyz=(0.0, 0.0, 0.1)))",
+        "object_model.articulation(",
+        "    'base_to_support',",
+        "    ArticulationType.FIXED,",
+        "    parent=base,",
+        "    child=support,",
+        "    origin=Origin(xyz=(0.0, 0.0, 0.0)),",
+        ")",
+        "object_model.articulation(",
+        "    'base_to_antenna',",
+        "    ArticulationType.FIXED,",
+        "    parent=base,",
+        "    child=antenna,",
+        "    origin=Origin(xyz=(0.6, 0.0, 0.0)),",
+        ")",
+        "",
+        "def run_tests():",
+        "    ctx = TestContext(object_model, asset_root=HERE)",
+    ]
+    if allowed_part is not None:
+        lines.append(
+            f"    ctx.allow_isolated_part({allowed_part!r}, reason='intentionally freestanding decorative part')"
+        )
+    if disconnected_base:
+        lines.append("    ctx.warn_if_part_geometry_disconnected()")
+    lines.extend(
+        [
+            "    return ctx.report()",
+        ]
+    )
+    script_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def test_compile_artifacts_update_manifest(tmp_path: Path) -> None:
     outputs_root = tmp_path / "outputs"
     run_dir = outputs_root / "sample_run"
@@ -171,6 +232,38 @@ def test_compile_urdf_report_full_validation_runs_only_run_tests(
     assert report.signal_bundle.status == "success"
 
 
+def test_compile_urdf_report_fails_for_unallowed_isolated_parts(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    _write_isolated_part_model_script(script_path)
+
+    with pytest.raises(RuntimeError, match="isolated parts detected"):
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+
+def test_compile_urdf_report_allows_explicitly_allowed_isolated_part(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    _write_isolated_part_model_script(script_path, allowed_part="antenna")
+
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert any("isolated parts allowed by justification" in warning for warning in report.warnings)
+    assert any(
+        signal.kind == "allowed_isolated_part" and "part='antenna'" in signal.details
+        for signal in report.signal_bundle.signals
+    )
+
+
+def test_compile_urdf_report_unrelated_isolated_part_allowance_does_not_suppress_failure(
+    tmp_path: Path,
+) -> None:
+    script_path = tmp_path / "model.py"
+    _write_isolated_part_model_script(script_path, allowed_part="support")
+
+    with pytest.raises(RuntimeError, match="isolated parts detected"):
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+
 def test_compile_urdf_report_preserves_run_test_warnings_on_success(tmp_path: Path) -> None:
     script_path = tmp_path / "model.py"
     script_path.write_text(
@@ -233,6 +326,20 @@ def test_compile_urdf_report_promotes_floating_geometry_warnings_to_failures(
             ]
         ),
         encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="blocking_test_warning"):
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+
+def test_compile_urdf_report_keeps_disconnected_geometry_blocking_with_isolated_part_allowance(
+    tmp_path: Path,
+) -> None:
+    script_path = tmp_path / "model.py"
+    _write_isolated_part_model_script(
+        script_path,
+        allowed_part="antenna",
+        disconnected_base=True,
     )
 
     with pytest.raises(RuntimeError, match="blocking_test_warning"):

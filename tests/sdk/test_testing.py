@@ -339,6 +339,38 @@ def test_allow_overlap_suppresses_reported_articulation_pair() -> None:
     assert "Overlaps detected but allowed by justification" in report.warnings[0]
 
 
+def test_allow_isolated_part_records_allowance_and_structured_part_list() -> None:
+    model = _build_overlapping_parts_model()
+    child = model.get_part("child")
+    ctx = SDKTestContext(model)
+
+    ctx.allow_isolated_part(child, reason="intentionally freestanding accent")
+
+    report = ctx.report()
+    assert report.allowances == ("allow_isolated_part('child'): intentionally freestanding accent",)
+    assert report.allowed_isolated_parts == ("child",)
+
+
+def test_allow_isolated_part_accepts_string_name() -> None:
+    ctx = SDKTestContext(_build_overlapping_parts_model())
+
+    ctx.allow_isolated_part("child", reason="intentionally freestanding accent")
+
+    report = ctx.report()
+    assert report.allowed_isolated_parts == ("child",)
+
+
+def test_allow_isolated_part_rejects_empty_reason() -> None:
+    ctx = SDKTestContext(_build_overlapping_parts_model())
+
+    try:
+        ctx.allow_isolated_part("child", reason="  ")
+    except ValueError as exc:
+        assert "allow_isolated_part requires a non-empty reason" in str(exc)
+    else:  # pragma: no cover - assertion helper
+        raise AssertionError("expected ValueError")
+
+
 def test_warn_if_coplanar_surfaces_records_warning_only() -> None:
     ctx = SDKTestContext(_build_coplanar_surface_model())
 
@@ -404,6 +436,51 @@ def test_allow_coplanar_surfaces_suppresses_reported_pair() -> None:
     assert report.allowances == ("allow_coplanar_surfaces('base', 'cap'): flush mounted cap",)
 
 
+def test_allow_overlap_accepts_part_and_visual_objects() -> None:
+    model = _build_overlapping_parts_model()
+    base = model.get_part("base")
+    child = model.get_part("child")
+    base_box = base.visuals[0]
+    child_box = child.visuals[0]
+
+    ctx = SDKTestContext(model)
+    ctx.allow_overlap(base, child, reason="bearing sleeve nests around the hinge pin")
+    ctx.allow_overlap(
+        base, child, reason="explicit element allowance", elem_a=base_box, elem_b=child_box
+    )
+
+    report = ctx.report()
+    assert report.passed
+    assert report.allowances == (
+        "allow_overlap('base', 'child'): bearing sleeve nests around the hinge pin",
+        "allow_overlap('base', 'child', elem_a='base_box', elem_b='child_box'): explicit element allowance",
+    )
+
+
+def test_allow_coplanar_surfaces_accepts_part_objects() -> None:
+    model = _build_coplanar_surface_model()
+    base = model.get_part("base")
+    cap = model.get_part("cap")
+
+    ctx = SDKTestContext(model)
+    ctx.allow_coplanar_surfaces(base, cap, reason="flush mounted cap")
+
+    assert ctx.warn_if_coplanar_surfaces(
+        max_pose_samples=1,
+        plane_tol=0.001,
+        min_overlap=0.05,
+        min_overlap_ratio=0.35,
+        ignore_adjacent=False,
+        ignore_fixed=False,
+    )
+
+    report = ctx.report()
+    assert report.passed
+    assert report.failures == ()
+    assert report.warnings == ()
+    assert report.allowances == ("allow_coplanar_surfaces('base', 'cap'): flush mounted cap",)
+
+
 def test_expect_aabb_gap_keeps_whole_link_behavior_by_default() -> None:
     ctx = SDKTestContext(_build_element_gap_model())
 
@@ -435,6 +512,50 @@ def test_expect_aabb_gap_can_target_named_elements() -> None:
     assert "gap_z=0.001" in report.failures[0].details
     assert "positive_elem='hub'" in report.failures[0].details
     assert "negative_elem='body'" in report.failures[0].details
+
+
+def test_expect_aabb_gap_accepts_part_and_visual_objects() -> None:
+    model = _build_element_gap_model()
+    arm = model.get_part("arm")
+    base = model.get_part("base")
+    hub = arm.visuals[0]
+    body = base.visuals[0]
+
+    ctx = SDKTestContext(model)
+
+    assert not ctx.expect_aabb_gap(
+        arm,
+        base,
+        axis="z",
+        max_gap=0.0,
+        max_penetration=0.0,
+        positive_elem=hub,
+        negative_elem=body,
+    )
+
+    report = ctx.report()
+    assert not report.passed
+    assert len(report.failures) == 1
+    assert report.failures[0].name == "expect_aabb_gap(arm,base,axis=z)"
+    assert "gap_z=0.001" in report.failures[0].details
+    assert "positive_elem='hub'" in report.failures[0].details
+    assert "negative_elem='body'" in report.failures[0].details
+
+
+def test_pose_accepts_articulation_objects() -> None:
+    model = _build_joint_origin_model(joint_z=0.05)
+    child = model.get_part("child")
+    joint = model.get_articulation("base_to_child")
+
+    ctx = SDKTestContext(model)
+    rest_aabb = ctx.link_world_aabb(child)
+    assert rest_aabb is not None
+
+    with ctx.pose({joint: 0.5}):
+        posed_aabb = ctx.link_world_aabb(child)
+
+    assert posed_aabb is not None
+    assert posed_aabb != rest_aabb
 
 
 def test_expect_aabb_gap_reports_missing_named_element() -> None:
