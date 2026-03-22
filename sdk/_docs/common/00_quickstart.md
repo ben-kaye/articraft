@@ -135,6 +135,17 @@ def run_tests() -> TestReport:
     ctx.expect_aabb_overlap("lid", "base", axes="xy", min_overlap=0.05)
     ctx.expect_origin_distance("lid", "base", axes="xy", max_dist=0.02)
     ctx.expect_aabb_gap("lid", "base", axis="z", max_gap=0.001, max_penetration=0.0)
+    ctx.expect_aabb_gap(
+        "lid",
+        "base",
+        axis="z",
+        max_gap=0.001,
+        max_penetration=0.0,
+        positive_use="visual",
+        negative_use="visual",
+        positive_elem="hinge_leaf",
+        negative_elem="frame_leaf",
+    )
     return ctx.report()
 
 
@@ -196,6 +207,7 @@ Important:
 - Use `ctx.check_articulation_overlaps(...)` as the failure-tier QC gate for `REVOLUTE`, `PRISMATIC`, and `CONTINUOUS` parent/child pairs when you need to prove non-fixed joint clearance.
 - Use prompt-specific `expect_*` assertions as the real regression tests for visible structure, proportions, and mechanism behavior.
 - Make attachment checks primary: use near-zero `expect_aabb_gap(...)`, footprint overlap, `expect_aabb_contact(...)` where appropriate, and pose-specific mounting checks to prove that parts look attached.
+- When whole-link AABBs are too coarse for a small mount or hinge seat, scope `expect_aabb_gap(...)` to named local features with `positive_elem=` and `negative_elem=`. Those names come from the geometry source selected by `positive_use=` and `negative_use=`.
 - Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look seated instead of floating.
 - Use `ctx.allow_overlap(...)` narrowly for legitimate nested mechanisms such as bearing sleeves, hinge barrels, or enclosed hubs, and still call `ctx.warn_if_overlaps(...)` so the allowance is tracked.
 - Use `ctx.warn_if_overlaps(..., ignore_adjacent=True, ignore_fixed=True)` as a conservative warning-tier backstop for non-joint overlap issues, not as proof that attachment quality is good.

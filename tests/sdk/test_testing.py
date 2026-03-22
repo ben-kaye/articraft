@@ -156,6 +156,19 @@ def _build_adjacent_coplanar_surface_model() -> ArticulatedObject:
     return model
 
 
+def _build_element_gap_model() -> ArticulatedObject:
+    model = ArticulatedObject(name="element_gap")
+
+    base = model.part("base")
+    base.visual(Box((0.2, 0.2, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)), name="body")
+
+    arm = model.part("arm")
+    arm.visual(Box((0.04, 0.04, 0.04)), origin=Origin(xyz=(0.0, 0.0, 0.121)), name="hub")
+    arm.visual(Box((0.01, 0.01, 0.02)), origin=Origin(xyz=(0.0, 0.0, 0.11)), name="brace")
+
+    return model
+
+
 def test_articulation_origin_tolerance_is_truncated_to_three_decimals() -> None:
     ctx = SDKTestContext(_build_joint_origin_model(joint_z=0.115), geometry_source="visual")
 
@@ -397,3 +410,59 @@ def test_allow_coplanar_surfaces_suppresses_reported_pair() -> None:
     assert report.failures == ()
     assert report.warnings == ()
     assert report.allowances == ("allow_coplanar_surfaces('base', 'cap'): flush mounted cap",)
+
+
+def test_expect_aabb_gap_keeps_whole_link_behavior_by_default() -> None:
+    ctx = SDKTestContext(_build_element_gap_model(), geometry_source="visual")
+
+    assert ctx.expect_aabb_gap("arm", "base", axis="z", max_gap=0.0, max_penetration=0.0)
+
+    report = ctx.report()
+    assert report.passed
+    assert report.failures == ()
+    assert report.checks == ("expect_aabb_gap(arm,base,axis=z)",)
+
+
+def test_expect_aabb_gap_can_target_named_elements() -> None:
+    ctx = SDKTestContext(_build_element_gap_model(), geometry_source="visual")
+
+    assert not ctx.expect_aabb_gap(
+        "arm",
+        "base",
+        axis="z",
+        max_gap=0.0,
+        max_penetration=0.0,
+        positive_use="visual",
+        negative_use="visual",
+        positive_elem="hub",
+        negative_elem="body",
+    )
+
+    report = ctx.report()
+    assert not report.passed
+    assert len(report.failures) == 1
+    assert report.failures[0].name == "expect_aabb_gap(arm,base,axis=z)"
+    assert "gap_z=0.001" in report.failures[0].details
+    assert "positive_elem='hub'" in report.failures[0].details
+    assert "negative_elem='body'" in report.failures[0].details
+
+
+def test_expect_aabb_gap_reports_missing_named_element() -> None:
+    ctx = SDKTestContext(_build_element_gap_model(), geometry_source="visual")
+
+    assert not ctx.expect_aabb_gap(
+        "arm",
+        "base",
+        axis="z",
+        max_gap=0.0,
+        positive_use="visual",
+        positive_elem="missing_hub",
+    )
+
+    report = ctx.report()
+    assert not report.passed
+    assert len(report.failures) == 1
+    assert (
+        "missing element AABB for positive_elem='missing_hub' on 'arm'"
+        in report.failures[0].details
+    )

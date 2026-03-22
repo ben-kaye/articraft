@@ -144,12 +144,46 @@ ctx.expect_aabb_gap("upper", "lower", axis="z", max_gap=0.001, max_penetration=0
 ctx.expect_aabb_contact("bracket", "frame")
 ctx.expect_joint_motion_axis("hinge", "lid", world_axis="z", direction="positive", min_delta=0.01)
 ```
+`expect_aabb_gap(...)` is directional: it measures the signed gap from the positive-side link's minimum face to the negative-side link's maximum face along the chosen axis. When whole-link AABBs are too coarse, you can scope the check to named geometry on each side. The element names come from the geometry source you select with `positive_use` and `negative_use`:
+
+```python
+ctx.expect_aabb_gap(
+    "arm",
+    "base",
+    axis="z",
+    max_gap=0.001,
+    max_penetration=0.0,
+    positive_use="visual",
+    negative_use="visual",
+    positive_elem="hub",
+    negative_elem="mount_block",
+)
+```
+
+Argument guide:
+
+- `positive_link`, `negative_link`: the two bodies being compared, ordered by the positive-axis convention
+- `axis`: the positive world axis to measure along; use `"x"`, `"y"`, or `"z"`
+- `min_gap`: lower bound on the signed gap; use this when you want to allow or require a specific amount of separation
+- `max_gap`: upper bound on the signed gap; use this for "must stay visually seated" style checks
+- `max_penetration`: shorthand for how much overlap is allowed when `min_gap` is omitted
+- `positive_use`, `negative_use`: choose `visual` or `collision` per side
+- `positive_elem`, `negative_elem`: optional named local features to test instead of the whole-link envelope
+- `name`: override the recorded check name when the default is too generic
+
+Practical defaults:
+
+- use `max_gap=0.001, max_penetration=0.0` for "should look seated" checks
+- use `positive_use="visual", negative_use="visual"` when the issue is visible mounting quality rather than physical collision clearance
+- add `positive_elem` / `negative_elem` when the whole-link AABB is too broad and some unrelated geometry would otherwise let the check pass
+
 
 For mounted or nested assemblies:
 
 - default to near-zero `expect_aabb_gap(...)` checks unless the real object visibly has more clearance
 - pair gap checks with footprint/overlap checks such as `expect_aabb_overlap(..., axes="xy", ...)` or `expect_aabb_within(..., axes="xy", ...)`
 - use `expect_aabb_contact(...)` when the core invariant is direct touch/overlap rather than a bounded directional gap
+- use `positive_elem` / `negative_elem` when the real invariant is a local mating feature such as a hinge hub, bracket cheek, collar, or seat rather than the whole-link envelope
 - add pose-specific checks at important limits so the assembly still looks attached when articulated
 
 Use `expect_joint_motion_axis(...)` only when changing the joint should move the link's AABB center along the tested world axis.
@@ -177,6 +211,17 @@ ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=Tr
 ctx.expect_aabb_overlap("lid", "base", axes="xy", min_overlap=0.05)
 ctx.expect_origin_distance("lid", "base", axes="xy", max_dist=0.02)
 ctx.expect_aabb_gap("lid", "base", axis="z", max_gap=0.001, max_penetration=0.0)
+ctx.expect_aabb_gap(
+    "lid",
+    "base",
+    axis="z",
+    max_gap=0.001,
+    max_penetration=0.0,
+    positive_use="visual",
+    negative_use="visual",
+    positive_elem="hinge_leaf",
+    negative_elem="frame_leaf",
+)
 ctx.expect_aabb_contact("hinge_leaf", "frame")
 ctx.expect_joint_motion_axis("lid_hinge", "lid", world_axis="z", direction="positive", min_delta=0.01)
 with ctx.pose({"lid_hinge": 1.0}):

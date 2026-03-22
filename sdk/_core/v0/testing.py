@@ -638,6 +638,37 @@ class TestContext:
     ) -> Optional[AABB]:
         return self.part_world_aabb(link, use=use)
 
+    def part_element_world_aabb(
+        self,
+        part: object,
+        *,
+        use: Optional[str] = None,
+        elem: object,
+    ) -> Optional[AABB]:
+        part_name = _named_ref(part, kind="part")
+        elem_name = _named_ref(elem, kind="elem")
+        use_key = (
+            self.geometry_source
+            if use is None
+            else _normalize_geometry_source(use, field_name="use")
+        )
+
+        tf = self._world_tfs().get(part_name)
+        if tf is None:
+            return None
+
+        for (
+            candidate_name,
+            _geometry_name,
+            local_aabb,
+        ) in self._part_geometry_items_with_local_aabbs(
+            part_name,
+            use=use_key,
+        ):
+            if candidate_name == elem_name:
+                return _transform_aabb(local_aabb, tf)
+        return None
+
     # ---- General checks ----------------------------------------------------
 
     def check_model_valid(self) -> bool:
@@ -1712,8 +1743,38 @@ class TestContext:
         max_penetration: Optional[float] = None,
         positive_use: str = "collision",
         negative_use: str = "collision",
+        positive_elem: Optional[object] = None,
+        negative_elem: Optional[object] = None,
         name: Optional[str] = None,
     ) -> bool:
+        """
+        Check the signed directional gap between two links or two named elements.
+
+        The measured gap is:
+
+            positive.min[axis] - negative.max[axis]
+
+        along the requested positive world axis. This makes the check directional:
+        `expect_aabb_gap("lid", "base", axis="z")` means "how far is the bottom
+        of the lid above the top of the base?", while swapping the arguments asks
+        a different question and flips the sign convention.
+
+        Parameters:
+          - positive_link / negative_link: the objects on the positive-side and
+            negative-side of the tested axis
+          - axis: one of "x", "y", or "z"; must be the positive axis direction
+          - min_gap: lower bound on the signed gap; when omitted, derive it from
+            `max_penetration`
+          - max_gap: upper bound on the signed gap
+          - max_penetration: convenience way to express the allowed overlap depth;
+            this becomes a lower bound of `-max_penetration`
+          - positive_use / negative_use: choose whether each side uses `visual`
+            or `collision` geometry when computing its AABB
+          - positive_elem / negative_elem: optional named geometry items within
+            each link; when provided, the check uses those element AABBs instead
+            of the whole-link union AABBs
+          - name: optional explicit check name for reporting
+        """
         positive_name = _named_ref(positive_link, kind="positive_link")
         negative_name = _named_ref(negative_link, kind="negative_link")
         axis_key, axis_sign, axis_err = _normalize_axis_name(axis)
@@ -1723,10 +1784,48 @@ class TestContext:
         if axis_err is not None or axis_key is None or axis_sign < 0.0:
             return self._record(check_name, False, axis_err or "axis must be one of: x, y, z")
 
-        positive_aabb = self.link_world_aabb(positive_link, use=positive_use)
-        negative_aabb = self.link_world_aabb(negative_link, use=negative_use)
+        positive_elem_name = (
+            None if positive_elem is None else _named_ref(positive_elem, kind="positive_elem")
+        )
+        negative_elem_name = (
+            None if negative_elem is None else _named_ref(negative_elem, kind="negative_elem")
+        )
+
+        positive_aabb = (
+            self.link_world_aabb(positive_link, use=positive_use)
+            if positive_elem_name is None
+            else self.part_element_world_aabb(
+                positive_link,
+                use=positive_use,
+                elem=positive_elem_name,
+            )
+        )
+        negative_aabb = (
+            self.link_world_aabb(negative_link, use=negative_use)
+            if negative_elem_name is None
+            else self.part_element_world_aabb(
+                negative_link,
+                use=negative_use,
+                elem=negative_elem_name,
+            )
+        )
         if positive_aabb is None or negative_aabb is None:
-            return self._record(check_name, False, "missing link AABB(s)")
+            missing: list[str] = []
+            if positive_aabb is None:
+                if positive_elem_name is None:
+                    missing.append(f"missing link AABB for {positive_name!r}")
+                else:
+                    missing.append(
+                        f"missing element AABB for positive_elem={positive_elem_name!r} on {positive_name!r}"
+                    )
+            if negative_aabb is None:
+                if negative_elem_name is None:
+                    missing.append(f"missing link AABB for {negative_name!r}")
+                else:
+                    missing.append(
+                        f"missing element AABB for negative_elem={negative_elem_name!r} on {negative_name!r}"
+                    )
+            return self._record(check_name, False, "; ".join(missing))
 
         if min_gap is None:
             max_penetration_f = 0.0 if max_penetration is None else float(max_penetration)
@@ -1756,7 +1855,9 @@ class TestContext:
             check_name,
             ok,
             f"gap_{axis_key}={gap:.4g} min_gap={min_gap_f:.4g} max_gap={upper_txt} "
-            f"max_penetration={max_penetration_f:.4g} pose={self._pose}",
+            f"max_penetration={max_penetration_f:.4g} "
+            f"positive_elem={positive_elem_name!r} negative_elem={negative_elem_name!r} "
+            f"pose={self._pose}",
         )
 
     def expect_aabb_overlap(
