@@ -171,6 +171,74 @@ def test_compile_urdf_report_full_validation_runs_only_run_tests(
     assert report.signal_bundle.status == "success"
 
 
+def test_compile_urdf_report_preserves_run_test_warnings_on_success(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin, TestReport",
+                "",
+                "object_model = ArticulatedObject(name='warns')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "",
+                "def run_tests() -> TestReport:",
+                "    return TestReport(",
+                "        passed=True,",
+                "        checks_run=1,",
+                "        checks=('warn_if_part_geometry_disconnected',),",
+                "        failures=(),",
+                "        warnings=('custom non-blocking warning',),",
+                "    )",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert report.warnings == ["custom non-blocking warning"]
+    assert report.signal_bundle.status == "success"
+
+
+def test_compile_urdf_report_promotes_floating_geometry_warnings_to_failures(
+    tmp_path: Path,
+) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, Box, Origin, TestReport",
+                "",
+                "object_model = ArticulatedObject(name='floating_warning')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "",
+                "def run_tests() -> TestReport:",
+                "    return TestReport(",
+                "        passed=True,",
+                "        checks_run=1,",
+                "        checks=('warn_if_part_geometry_disconnected',),",
+                "        failures=(),",
+                "        warnings=(",
+                '            "warn_if_part_geometry_disconnected(tol=0.005): "',
+                "            \"Disconnected geometry islands detected:\\npart='controls' connected=1/19\",",
+                "        ),",
+                "    )",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="blocking_test_warning"):
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+
 def test_compile_urdf_report_does_not_ignore_non_geometry_failures(tmp_path: Path) -> None:
     script_path = tmp_path / "model.py"
     script_path.write_text(
