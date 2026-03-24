@@ -22,6 +22,26 @@ ctx = TestContext(
 
 If the model was constructed with `ArticulatedObject(..., assets=AssetContext.from_script(__file__))`, `TestContext(object_model, ...)` can infer the mesh root automatically. If not, pass `asset_root=HERE` explicitly whenever the model uses mesh files.
 
+## TestReport contract
+
+Generated models should finish `run_tests()` with:
+
+```python
+return ctx.report()
+```
+
+`ctx.report()` returns a `TestReport` with these fields:
+
+- `passed`: `True` when no blocking failures were recorded
+- `checks_run`: total number of recorded checks
+- `checks`: ordered check names
+- `failures`: blocking `TestFailure(name, details)` entries
+- `warnings`: non-blocking warning strings
+- `allowances`: recorded `allow_*` justifications
+- `allowed_isolated_parts`: part names explicitly allowed to remain isolated
+
+`allowed_isolated_parts` is consumed by the compile-time isolated-part QC pass. If you intentionally allow a freestanding part in `run_tests()`, that allowance must be visible in the returned `TestReport`.
+
 ## Resolve once, assert many
 
 Prefer object-first tests:
@@ -80,7 +100,16 @@ The harness also runs automatic isolated-part checks at compile time:
 - isolated-part findings are blocking by default because the part still does not touch anything
 - an isolated-part failure should usually be treated as a real floating-geometry or bad-mount bug
 
-## Overlap allowances
+If a part is intentionally freestanding in the checked pose, justify it explicitly:
+
+```python
+accent = object_model.get_part("accent")
+ctx.allow_isolated_part(accent, reason="intentionally freestanding accent")
+```
+
+Use this narrowly. `ctx.allow_isolated_part(...)` records the justification in `report.allowances` and exposes the part name in `report.allowed_isolated_parts` so compile-time isolated-part QC can treat that specific case as allowed instead of blocking.
+
+## Allowances
 
 ```python
 door = object_model.get_part("door")
@@ -91,6 +120,29 @@ ctx.allow_coplanar_surfaces(door, body, reason="flush mounted panel")
 ```
 
 Use allowances narrowly. Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look attached instead of floating. For articulated mechanisms, use `ctx.allow_overlap(...)` only for specific justified cases such as bearing sleeves, hinge barrels, or enclosed hubs. Still call `ctx.warn_if_overlaps(...)` so the allowance is tracked.
+
+Prefer these allowance entry points in new code:
+
+- `ctx.allow_overlap(...)` for legitimate nested or sleeve-like overlap
+- `ctx.allow_coplanar_surfaces(...)` for intentional flush mounts or panel seams
+- `ctx.allow_isolated_part(...)` for intentionally freestanding parts in the checked pose
+
+## Canonical helper names
+
+Prefer this naming and helper set in new generated tests:
+
+- use articulation terminology consistently: `object_model.get_articulation(...)`, `check_articulation_overlaps(...)`, and `warn_if_articulation_origin_near_geometry(...)`
+- use `warn_if_part_geometry_disconnected(...)` for disconnected within-part geometry islands
+- use exact `expect_within(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_contact(...)` as the primary intent checks
+- use pose-specific exact checks instead of direction-only motion probes
+
+Legacy aliases and deprecated helpers still exist for backward compatibility, but do not use them in new generated code:
+
+- prefer `warn_if_articulation_origin_near_geometry(...)` over `warn_if_joint_origin_near_geometry(...)`
+- prefer `check_articulation_origin_near_geometry(...)` over `check_joint_origin_near_geometry(...)`
+- prefer `warn_if_part_geometry_disconnected(...)` over the legacy alias `warn_if_part_geometry_connected(...)`
+- prefer exact `expect_*` helpers over deprecated `expect_aabb_*` helpers
+- prefer pose-specific exact checks over deprecated `expect_joint_motion_axis(...)`
 
 ## Articulation-overlap QC
 

@@ -85,7 +85,7 @@ def run_tests() -> TestReport:
     ctx.warn_if_articulation_origin_near_geometry(tol=0.015)
     ctx.warn_if_part_geometry_disconnected()
     ctx.check_articulation_overlaps(max_pose_samples=64)
-    ctx.warn_if_overlaps(max_pose_samples=64)
+    ctx.warn_if_overlaps(max_pose_samples=64, ignore_adjacent=True, ignore_fixed=True)
     ctx.expect_gap(door, body, axis="y", max_gap=0.001, max_penetration=0.0)
     return ctx.report()
 ```
@@ -130,5 +130,6 @@ If you intentionally model in millimeters inside CadQuery, pass `unit_scale=0.00
 - Use `mesh_from_cadquery(...)` to export a visual mesh, then attach it with `part.visual(...)`.
 - Keep inertials explicit rather than inferring them from CadQuery mesh bounds.
 - Keep `assets=AssetContext.from_script(__file__)` attached to the model so relative mesh refs under `assets/meshes/` remain resolvable during QC and tests.
+- Use the same common testing conventions in `sdk_hybrid`: articulation-spelled helpers, exact `expect_*` assertions, and `warn_if_overlaps(..., ignore_adjacent=True, ignore_fixed=True)` as the default broad warning-tier backstop.
 - Do not try to infer URDF joints from CadQuery assemblies. Declare joints explicitly in `ArticulatedObject`.
 - Be careful with repeated `faces(...).workplane()` feature loops: the workplane origin can drift between iterations, so repeated cuts are often safer when built from a fixed global plane and subtracted explicitly.

@@ -42,6 +42,7 @@ Collisions are derived automatically at compile time:
 - overlap and contact QC run on collisions derived mechanically from visuals, not authored ones
 - overlap QC is conservative; use exact attachment checks as the primary realism checks
 - compile also checks isolated parts in multi-part objects and treats them as blocking failures by default
+- if a part is intentionally freestanding in the checked pose, justify it in `run_tests()` with `ctx.allow_isolated_part(part, reason=...)`
 
 ## Recommended imports
 
@@ -148,6 +149,8 @@ def run_tests() -> TestReport:
 object_model = build_object_model()
 ```
 
+`ctx.report()` returns the required `TestReport`. Treat `failures` as blocking, `warnings` as non-blocking QC/design evidence, `allowances` as the audit trail for justified exceptions, and `allowed_isolated_parts` as the explicit handoff to compile-time isolated-part QC.
+
 Continuous-joint example:
 
 ```python
@@ -203,9 +206,12 @@ Important:
 - Use prompt-specific `expect_*` assertions as the real regression tests for visible structure, proportions, and mechanism behavior.
 - Make attachment checks primary: use near-zero `expect_gap(...)`, exact footprint overlap, `expect_contact(...)` where appropriate, and pose-specific mounting checks to prove that parts look attached.
 - When the whole part is too broad for a small mount or hinge seat, resolve named local features from the part with `part.get_visual(...)` and pass those `Visual` objects into the exact `expect_*` helpers.
+- In new code, prefer the articulation-spelled helpers and the exact `expect_*` family: `warn_if_articulation_origin_near_geometry(...)`, `check_articulation_overlaps(...)`, `warn_if_part_geometry_disconnected(...)`, `expect_gap(...)`, `expect_overlap(...)`, `expect_contact(...)`, and `expect_within(...)`.
+- Avoid legacy or deprecated helpers in new generated code: `check_joint_origin_near_geometry(...)`, `warn_if_joint_origin_near_geometry(...)`, `warn_if_part_geometry_connected(...)`, `expect_aabb_*`, and `expect_joint_motion_axis(...)`.
 - Slight intended interpenetration can be acceptable when it makes a mounted or nested assembly look seated instead of floating.
 - Use `ctx.allow_overlap(...)` narrowly for legitimate nested mechanisms such as bearing sleeves, hinge barrels, or enclosed hubs, and still call `ctx.warn_if_overlaps(...)` so the allowance is tracked.
 - Use `ctx.warn_if_overlaps(..., ignore_adjacent=True, ignore_fixed=True)` as a conservative warning-tier backstop for non-joint overlap issues, not as proof that attachment quality is good.
 - The harness also runs automatic isolated-part checks at compile time.
 - isolated-part findings fail by default because the part still does not touch anything, which is usually a real floating-geometry or bad-mount bug.
+- If a part must remain isolated in the checked pose, justify it explicitly with `ctx.allow_isolated_part(part, reason=...)`.
 - Add selective separation checks only for pairs that truly must remain clear across motion.
