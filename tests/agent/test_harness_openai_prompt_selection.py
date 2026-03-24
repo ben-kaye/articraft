@@ -76,10 +76,12 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "<modeling_charter>" in instructions
     assert "<verification_contract>" in instructions
     assert "<repair_strategy>" in instructions
-    assert "Use ONLY `read_file` and `apply_patch`" in instructions
+    assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in instructions
     assert "FREEFORM tool" in instructions
     assert "write_code" not in instructions
     assert "Do NOT provide `file_path`" in instructions
+    assert "probe_model` runs short Python snippets against the current bound model" in instructions
+    assert "lexical search over curated base SDK examples" in instructions
     assert "<compile_signals>" in instructions
     assert "Use the injected SDK docs for exact helper signatures" in instructions
     assert (
@@ -112,8 +114,12 @@ def test_openai_hybrid_payload_preview_includes_find_examples_tool() -> None:
     )
 
     tool_names = {tool["name"] for tool in payload["tools"]}
+    assert "probe_model" in tool_names
     assert "find_examples" in tool_names
-    assert "Use ONLY `read_file`, `apply_patch`, and `find_examples`" in payload["instructions"]
+    assert (
+        "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`"
+        in payload["instructions"]
+    )
     assert "lexical search over curated hybrid/CadQuery examples" in payload["instructions"]
 
 
@@ -245,9 +251,17 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     assert "<tool_contract>" in gemini_instructions
     assert "<verification_contract>" in gemini_instructions
     assert "<compile_signals>" in gemini_instructions
-    assert "Use ONLY `read_code` and `edit_code`" in gemini_instructions
+    assert (
+        "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
+        in gemini_instructions
+    )
     assert 'old_string=""' in gemini_instructions
     assert "write_code" not in gemini_instructions
+    assert (
+        "probe_model` runs short Python snippets against the current bound model"
+        in gemini_instructions
+    )
+    assert "lexical search over curated base SDK examples" in gemini_instructions
     assert "Use the injected SDK docs for exact helper signatures" in gemini_instructions
     assert (
         "The model is not done until every applicable visual coverage category is proved"
@@ -268,9 +282,10 @@ def test_gemini_hybrid_payload_preview_includes_find_examples_tool() -> None:
 
     declarations = payload["config"]["tools"][0]["function_declarations"]
     tool_names = {tool["name"] for tool in declarations}
+    assert "probe_model" in tool_names
     assert "find_examples" in tool_names
     assert (
-        "Use ONLY `read_code`, `edit_code`, and `find_examples`"
+        "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
         in payload["config"]["system_instruction"]
     )
     assert (

@@ -19,7 +19,9 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "<modeling_charter>" in text
         assert "<verification_contract>" in text
         assert "<repair_strategy>" in text
-        assert "Use ONLY `read_file` and `apply_patch`" in text
+        assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in text
+        assert "probe_model` runs short Python snippets against the current bound model" in text
+        assert "lexical search over curated base SDK examples" in text
         assert "Use the injected SDK docs for exact helper signatures" in text
         assert (
             "The model is not done until every applicable visual coverage category is proved"
@@ -33,4 +35,4 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "Do not cap a visible opening with a solid placeholder primitive." in text
         assert "expect_aabb_" not in text
         assert "expect_joint_motion_axis(" not in text
-        assert len(text.splitlines()) <= 120
+        assert len(text.splitlines()) <= 132

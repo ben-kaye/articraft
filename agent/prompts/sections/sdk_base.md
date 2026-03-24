@@ -16,6 +16,7 @@
 - If visible internal structure, hollowness, or cavity-bearing geometry is inherent to the object, model it explicitly even when the prompt does not specify it.
 - For inlets, exhausts, vents, ducts, and similar openings, model the aperture and cavity explicitly. Do not cap a visible opening with a solid placeholder primitive.
 - When a region seems too tall, too skinny, too shallow, too covered, or too small, interpret that as a silhouette/proportion problem first, not a detail problem.
+- For unfamiliar base-SDK modeling or testing patterns, use `find_examples` before inventing a pattern from scratch.
 </modeling_charter>
 
 <verification_contract>

@@ -52,20 +52,32 @@ def test_prompt_outputs_are_current() -> None:
     }
 
     openai_text = compiled_by_name["designer_system_prompt_openai.txt"]
-    _assert_shared_contract(openai_text, budget=120)
-    assert "Use ONLY `read_file` and `apply_patch`" in openai_text
+    _assert_shared_contract(openai_text, budget=132)
+    assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in openai_text
     assert "write_code" not in openai_text
-    assert "find_examples" not in openai_text
+    assert "probe_model` runs short Python snippets against the current bound model" in openai_text
+    assert "find_examples` is lexical search over curated base SDK examples" in openai_text
+    assert "stale or deprecated SDK code" in openai_text
+    assert "inspiration/reference only" in openai_text
     assert "Author visuals only; do not author collision geometry in `sdk`." in openai_text
     assert "silhouette-critical shells, ducts, nacelles, blades, petals" in openai_text
 
     openai_hybrid_text = compiled_by_name["designer_system_prompt_openai_hybrid.txt"]
-    _assert_shared_contract(openai_hybrid_text, budget=135)
-    assert "Use ONLY `read_file`, `apply_patch`, and `find_examples`" in openai_hybrid_text
+    _assert_shared_contract(openai_hybrid_text, budget=142)
+    assert (
+        "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`"
+        in openai_hybrid_text
+    )
+    assert (
+        "probe_model` runs short Python snippets against the current bound model"
+        in openai_hybrid_text
+    )
     assert (
         "find_examples` is lexical search over curated hybrid/CadQuery examples"
         in openai_hybrid_text
     )
+    assert "stale or deprecated SDK code" in openai_hybrid_text
+    assert "inspiration/reference only" in openai_hybrid_text
     assert "Import from `sdk_hybrid`, not `sdk`" in openai_hybrid_text
     assert (
         "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"
@@ -74,20 +86,32 @@ def test_prompt_outputs_are_current() -> None:
     assert "silhouette-critical shells, ducts, nacelles, blades, petals" in openai_hybrid_text
 
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
-    _assert_shared_contract(gemini_text, budget=120)
-    assert "Use ONLY `read_code` and `edit_code`" in gemini_text
+    _assert_shared_contract(gemini_text, budget=132)
+    assert "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`" in gemini_text
     assert 'old_string=""' in gemini_text
     assert "write_code" not in gemini_text
-    assert "find_examples" not in gemini_text
+    assert "probe_model` runs short Python snippets against the current bound model" in gemini_text
+    assert "find_examples` is lexical search over curated base SDK examples" in gemini_text
+    assert "stale or deprecated SDK code" in gemini_text
+    assert "inspiration/reference only" in gemini_text
     assert "Author visuals only; do not author collision geometry in `sdk`." in gemini_text
 
     gemini_hybrid_text = compiled_by_name["designer_system_prompt_gemini_hybrid.txt"]
-    _assert_shared_contract(gemini_hybrid_text, budget=135)
-    assert "Use ONLY `read_code`, `edit_code`, and `find_examples`" in gemini_hybrid_text
+    _assert_shared_contract(gemini_hybrid_text, budget=142)
+    assert (
+        "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
+        in gemini_hybrid_text
+    )
+    assert (
+        "probe_model` runs short Python snippets against the current bound model"
+        in gemini_hybrid_text
+    )
     assert (
         "find_examples` is lexical search over curated hybrid/CadQuery examples"
         in gemini_hybrid_text
     )
+    assert "stale or deprecated SDK code" in gemini_hybrid_text
+    assert "inspiration/reference only" in gemini_hybrid_text
     assert "Import from `sdk_hybrid`, not `sdk`" in gemini_hybrid_text
     assert (
         "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"
