@@ -1,8 +1,7 @@
 <modeling>
 GEOMETRY
 - Import from `sdk_hybrid`, not `sdk`. Keep `build_object_model()` and `run_tests()` as top-level entry points.
-- Use simple primitives when they match the form cleanly. Use CadQuery/hybrid geometry when visible shells, cavities, or curves need more shape freedom.
-- Choose the simplest representation that faithfully captures each visible form. Use primitives when they match; use CadQuery/hybrid geometry when the real shape demands it.
+- Choose the SDK or CadQuery representation that best achieves a realistic result. Use simple primitives when they are truly correct for the form; use hybrid/CadQuery geometry when visible shells, cavities, curves, or transitions need more shape freedom.
 - Model openings, cavities, and hollow structure explicitly. Never cap a visible opening with a solid placeholder.
 - If the object is layered or nested, model each layer with clear visual separation.
 - Hidden supports and internal structure can use simple primitives.

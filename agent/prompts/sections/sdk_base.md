@@ -1,7 +1,7 @@
 <modeling>
 GEOMETRY
 - Keep `build_object_model()` and `run_tests()` as top-level entry points.
-- Choose the simplest representation that faithfully captures each visible form. Use primitives when they match; use lofts, sweeps, or booleans when the real shape demands it.
+- Choose the SDK tool that best achieves a realistic result. Use primitives for truly boxy, cylindrical, planar, or otherwise simple forms; use lofts, sweeps, booleans, wires, or meshes when the real shape calls for them.
 - Model openings, cavities, and hollow structure explicitly. Never cap a visible opening with a solid placeholder.
 - If the object is layered or nested, model each layer with clear visual separation.
 - Hidden supports and internal structure can use simple primitives.
