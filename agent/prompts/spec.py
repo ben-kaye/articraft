@@ -21,9 +21,8 @@ PROMPT_VARIANTS: tuple[PromptVariant, ...] = (
         name="designer_openai",
         sections=(
             SECTIONS_DIR / "designer_common.md",
-            SECTIONS_DIR / "workflow.md",
+            SECTIONS_DIR / "process.md",
             SECTIONS_DIR / "provider_openai.md",
-            SECTIONS_DIR / "feedback_rules.md",
             SECTIONS_DIR / "sdk_base.md",
         ),
         output=GENERATED_DIR / "designer_system_prompt_openai.txt",
@@ -33,9 +32,8 @@ PROMPT_VARIANTS: tuple[PromptVariant, ...] = (
         name="designer_openai_hybrid",
         sections=(
             SECTIONS_DIR / "designer_common.md",
-            SECTIONS_DIR / "workflow.md",
+            SECTIONS_DIR / "process.md",
             SECTIONS_DIR / "provider_openai_hybrid.md",
-            SECTIONS_DIR / "feedback_rules.md",
             SECTIONS_DIR / "sdk_hybrid.md",
         ),
         output=GENERATED_DIR / "designer_system_prompt_openai_hybrid.txt",
@@ -45,9 +43,8 @@ PROMPT_VARIANTS: tuple[PromptVariant, ...] = (
         name="designer_gemini",
         sections=(
             SECTIONS_DIR / "designer_common.md",
-            SECTIONS_DIR / "workflow.md",
+            SECTIONS_DIR / "process.md",
             SECTIONS_DIR / "provider_gemini.md",
-            SECTIONS_DIR / "feedback_rules.md",
             SECTIONS_DIR / "sdk_base.md",
         ),
         output=GENERATED_DIR / "designer_system_prompt_gemini.txt",
@@ -57,9 +54,8 @@ PROMPT_VARIANTS: tuple[PromptVariant, ...] = (
         name="designer_gemini_hybrid",
         sections=(
             SECTIONS_DIR / "designer_common.md",
-            SECTIONS_DIR / "workflow.md",
+            SECTIONS_DIR / "process.md",
             SECTIONS_DIR / "provider_gemini_hybrid.md",
-            SECTIONS_DIR / "feedback_rules.md",
             SECTIONS_DIR / "sdk_hybrid.md",
         ),
         output=GENERATED_DIR / "designer_system_prompt_gemini_hybrid.txt",

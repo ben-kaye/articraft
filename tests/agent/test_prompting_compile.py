@@ -7,11 +7,9 @@ from agent.prompts.spec import iter_prompt_variants
 
 REQUIRED_TAGS = (
     "<role>",
-    "<workflow>",
-    "<tool_contract>",
-    "<modeling_charter>",
-    "<verification_contract>",
-    "<repair_strategy>",
+    "<process>",
+    "<tools>",
+    "<modeling>",
 )
 DISALLOWED_FRAGMENTS = (
     "expect_aabb_",
@@ -27,33 +25,54 @@ def _opening_tag_count(text: str) -> int:
 def _assert_shared_contract(text: str, *, budget: int) -> None:
     for tag in REQUIRED_TAGS:
         assert tag in text
-    assert _opening_tag_count(text) == 6
+    assert _opening_tag_count(text) == 4
     assert "<compile_signals>" in text
-    assert 'Do not optimize for "passing" in the abstract' in text
-    assert "Start by reading the bound scaffold/file" in text
-    assert "Use `probe_model` for debugging and geometry intuition" in text
-    assert "persistent regression checks that survive across turns" in text
-    assert "If parts may be colliding when they should be separate" in text
-    assert "the model knows a specific pair should not overlap" in text
-    assert "resolve `part(...)`, `joint(...)`, and `visual(...)` locals once" in text
+
+    # Three hard requirements
+    assert "NO FLOATING PARTS" in text
+    assert "NO UNINTENTIONAL OVERLAPS" in text
+    assert "REALISTIC GEOMETRY" in text
+
+    # Phased iterative workflow
+    assert "PHASE 1" in text
+    assert "PHASE 2" in text
+    assert "PHASE 3" in text
+    assert "PHASE 4" in text
+    assert "Do NOT write all geometry in one giant edit" in text
+    assert "one part or subassembly at a time" in text
+
+    # Core tool references
+    assert "probe_model" in text
+    assert "find_examples" in text
+    assert "inspection-only" in text
+
+    # Probe helpers
     assert "find_floating_parts(...)" in text
-    assert "`summary(...)`, `dims(...)`, `projection(...)`" in text
     assert "sample_poses(...)" in text
-    assert "Use the injected SDK docs for exact helper signatures" in text
-    assert "The model is not done until every applicable visual coverage category is proved" in text
-    assert "Prefer object-first tests and probes" in text
-    assert "hero features are present" in text
-    assert "connected/seated" in text
-    assert "important parts are in the right place" in text
-    assert "each new visible form or mechanism has a matching assertion" in text
-    assert "complexity is a feature, not a bug" in text
-    assert "Do not cap a visible opening with a solid placeholder primitive." in text
-    assert "Broad `warn_if_*` checks are sensors, not proof." in text
+    assert "`summary(...)`, `dims(...)`, `projection(...)`" in text
+
+    # Object-first pattern
+    assert "object-first" in text
+    assert "resolve `part(...)`, `joint(...)`, `visual(...)` locals once" in text
+
+    # Testing guidance
+    assert "expect_contact" in text
+    assert "expect_gap" in text
+    assert "expect_overlap" in text
+    assert "expect_within" in text
     assert "keep the scaffolded hard gates" in text
-    assert "If the object has a mounted subassembly" in text
-    assert "If a warning-tier heuristic fires, investigate it with `probe_model`" in text
-    assert "If support/floating is ambiguous, use `probe_model` helpers first" in text
-    assert "Deprecated as default scaffold heuristics in new generated code" in text
+    assert "warn_if_*" in text
+
+    # Repair rules
+    assert "Classify before patching" in text
+    assert "2 repair turns" in text
+
+    # Geometry guidance
+    assert "Never cap a visible opening with a solid placeholder" in text
+
+    # SDK docs deference
+    assert "SDK docs" in text
+
     for fragment in DISALLOWED_FRAGMENTS:
         assert fragment not in text
     assert len(text.splitlines()) <= budget
@@ -68,86 +87,42 @@ def test_prompt_outputs_are_current() -> None:
     }
 
     openai_text = compiled_by_name["designer_system_prompt_openai.txt"]
-    _assert_shared_contract(openai_text, budget=144)
+    _assert_shared_contract(openai_text, budget=110)
     assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in openai_text
     assert "write_code" not in openai_text
-    assert (
-        "probe_model` runs short Python snippets against the current bound model for "
-        "inspection-only geometry diagnosis" in openai_text
-    )
-    assert "The injected SDK docs contain the exact helper catalog and signatures." in openai_text
-    assert "Use `probe_model` only for non-mutating inspection." in openai_text
-    assert "find_examples` is lexical search over curated base SDK examples" in openai_text
-    assert "stale or deprecated SDK code" in openai_text
-    assert "inspiration/reference only" in openai_text
-    assert "Author visuals only; do not author collision geometry in `sdk`." in openai_text
-    assert "silhouette-critical shells, ducts, nacelles, blades, petals" in openai_text
+    assert "FREEFORM tool" in openai_text
+    assert "lexical search over curated base SDK examples" in openai_text
+    assert "Author visual geometry only; do not author collision geometry in `sdk`." in openai_text
 
     openai_hybrid_text = compiled_by_name["designer_system_prompt_openai_hybrid.txt"]
-    _assert_shared_contract(openai_hybrid_text, budget=154)
+    _assert_shared_contract(openai_hybrid_text, budget=120)
     assert (
         "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`"
         in openai_hybrid_text
     )
-    assert (
-        "probe_model` runs short Python snippets against the current bound model for "
-        "inspection-only geometry diagnosis" in openai_hybrid_text
-    )
-    assert (
-        "The injected SDK docs contain the exact helper catalog and signatures."
-        in openai_hybrid_text
-    )
-    assert "Use `probe_model` only for non-mutating inspection." in openai_hybrid_text
-    assert (
-        "find_examples` is lexical search over curated hybrid/CadQuery examples"
-        in openai_hybrid_text
-    )
-    assert "stale or deprecated SDK code" in openai_hybrid_text
-    assert "inspiration/reference only" in openai_hybrid_text
+    assert "FREEFORM tool" in openai_hybrid_text
+    assert "lexical search over curated hybrid/CadQuery examples" in openai_hybrid_text
     assert "Import from `sdk_hybrid`, not `sdk`" in openai_hybrid_text
     assert (
         "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"
         in openai_hybrid_text
     )
-    assert "silhouette-critical shells, ducts, nacelles, blades, petals" in openai_hybrid_text
 
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
-    _assert_shared_contract(gemini_text, budget=144)
+    _assert_shared_contract(gemini_text, budget=110)
     assert "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`" in gemini_text
     assert 'old_string=""' in gemini_text
     assert "write_code" not in gemini_text
-    assert (
-        "probe_model` runs short Python snippets against the current bound model for "
-        "inspection-only geometry diagnosis" in gemini_text
-    )
-    assert "The injected SDK docs contain the exact helper catalog and signatures." in gemini_text
-    assert "Use `probe_model` only for non-mutating inspection." in gemini_text
-    assert "find_examples` is lexical search over curated base SDK examples" in gemini_text
-    assert "stale or deprecated SDK code" in gemini_text
-    assert "inspiration/reference only" in gemini_text
-    assert "Author visuals only; do not author collision geometry in `sdk`." in gemini_text
+    assert "lexical search over curated base SDK examples" in gemini_text
+    assert "Author visual geometry only; do not author collision geometry in `sdk`." in gemini_text
 
     gemini_hybrid_text = compiled_by_name["designer_system_prompt_gemini_hybrid.txt"]
-    _assert_shared_contract(gemini_hybrid_text, budget=154)
+    _assert_shared_contract(gemini_hybrid_text, budget=120)
     assert (
         "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
         in gemini_hybrid_text
     )
-    assert (
-        "probe_model` runs short Python snippets against the current bound model for "
-        "inspection-only geometry diagnosis" in gemini_hybrid_text
-    )
-    assert (
-        "The injected SDK docs contain the exact helper catalog and signatures."
-        in gemini_hybrid_text
-    )
-    assert "Use `probe_model` only for non-mutating inspection." in gemini_hybrid_text
-    assert (
-        "find_examples` is lexical search over curated hybrid/CadQuery examples"
-        in gemini_hybrid_text
-    )
-    assert "stale or deprecated SDK code" in gemini_hybrid_text
-    assert "inspiration/reference only" in gemini_hybrid_text
+    assert "lexical search over curated hybrid/CadQuery examples" in gemini_hybrid_text
     assert "Import from `sdk_hybrid`, not `sdk`" in gemini_hybrid_text
     assert (
         "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"

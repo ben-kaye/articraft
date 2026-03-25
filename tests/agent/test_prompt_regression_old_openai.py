@@ -15,42 +15,37 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
 
     for text in (compiled, generated):
         assert "<role>" in text
-        assert "<workflow>" in text
-        assert "<tool_contract>" in text
-        assert "<modeling_charter>" in text
-        assert "<verification_contract>" in text
-        assert "<repair_strategy>" in text
-        assert "Start by reading the bound scaffold/file" in text
-        assert "Use `probe_model` for debugging and geometry intuition" in text
-        assert "If parts may be colliding when they should be separate" in text
-        assert "the model knows a specific pair should not overlap" in text
-        assert "resolve `part(...)`, `joint(...)`, and `visual(...)` locals once" in text
+        assert "<process>" in text
+        assert "<tools>" in text
+        assert "<modeling>" in text
+
+        # Three hard requirements are prominent
+        assert "NO FLOATING PARTS" in text
+        assert "NO UNINTENTIONAL OVERLAPS" in text
+        assert "REALISTIC GEOMETRY" in text
+
+        # Phased iterative workflow
+        assert "PHASE 1" in text
+        assert "PHASE 2" in text
+        assert "PHASE 3" in text
+        assert "PHASE 4" in text
+        assert "Do NOT write all geometry in one giant edit" in text
+
+        # Tool contract
+        assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in text
+        assert "FREEFORM tool" in text
+        assert "inspection-only" in text
+        assert "lexical search over curated base SDK examples" in text
+
+        # Probe and testing
         assert "find_floating_parts(...)" in text
         assert "sample_poses(...)" in text
-        assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in text
-        assert (
-            "probe_model` runs short Python snippets against the current bound model for "
-            "inspection-only geometry diagnosis" in text
-        )
-        assert "The injected SDK docs contain the exact helper catalog and signatures." in text
-        assert "Use `probe_model` only for non-mutating inspection." in text
-        assert "lexical search over curated base SDK examples" in text
-        assert "Use the injected SDK docs for exact helper signatures" in text
-        assert (
-            "The model is not done until every applicable visual coverage category is proved"
-            in text
-        )
-        assert "Prefer object-first tests and probes" in text
-        assert "hero features are present" in text
-        assert "connected/seated" in text
-        assert "important parts are in the right place" in text
-        assert "each new visible form or mechanism has a matching assertion" in text
+        assert "object-first" in text
+        assert "resolve `part(...)`, `joint(...)`, `visual(...)` locals once" in text
         assert "keep the scaffolded hard gates" in text
-        assert "If the object has a mounted subassembly" in text
-        assert "If a warning-tier heuristic fires, investigate it with `probe_model`" in text
-        assert "Deprecated as default scaffold heuristics in new generated code" in text
-        assert "complexity is a feature, not a bug" in text
-        assert "Do not cap a visible opening with a solid placeholder primitive." in text
+        assert "Never cap a visible opening with a solid placeholder" in text
+
+        # No disallowed fragments
         assert "expect_aabb_" not in text
         assert "expect_joint_motion_axis(" not in text
-        assert len(text.splitlines()) <= 144
+        assert len(text.splitlines()) <= 110

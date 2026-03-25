@@ -1,41 +1,23 @@
-<modeling_charter>
-- Work within the existing scaffolded editable code and keep top-level `build_object_model()` and `run_tests()`.
-- Import from `sdk_hybrid`, not `sdk`, and keep articulations, tests, and URDF structure explicit.
-- Prioritize believable silhouette, prompt-named visible features, and correct articulation over conservative QC cleanup.
-- Identify the dominant silhouette and primary hero features early, then spend geometry budget where those features read clearly.
-- Establish the proportion hierarchy before adding detail: identify the dominant envelope, the largest opening or face, the thickest and thinnest visible sections, and any recessed or nested visible layers.
-- When the object implies a dominant opening, intake, cavity, bowl, screen, window, or wheel arch, let that opening occupy the necessary share of the body envelope instead of undersizing it to make the rest easier.
-- Treat shell thickness, lip thickness, taper, and visible gap spacing as first-class modeling decisions, not cleanup values.
-- If the real object reads as layered or nested, model that hierarchy explicitly so outer shells, recessed shells, cavities, and inner cores have clear visual separation.
-- Bias toward more geometric richness in visible hero regions when that is what realism requires. For prompt-critical visible structure, complexity is a feature, not a bug.
-- Make prompt-named visible features present and legible; do not let placeholder geometry flatten or hide them.
-- Use realistic materials and restrained real-world colors when the prompt does not specify them.
-- Author visuals only; do not author collision geometry in `sdk_hybrid`.
-- Prefer simple primitives when they match the form cleanly, but use CadQuery or hybrid geometry when visible shells, cavities, curved tubes, or other silhouette-critical geometry need more shape freedom.
-- Do not default silhouette-critical shells, ducts, nacelles, blades, petals, housings, or fairings to plain boxes/cylinders when the real object would read as a shaped shell or aero surface.
-- If visible internal structure, hollowness, or cavity-bearing geometry is inherent to the object, model it explicitly even when the prompt does not specify it.
-- For inlets, exhausts, vents, ducts, and similar openings, model the aperture and cavity explicitly. Do not cap a visible opening with a solid placeholder primitive.
-- When a region seems too tall, too skinny, too shallow, too covered, or too small, interpret that as a silhouette/proportion problem first, not a detail problem.
+<modeling>
+GEOMETRY
+- Import from `sdk_hybrid`, not `sdk`. Keep `build_object_model()` and `run_tests()` as top-level entry points.
+- Use simple primitives when they match the form cleanly. Use CadQuery/hybrid geometry when visible shells, cavities, or curves need more shape freedom.
+- Choose the simplest representation that faithfully captures each visible form. Use primitives when they match; use CadQuery/hybrid geometry when the real shape demands it.
+- Model openings, cavities, and hollow structure explicitly. Never cap a visible opening with a solid placeholder.
+- If the object is layered or nested, model each layer with clear visual separation.
+- Hidden supports and internal structure can use simple primitives.
+- Use realistic materials and restrained real-world colors.
+- Author visual geometry only; do not author collision geometry in `sdk_hybrid`.
 - `section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable in `sdk_hybrid`.
-- For unfamiliar hybrid or CadQuery geometry, use `find_examples` before inventing a pattern from scratch.
-- Preserve correct joint axes, origins, limits, and overall articulation behavior.
-- For `REVOLUTE` and `PRISMATIC`, set `MotionLimits` with `effort`, `velocity`, `lower`, and `upper`. For `CONTINUOUS`, set `effort` and `velocity` only.
-</modeling_charter>
+- Preserve correct joint axes, origins, limits, and articulation behavior.
+- For `REVOLUTE`/`PRISMATIC`: set `MotionLimits` with effort, velocity, lower, upper. For `CONTINUOUS`: effort and velocity only.
 
-<verification_contract>
-- Use `sdk_hybrid.TestContext`, keep the scaffolded hard gates, and return `ctx.report()`.
-- Use the injected SDK docs for exact helper signatures, tolerance caveats, CadQuery examples, and advanced testing patterns instead of re-deriving the APIs here.
-- Broad `warn_if_*` checks are sensors, not proof. Use prompt-specific exact visual checks as the main regression tests.
-- Prefer object-first tests and probes: resolve `Part`, `Articulation`, and named `Visual` objects once, then pass those exact objects into `ctx.expect_*`, `ctx.allow_*`, `ctx.pose(...)`, and object-first `probe_model` reports.
-- Prefer many small exact visual checks such as `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` over a few vague assertions.
-- If the object has a mounted subassembly, write explicit `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` checks against the relevant local features.
-- When proportion or nesting is visually central, add exact checks that prove dominance or hierarchy using gap, overlap, within, or contact relationships between the relevant visuals.
-- Prefer tests that prove aperture presence, shell setback, and nested-layer ordering over vague global coverage assumptions.
-- The model is not done until every applicable visual coverage category is proved: hero features are present, mounted parts are connected/seated, important parts are in the right place, key poses are believable, and each new visible form or mechanism has a matching assertion.
-- Test both rest pose and meaningful operating poses. For continuous joints, use explicit sampled angles rather than fake lower/upper limits.
-- Use `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is genuinely uncertain or mechanically important.
-- If a warning-tier heuristic fires, investigate it with `probe_model` before editing geometry or relaxing thresholds.
-- If support/floating is ambiguous, use `probe_model` helpers first, then encode the real invariant in `run_tests()`. Apply the same step when the model knows a pair should not overlap.
-- Deprecated as default scaffold heuristics in new generated code: `warn_if_articulation_origin_near_geometry(...)`, `warn_if_overlaps(...)`, and blanket `warn_if_articulation_overlaps(...)`. Add them only with specific justification.
-- Make attachment checks primary evidence of realism. Use narrow overlap allowances only for justified nested or conservative cases, and do not introduce visible air gaps just to silence broad QC.
-</verification_contract>
+TESTING
+- Use `sdk_hybrid.TestContext`, keep the scaffolded hard gates, return `ctx.report()`.
+- Use the object-first pattern: resolve Part, Articulation, and named Visual objects once, then pass them to `ctx.expect_*` and `ctx.allow_*` helpers. See SDK docs for exact signatures.
+- Prefer many small exact checks (`expect_contact`, `expect_gap`, `expect_overlap`, `expect_within`) over broad `warn_if_*` heuristics.
+- Every part must be tested for: presence, connection to neighbors, correct placement. Every articulation must be tested at rest and operating poses. For continuous joints, use explicit sampled angles.
+- When a `warn_if_*` sensor fires, investigate with `probe_model` before changing geometry or relaxing thresholds.
+- When support or floating status is ambiguous, probe first, then encode the real invariant in tests.
+- See SDK docs for deprecated helpers and current recommendations.
+</modeling>
