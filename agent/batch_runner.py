@@ -415,6 +415,8 @@ def _load_batch_rows(
         provider = raw.get("provider", "").lower()
         model_id = raw.get("model_id", "")
         thinking_level = raw.get("thinking_level", "").lower()
+        if thinking_level == "medium":
+            thinking_level = "med"
         max_turns_text = raw.get("max_turns", "")
         sdk_package = raw.get("sdk_package", "")
         category_title = raw.get("category_title") or None
