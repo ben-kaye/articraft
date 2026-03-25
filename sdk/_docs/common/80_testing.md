@@ -122,7 +122,9 @@ Appends a non-blocking warning string to the report.
 
 ### `allow_overlap(link_a, link_b, *, reason, elem_a=None, elem_b=None) -> None`
 
-Records an intentional overlap so overlap checks do not fail on that case.
+Records an intentional real 3D interpenetration so overlap checks do not fail on
+that case. Do not use this just because one part sits inside another part's
+footprint or cavity.
 
 - `reason`: required justification string.
 - `elem_a`, `elem_b`: optional element-level scope. If omitted, the allowance
@@ -316,7 +318,8 @@ This is the main exact clearance and seating helper.
 
 ### `expect_overlap(link_a, link_b, *, axes="xy", min_overlap=0.0, elem_a=None, elem_b=None, name=None) -> bool`
 
-Checks exact projected overlap between two parts or named elements.
+Checks exact projected overlap between two parts or named elements. This is a
+footprint/projection check, not a collision/contact check.
 
 - `min_overlap`: required overlap on every requested axis.
 - `elem_a`, `elem_b`: optional named element scope.

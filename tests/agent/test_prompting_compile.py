@@ -62,6 +62,8 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
     assert "expect_within" in text
     assert "keep the scaffolded baseline check stack" in text
     assert "warn_if_*" in text
+    assert "real 3D interpenetration" in text
+    assert "projected footprint check" in text
 
     # Repair rules
     assert "Classify before patching" in text

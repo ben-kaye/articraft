@@ -119,8 +119,12 @@ def run_tests() -> TestReport:
     ctx.fail_if_isolated_parts()
     # 2) warning-tier within-part sensor for disconnected geometry islands
     ctx.warn_if_part_contains_disconnected_geometry_islands()
-    # 3) blocking rest-pose part-to-part overlap backstop for broad interpenetration
-    # If a seated or nested fit is intentional, justify it with `ctx.allow_overlap(...)`.
+    # 3) blocking rest-pose part-to-part overlap backstop for real 3D interpenetration
+    # This is not an "inside / nested / footprint overlap" check.
+    # Use `ctx.allow_overlap(...)` only for true intended penetration.
+    # If parts are nested but should remain clear, prove that with exact
+    # `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, or
+    # `expect_within(...)` checks instead.
     ctx.fail_if_parts_overlap_in_current_pose()
 
     # Encode the actual visual/mechanical claims with prompt-specific exact checks.

@@ -31,8 +31,14 @@ def test_base_scaffold_matches_harness_fallback() -> None:
     assert (
         "noisier warning-tier sensor for same-part disconnected geometry islands" in scaffold_text
     )
-    assert "likely-failure rest-pose part-to-part overlap backstop" in scaffold_text
+    assert (
+        "likely-failure rest-pose part-to-part overlap backstop for real 3D interpenetration"
+        in scaffold_text
+    )
+    assert 'This is not an "inside / nested / footprint overlap" check.' in scaffold_text
     assert "Investigate all three. Warning-tier signals are not free passes." in scaffold_text
+    assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in scaffold_text
+    assert "If parts are nested but should remain clear, prove that with exact" in scaffold_text
     assert "expect_aabb_" not in scaffold_text
 
 
@@ -64,7 +70,12 @@ def test_hybrid_scaffold_matches_harness_fallback() -> None:
     assert (
         "noisier warning-tier sensor for same-part disconnected geometry islands" in scaffold_text
     )
-    assert "likely-failure rest-pose part-to-part overlap backstop" in scaffold_text
+    assert (
+        "likely-failure rest-pose part-to-part overlap backstop for real 3D interpenetration"
+        in scaffold_text
+    )
+    assert 'This is not an "inside / nested / footprint overlap" check.' in scaffold_text
     assert "Investigate all three. Warning-tier signals are not free passes." in scaffold_text
-    assert "justify it with `ctx.allow_overlap(...)`" in scaffold_text
+    assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in scaffold_text
+    assert "If parts are nested but should remain clear, prove that with exact" in scaffold_text
     assert "expect_aabb_" not in scaffold_text
