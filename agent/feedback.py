@@ -478,6 +478,16 @@ def _allowed_overlap_signal(parsed: ParsedTestWarning) -> CompileSignal | None:
     )
 
 
+def _allowed_isolated_part_warning_signal(parsed: ParsedTestWarning) -> CompileSignal | None:
+    if not parsed.lower.startswith("isolated parts detected but allowed by justification"):
+        return None
+    return _signal_from_spec(
+        ALLOWED_ISOLATED_PART_SPEC,
+        summary="Isolated-part findings were allowed by justification.",
+        details=parsed.text,
+    )
+
+
 def _overlap_warning_signal(parsed: ParsedTestWarning) -> CompileSignal | None:
     if not parsed.check_name.startswith(("warn_if_overlaps(", "warn_if_articulation_overlaps(")):
         return None
@@ -571,6 +581,7 @@ def _warning_signal_from_test_text(text: str) -> CompileSignal:
     parsed = _parse_test_warning(text)
     for classifier in (
         _coplanar_signal,
+        _allowed_isolated_part_warning_signal,
         _allowed_overlap_signal,
         _overlap_warning_signal,
         _disconnected_geometry_signal,
@@ -757,8 +768,9 @@ def render_compile_signals(
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Resolve failures either by correcting the current code when the representation is sound, or by rethinking the model when the representation itself is wrong.",
-        "- Treat warnings as design and QC sensors, not noise.",
+        "- Failures are likely real issues. Investigate them first, then either correct the current code when the representation is sound or rethink the model when the representation itself is wrong.",
+        "- Warnings are possible issues and should not be ignored, but they are noisier than failures.",
+        "- Before relaxing a warning-tier signal, use probe_model or exact checks to confirm whether it reflects a real issue.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",
     ]
     if repeated and failures:

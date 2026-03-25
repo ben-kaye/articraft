@@ -342,16 +342,15 @@ def test_compile_signal_bundle_accepts_protocol_shaped_test_report() -> None:
 def test_compile_signal_bundle_renders_allowed_isolated_part_distinctly() -> None:
     bundle = build_compile_signal_bundle(
         status="success",
-        warnings=[
-            "URDF compile note (physical, allowed): isolated parts allowed by justification.\n"
-            "- part='antenna' nearest_part='base' approx_gap=0.6m pose_index=0 pose=() backend=fcl"
-        ],
         test_report=SDKTestReport(
             passed=True,
-            checks_run=1,
-            checks=("custom_check",),
+            checks_run=2,
+            checks=("check_no_isolated_parts()", "custom_check"),
             failures=(),
-            warnings=(),
+            warnings=(
+                "Isolated parts detected but allowed by justification: 1 part(s) ['antenna'].\n"
+                "- part='antenna' nearest_part='base' approx_gap=0.6m pose_index=0 pose=() backend=fcl",
+            ),
             allowances=(
                 "allow_isolated_part('antenna'): intentionally freestanding decorative part",
             ),

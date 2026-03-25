@@ -24,7 +24,9 @@ def test_compile_failure_signal_message_has_structured_sections() -> None:
     assert "<failures>" in content
     assert "<response_rules>" in content
     assert "compile execution failed" in content
-    assert "Resolve failures either by correcting the current code" in content
+    assert "Failures are likely real issues. Investigate them first" in content
+    assert "Warnings are possible issues and should not be ignored" in content
+    assert "use probe_model or exact checks" in content
     assert conversation
 
 

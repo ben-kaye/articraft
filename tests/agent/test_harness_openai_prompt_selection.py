@@ -100,7 +100,7 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "object-first" in instructions
     assert "find_floating_parts(...)" in instructions
     assert "sample_poses(...)" in instructions
-    assert "keep the scaffolded hard gates" in instructions
+    assert "keep the scaffolded baseline check stack" in instructions
 
     # Cache key
     assert payload["prompt_cache_key"].startswith("ac1:")
@@ -318,7 +318,7 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     assert "object-first" in gemini_instructions
     assert "find_floating_parts(...)" in gemini_instructions
     assert "sample_poses(...)" in gemini_instructions
-    assert "keep the scaffolded hard gates" in gemini_instructions
+    assert "keep the scaffolded baseline check stack" in gemini_instructions
 
     assert "## sdk/_docs/common/70_probe_tooling.md" in gemini_docs_message
 

@@ -1914,6 +1914,7 @@ def test_viewer_store_full_materialize_persists_allowed_isolated_part_note(
                 "        antenna,",
                 "        reason='intentionally freestanding decorative part',",
                 "    )",
+                "    ctx.check_no_isolated_parts()",
                 "    return ctx.report()",
             ]
         ),
@@ -1944,13 +1945,16 @@ def test_viewer_store_full_materialize_persists_allowed_isolated_part_note(
     )
 
     assert result.compiled is True
-    assert any("isolated parts allowed by justification" in warning for warning in result.warnings)
+    assert any(
+        "Isolated parts detected but allowed by justification" in warning
+        for warning in result.warnings
+    )
     compile_report = repo.read_json(
         repo.layout.record_materialization_compile_report_path("rec_allowed_isolated_001")
     )
     assert compile_report["status"] == "success"
     assert any(
-        "isolated parts allowed by justification" in item["message"]
+        "Isolated parts detected but allowed by justification" in item["message"]
         for item in compile_report["warnings"]
     )
 

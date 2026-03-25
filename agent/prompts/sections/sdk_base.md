@@ -10,7 +10,7 @@ GEOMETRY
 - Preserve correct joint axes, origins, limits, and articulation behavior.
 
 TESTING
-- Use `sdk.TestContext`, keep the scaffolded hard gates, return `ctx.report()`.
+- Use `sdk.TestContext`, keep the scaffolded baseline check stack, return `ctx.report()`.
 - Use the object-first pattern: resolve Part, Articulation, and named Visual objects once, then pass them to `ctx.expect_*` and `ctx.allow_*` helpers. See SDK docs for exact signatures.
 - Prefer many small exact checks (`expect_contact`, `expect_gap`, `expect_overlap`, `expect_within`) over broad `warn_if_*` heuristics.
 - Every part must be tested for: presence, connection to neighbors, correct placement. Every articulation must be tested at rest and operating poses.

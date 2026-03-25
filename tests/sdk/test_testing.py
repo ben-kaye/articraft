@@ -70,6 +70,36 @@ def _build_overlapping_parts_model() -> ArticulatedObject:
     return model
 
 
+def _build_isolated_part_model() -> ArticulatedObject:
+    model = ArticulatedObject(name="isolated_part")
+
+    base = model.part("base")
+    base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))
+
+    support = model.part("support")
+    support.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))
+
+    antenna = model.part("antenna")
+    antenna.visual(Box((0.04, 0.04, 0.2)), origin=Origin(xyz=(0.0, 0.0, 0.1)))
+
+    model.articulation(
+        "base_to_support",
+        ArticulationType.FIXED,
+        parent=base,
+        child=support,
+        origin=Origin(xyz=(0.0, 0.0, 0.0)),
+    )
+    model.articulation(
+        "base_to_antenna",
+        ArticulationType.FIXED,
+        parent=base,
+        child=antenna,
+        origin=Origin(xyz=(0.6, 0.0, 0.0)),
+    )
+
+    return model
+
+
 def _build_multi_element_overlapping_parts_model() -> ArticulatedObject:
     model = ArticulatedObject(name="multi_element_overlapping_parts")
 
@@ -310,6 +340,35 @@ def test_warn_if_part_geometry_disconnected_uses_exact_geometry_not_aabb_overlap
     assert report.checks == ("warn_if_part_geometry_disconnected(tol=1e-06)",)
     assert len(report.warnings) == 1
     assert "connected=1/2" in report.warnings[0]
+
+
+def test_check_no_isolated_parts_fails_for_isolated_part() -> None:
+    ctx = SDKTestContext(_build_isolated_part_model())
+
+    assert not ctx.check_no_isolated_parts()
+
+    report = ctx.report()
+    assert report.checks == ("check_no_isolated_parts()",)
+    assert len(report.failures) == 1
+    assert report.failures[0].name == "check_no_isolated_parts()"
+    assert "Isolated parts detected" in report.failures[0].details
+    assert "part='antenna'" in report.failures[0].details
+
+
+def test_allow_isolated_part_suppresses_check_no_isolated_parts() -> None:
+    model = _build_isolated_part_model()
+    ctx = SDKTestContext(model)
+    antenna = model.get_part("antenna")
+    ctx.allow_isolated_part(antenna, reason="intentionally freestanding accent")
+
+    assert ctx.check_no_isolated_parts()
+
+    report = ctx.report()
+    assert report.failures == ()
+    assert report.checks == ("check_no_isolated_parts()",)
+    assert report.allowed_isolated_parts == ("antenna",)
+    assert len(report.warnings) == 1
+    assert "Isolated parts detected but allowed by justification" in report.warnings[0]
 
 
 def test_warn_if_overlaps_records_warning_only() -> None:

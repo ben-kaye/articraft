@@ -16,12 +16,14 @@ from .geometry_qc import (
     _mat4_mul,
     _origin_to_mat4,
     compute_part_world_transforms,
+    default_contact_tol_from_env,
     default_overlap_tol_from_env,
     default_overlap_volume_tol_from_env,
     find_geometry_overlaps,
     find_geometry_overlaps_in_poses,
     find_joint_origin_distance_findings,
     find_part_geometry_connectivity_findings,
+    find_unsupported_parts,
     generate_pose_samples,
     part_world_aabb,
 )
@@ -128,6 +130,34 @@ def _overlap_rank(overlap: GeometryOverlap) -> tuple[float, float]:
     return (
         float(min(overlap.overlap_depth[0], overlap.overlap_depth[1], overlap.overlap_depth[2])),
         float(overlap.overlap_volume),
+    )
+
+
+def _format_unsupported_part_finding(finding: object) -> str:
+    part = getattr(finding, "part", None)
+    nearest_part = getattr(finding, "nearest_part", None)
+    min_distance = getattr(finding, "min_distance", None)
+    pose_index = getattr(finding, "pose_index", None)
+    pose = getattr(finding, "pose", None)
+    backend = getattr(finding, "backend", None)
+
+    gap_text = "unknown"
+    if isinstance(min_distance, (int, float)) and math.isfinite(float(min_distance)):
+        gap_text = f"{float(min_distance):.4g}m"
+
+    pose_preview = ""
+    if isinstance(pose, dict):
+        pairs: list[str] = []
+        for key, value in sorted(pose.items()):
+            try:
+                pairs.append(f"{key}={float(value):.4g}")
+            except Exception:
+                pairs.append(f"{key}={value}")
+        pose_preview = ", ".join(pairs)
+
+    return (
+        f"- part={part!r} nearest_part={nearest_part!r} approx_gap={gap_text} "
+        f"pose_index={pose_index} pose=({pose_preview}) backend={backend}"
     )
 
 
@@ -1162,6 +1192,100 @@ class TestContext:
                 resolved_name, False, f"Disconnected geometry islands detected:\n{preview}{more}"
             )
         return record(resolved_name, True)
+
+    def check_no_isolated_parts(
+        self,
+        *,
+        max_pose_samples: int = 1,
+        contact_tol: Optional[float] = None,
+        name: Optional[str] = None,
+    ) -> bool:
+        sample_count = int(max_pose_samples)
+        if sample_count < 1:
+            return self._record(
+                name or "check_no_isolated_parts(samples=0)",
+                False,
+                "max_pose_samples must be >= 1",
+            )
+
+        resolved_contact_tol = (
+            default_contact_tol_from_env() if contact_tol is None else float(contact_tol)
+        )
+        if resolved_contact_tol < 0.0:
+            return self._record(
+                name
+                or (
+                    "check_no_isolated_parts("
+                    f"samples={sample_count},contact_tol={resolved_contact_tol:.4g})"
+                ),
+                False,
+                "contact_tol must be non-negative",
+            )
+
+        if name is not None:
+            resolved_name = name
+        elif max_pose_samples == 1 and contact_tol is None:
+            resolved_name = "check_no_isolated_parts()"
+        else:
+            resolved_name = (
+                "check_no_isolated_parts("
+                f"samples={sample_count},contact_tol={resolved_contact_tol:.4g})"
+            )
+
+        findings = find_unsupported_parts(
+            self.model,
+            asset_root=self._asset_root(),
+            max_pose_samples=sample_count,
+            contact_tol=resolved_contact_tol,
+            seed=int(self.seed),
+        )
+        if not findings:
+            return self._record(resolved_name, True)
+
+        allowed_parts = set(self._allow_isolated_parts)
+        allowed_findings = [
+            finding for finding in findings if getattr(finding, "part", None) in allowed_parts
+        ]
+        remaining_findings = [
+            finding for finding in findings if getattr(finding, "part", None) not in allowed_parts
+        ]
+
+        if allowed_findings:
+            allowed_names = sorted(
+                {
+                    str(getattr(finding, "part", "")).strip()
+                    for finding in allowed_findings
+                    if str(getattr(finding, "part", "")).strip()
+                }
+            )
+            preview = "\n".join(
+                _format_unsupported_part_finding(finding) for finding in allowed_findings[:10]
+            )
+            more = (
+                "" if len(allowed_findings) <= 10 else f"\n... ({len(allowed_findings) - 10} more)"
+            )
+            self.warn(
+                "Isolated parts detected but allowed by justification: "
+                f"{len(allowed_names)} part(s) [{', '.join(repr(name) for name in allowed_names)}].\n"
+                f"{preview}{more}"
+            )
+
+        if not remaining_findings:
+            return self._record(resolved_name, True)
+
+        preview = "\n".join(
+            _format_unsupported_part_finding(finding) for finding in remaining_findings[:10]
+        )
+        more = (
+            "" if len(remaining_findings) <= 10 else f"\n... ({len(remaining_findings) - 10} more)"
+        )
+        return self._record(
+            resolved_name,
+            False,
+            "Isolated parts detected "
+            f"(samples={sample_count}, contact_tol={resolved_contact_tol:.4g}):\n"
+            f"{preview}{more}",
+        )
 
     def check_no_part_overlaps(
         self,

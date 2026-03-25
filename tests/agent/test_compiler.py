@@ -60,6 +60,7 @@ def _write_isolated_part_model_script(
         lines.append(
             f"    ctx.allow_isolated_part({allowed_part!r}, reason='intentionally freestanding decorative part')"
         )
+    lines.append("    ctx.check_no_isolated_parts()")
     if disconnected_base:
         lines.append("    ctx.warn_if_part_geometry_disconnected()")
     lines.extend(
@@ -236,7 +237,7 @@ def test_compile_urdf_report_fails_for_unallowed_isolated_parts(tmp_path: Path) 
     script_path = tmp_path / "model.py"
     _write_isolated_part_model_script(script_path)
 
-    with pytest.raises(RuntimeError, match="isolated parts detected"):
+    with pytest.raises(RuntimeError, match="Isolated parts detected"):
         compile_urdf_report(script_path, run_checks=True, target="full")
 
 
@@ -247,9 +248,13 @@ def test_compile_urdf_report_allows_explicitly_allowed_isolated_part(tmp_path: P
     report = compile_urdf_report(script_path, run_checks=True, target="full")
 
     assert "<robot" in report.urdf_xml
-    assert any("isolated parts allowed by justification" in warning for warning in report.warnings)
     assert any(
-        signal.kind == "allowed_isolated_part" and "part='antenna'" in signal.details
+        "Isolated parts detected but allowed by justification" in warning
+        for warning in report.warnings
+    )
+    assert any(
+        signal.kind == "allowed_isolated_part"
+        and "allow_isolated_part('antenna')" in signal.details
         for signal in report.signal_bundle.signals
     )
 
@@ -260,7 +265,7 @@ def test_compile_urdf_report_unrelated_isolated_part_allowance_does_not_suppress
     script_path = tmp_path / "model.py"
     _write_isolated_part_model_script(script_path, allowed_part="support")
 
-    with pytest.raises(RuntimeError, match="isolated parts detected"):
+    with pytest.raises(RuntimeError, match="Isolated parts detected"):
         compile_urdf_report(script_path, run_checks=True, target="full")
 
 

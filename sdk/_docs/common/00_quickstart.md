@@ -19,10 +19,11 @@ Do not emit URDF XML yourself. The harness compiles `object_model`, derives exac
 2. Author visuals with `part.visual(...)`.
 3. Use `Inertial.from_geometry(...)` for primitive inertials when needed.
 4. Add motion with `model.articulation(...)`.
-5. The scaffolded `run_tests()` already includes the default hard gates:
+5. The scaffolded `run_tests()` already includes the preferred default QC stack:
    - `ctx.check_model_valid()`
    - `ctx.check_mesh_files_exist()`
-   - `ctx.check_part_geometry_connected()`
+   - `ctx.check_no_isolated_parts()`
+   - `ctx.warn_if_part_geometry_disconnected()`
    - `ctx.check_no_part_overlaps()`
    Keep that block, then extend `run_tests()` with prompt-specific exact `expect_*` checks.
    If the object has a mounted subassembly, make the mount explicit with `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)`.
@@ -121,7 +122,8 @@ def run_tests() -> TestReport:
 
     ctx.check_model_valid()
     ctx.check_mesh_files_exist()
-    ctx.check_part_geometry_connected()
+    ctx.check_no_isolated_parts()
+    ctx.warn_if_part_geometry_disconnected()
     ctx.check_no_part_overlaps()
     ctx.expect_overlap(lid, base, axes="xy", min_overlap=0.05)
     ctx.expect_origin_distance(lid, base, axes="xy", max_dist=0.02)
@@ -179,14 +181,15 @@ Important:
 
 - Author the visible shape you actually want to see.
 - Do not hand-author collisions in `sdk`; compile-time exact-collision derivation owns that now.
-- Treat `check_part_geometry_connected()` as a blocking sensor for within-part floating geometry.
+- Treat `check_no_isolated_parts()` as the blocking broad-part floating sensor.
+- Treat `warn_if_part_geometry_disconnected()` as the default within-part floating/disconnected-geometry warning sensor.
 - Treat `check_no_part_overlaps()` as a blocking rest-pose backstop for broad top-level part interpenetration.
 - Broad warning heuristics can surface suspicious composition, but they do not prove realism, attachment quality, or correct motion.
 - Use prompt-specific `expect_*` assertions as the real regression tests for visible structure, proportions, and mechanism behavior.
 - Make attachment checks primary: use near-zero `expect_gap(...)`, exact footprint overlap, `expect_contact(...)` where appropriate, and pose-specific mounting checks to prove that parts look attached.
 - In exact `expect_*` helpers, the positional body arguments name the parts being compared. Do not replace those part arguments with a `Visual`.
 - When the whole part is too broad for a small mount or hinge seat, resolve named local features from the part with `part.get_visual(...)` and pass those `Visual` objects only through the matching narrowing kwargs such as `elem_a=`, `elem_b=`, `positive_elem=`, `negative_elem=`, `inner_elem=`, or `outer_elem=`.
-- In new code, prefer the articulation-spelled helpers and the exact `expect_*` family: `check_part_geometry_connected(...)`, `expect_gap(...)`, `expect_overlap(...)`, `expect_contact(...)`, and `expect_within(...)`.
+- In new code, prefer the preferred default stack plus the exact `expect_*` family: `check_no_isolated_parts(...)`, `warn_if_part_geometry_disconnected(...)`, `check_no_part_overlaps(...)`, `expect_gap(...)`, `expect_overlap(...)`, `expect_contact(...)`, and `expect_within(...)`.
 - Avoid legacy or deprecated helpers in new generated code: `check_joint_origin_near_geometry(...)`, `warn_if_joint_origin_near_geometry(...)`, `warn_if_part_geometry_connected(...)`, `expect_aabb_*`, and `expect_joint_motion_axis(...)`.
 - Deprecated as blanket scaffold defaults in new generated code: `warn_if_articulation_origin_near_geometry(...)` and `warn_if_overlaps(...)`. Add them only with specific justification.
 - Use `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is genuinely uncertain or mechanically important.

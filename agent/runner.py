@@ -114,9 +114,12 @@ def run_tests() -> TestReport:
     ctx.check_model_valid()
     ctx.check_mesh_files_exist()
 
-    # Default exact visual connectivity gate for floating/disconnected subassemblies inside one part.
-    ctx.check_part_geometry_connected()
-    # Default broad part-level rest-pose backstop for top-level interpenetration.
+    # Preferred default QC stack:
+    # 1) blocking broad-part floating check for isolated parts
+    ctx.check_no_isolated_parts()
+    # 2) warning-tier within-part sensor for disconnected geometry islands
+    ctx.warn_if_part_geometry_disconnected()
+    # 3) blocking rest-pose part-to-part overlap backstop for broad interpenetration
     # If a seated or nested fit is intentional, justify it with `ctx.allow_overlap(...)`.
     ctx.check_no_part_overlaps()
 

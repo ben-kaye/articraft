@@ -33,6 +33,5 @@ REPAIR RULES
 - Treat `<failures>` as blocking, `<warnings>` as design evidence, `<notes>` as context.
 - Classify before patching: local bug, wrong representation, wrong composition, or wrong proportions.
 - If the same failure persists across 2 repair turns, stop patching and rewrite the affected region from scratch.
-- If you have spent multiple turns nudging one subassembly, replace it with a simpler, more realistic representation.
 - When you change geometry or motion, update tests in the same edit.
 </process>

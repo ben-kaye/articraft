@@ -42,7 +42,7 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "sample_poses(...)" in text
         assert "object-first" in text
         assert "resolve `part(...)`, `joint(...)`, `visual(...)` locals once" in text
-        assert "keep the scaffolded hard gates" in text
+        assert "keep the scaffolded baseline check stack" in text
         assert "Never cap a visible opening with a solid placeholder" in text
 
         # No disallowed fragments

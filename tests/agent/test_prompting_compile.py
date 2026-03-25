@@ -60,7 +60,7 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
     assert "expect_gap" in text
     assert "expect_overlap" in text
     assert "expect_within" in text
-    assert "keep the scaffolded hard gates" in text
+    assert "keep the scaffolded baseline check stack" in text
     assert "warn_if_*" in text
 
     # Repair rules

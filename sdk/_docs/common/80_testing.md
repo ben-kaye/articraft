@@ -50,14 +50,15 @@ Prefer object-first tests:
 - For `ctx.expect_*`, keep the first body/link arguments as `Part` objects. Do not pass a `Visual` as `link_a`, `link_b`, `positive_link`, `negative_link`, `inner`, or `outer`.
 - Use string names only at the lookup boundary. Avoid global `REFS` bags or string-driven test calls as the main pattern.
 
-## Default scaffold gates
+## Default scaffold stack
 
-The scaffolded `run_tests()` starts from these hard gates:
+The scaffolded `run_tests()` starts from this preferred default stack:
 
 ```python
 ctx.check_model_valid()
 ctx.check_mesh_files_exist()
-ctx.check_part_geometry_connected()
+ctx.check_no_isolated_parts()
+ctx.warn_if_part_geometry_disconnected()
 ctx.check_no_part_overlaps()
 ```
 
@@ -70,19 +71,24 @@ What they catch:
 
 - `check_model_valid`: structural SDK/model validation.
 - `check_mesh_files_exist`: missing mesh references.
-- `check_part_geometry_connected`: a blocking exact within-part connectivity gate that checks whether authored visuals form disconnected geometry islands.
-- `check_no_part_overlaps`: a blocking current-pose part-level overlap gate for broad top-level interpenetration. In the default scaffold, this means the rest pose.
+- `check_no_isolated_parts`: blocking broad-part support failures, surfaced as isolated parts.
+- `warn_if_part_geometry_disconnected`: warning-tier exact within-part connectivity sensor for disconnected geometry islands.
+- `check_no_part_overlaps`: blocking current-pose part-level overlap gate for broad top-level interpenetration. In the default scaffold, this means the rest pose.
 
-These scaffold checks are blocking gates, not semantic proof. Add prompt-specific `expect_*` assertions as the actual regression tests for silhouette, structure, proportions, attachment, and mechanism behavior.
+These checks are scope-specific sensors, not semantic proof. Add prompt-specific `expect_*` assertions as the actual regression tests for silhouette, structure, proportions, attachment, and mechanism behavior.
 
 Recommended default:
 
-- Keep the scaffolded hard-gate block.
+- Keep the scaffolded default stack.
+- Treat isolated parts as broad-part floating failures.
+- Treat disconnected geometry islands as within-part warning evidence by default.
 - Use `allow_overlap(...)` only when a seated or nested part overlap is intentional and justified.
+- Use `allow_isolated_part(...)` only when a broad isolated part is intentional and justified.
 - If the object has a mounted subassembly, write explicit `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` checks against the relevant local features.
 - If support or floating is ambiguous, use `probe_model` helpers first, then encode the real invariant in `run_tests()`.
 - If a warning-tier heuristic fires, investigate it with `probe_model` before editing geometry or relaxing thresholds.
 - Add `warn_if_articulation_overlaps(...)` only when joint clearance is genuinely uncertain or mechanically important.
+- Do not add same-part overlap hunting as a blanket default. Within-part issues are tracked canonically as disconnected geometry islands, not overlap findings.
 
 Important:
 
@@ -98,6 +104,84 @@ Use broad warning heuristics only when they answer a concrete uncertainty that y
 - `warn_if_articulation_overlaps(...)` is useful when joint clearance is uncertain or mechanically important.
 - `warn_if_articulation_origin_near_geometry(...)` can still be useful as an opt-in point-to-geometry sanity check, but it is no longer recommended as a blanket default because it is fixed-scale and often noisy.
 - `warn_if_overlaps(...)` can still be useful as an opt-in broad overlap sensor, but it is no longer recommended as a blanket default because it is noisy and underconstrained for attachment quality.
+
+## Sensor taxonomy
+
+This is the canonical meaning of each testing sensor family in `TestContext`.
+
+### Structural preconditions
+
+- `check_model_valid(...)`
+  Use for SDK-level structural validation. This is not a realism check; it verifies that the articulated object is well-formed.
+- `check_mesh_files_exist(...)`
+  Use for mesh path hygiene. This is required whenever the model references mesh files.
+
+### Broad-part support and isolation
+
+- `check_no_isolated_parts(...)`
+  Use as the broad-part floating failure signal. It checks whether each part is supported by contacting another part in the checked pose.
+- `allow_isolated_part(...)`
+  Use only when a whole part is intentionally freestanding or otherwise isolated in the checked pose.
+
+### Within-part connectivity
+
+- `warn_if_part_geometry_disconnected(...)`
+  Use as the default within-part warning sensor. It detects disconnected geometry islands inside one part. This is the preferred scaffold helper when same-part floating should be surfaced but not block.
+- `check_part_geometry_connected(...)`
+  Use only when disconnected geometry islands inside one part should be treated as blocking. This is stricter than the default scaffold policy.
+- `warn_if_part_geometry_connected(...)`
+  Legacy alias for the warning-tier within-part connectivity sensor. Prefer `warn_if_part_geometry_disconnected(...)` in new code.
+
+### Overlap sensors
+
+- `check_no_part_overlaps(...)`
+  Use as the default blocking overlap sensor. It checks current-pose overlap between distinct parts and aggregates findings by part pair. In the scaffold, that means rest-pose part overlap.
+- `check_no_overlaps(...)`
+  Use for a broader sampled-pose overlap sweep across part pairs. This is more aggressive and noisier than `check_no_part_overlaps(...)`.
+- `check_articulation_overlaps(...)`
+  Use when overlap across motion is a blocking requirement for articulated parent/child pairs connected by `REVOLUTE`, `PRISMATIC`, or `CONTINUOUS` joints.
+- `warn_if_articulation_overlaps(...)`
+  Use as a warning-tier articulation clearance sensor when joint clearance is uncertain or mechanically important.
+- `warn_if_overlaps(...)`
+  Use only as an opt-in broad overlap warning when a specific uncertainty remains after exact checks. Do not use it as a blanket scaffold default.
+- `warn_if_coplanar_surfaces(...)`
+  Use as a warning-tier heuristic for suspicious broad coplanar face relationships. This is a composition hint, not proof of an error.
+- `allow_overlap(...)`
+  Use to justify legitimate nested or sleeve-like part-to-part overlap.
+- `allow_coplanar_surfaces(...)`
+  Use to justify legitimate coplanar-surface findings when the relationship is intentional.
+
+### Exact intent checks
+
+- `expect_origin_distance(...)`
+  Use for point-to-point placement claims between part origins.
+- `expect_origin_gap(...)`
+  Use for directional origin spacing claims when the origin placement itself matters.
+- `expect_contact(...)`
+  Use when the core invariant is direct touch between two parts or named local features.
+- `expect_gap(...)`
+  Use for directional seat, clearance, and separation checks. This is usually the primary exact attachment check.
+- `expect_overlap(...)`
+  Use for exact footprint/coverage overlap along chosen axes, typically to prove seating or footprint registration.
+- `expect_within(...)`
+  Use for containment or in-footprint checks, for example proving that one feature stays inside another outline.
+
+### Deprecated exact helpers
+
+- `expect_aabb_within(...)`
+- `expect_aabb_gap(...)`
+- `expect_aabb_overlap(...)`
+- `expect_aabb_contact(...)`
+  These older AABB-envelope helpers still exist for backward compatibility, but new code should prefer the exact `expect_*` family above.
+- `expect_joint_motion_axis(...)`
+  Deprecated direction-only motion probe. Prefer pose-specific exact checks in important poses.
+
+### Low-level recorders
+
+- `check(...)`
+- `fail(...)`
+- `warn(...)`
+  These are low-level reporting primitives. Prefer named geometry/mechanism helpers in generated code unless you are recording a genuinely custom assertion.
 
 ## Allowances
 
@@ -119,7 +203,7 @@ Prefer these allowance entry points in new code:
 Prefer this naming and helper set in new generated tests:
 
 - use articulation terminology consistently: `object_model.get_articulation(...)`, `warn_if_articulation_overlaps(...)`, `check_articulation_overlaps(...)`, and `warn_if_articulation_origin_near_geometry(...)`
-- use `check_part_geometry_connected(...)` as the default scaffold geometry gate
+- use `check_no_isolated_parts(...)`, `warn_if_part_geometry_disconnected(...)`, and `check_no_part_overlaps(...)` as the preferred default signal stack
 - use exact `expect_within(...)`, `expect_gap(...)`, `expect_overlap(...)`, and `expect_contact(...)` as the primary intent checks
 - use `warn_if_articulation_overlaps(...)` only when joint clearance is genuinely uncertain or mechanically important
 - use pose-specific exact checks instead of direction-only motion probes
@@ -128,8 +212,8 @@ Legacy aliases and deprecated helpers still exist for backward compatibility, bu
 
 - prefer `warn_if_articulation_origin_near_geometry(...)` over `warn_if_joint_origin_near_geometry(...)`
 - prefer `check_articulation_origin_near_geometry(...)` over `check_joint_origin_near_geometry(...)`
-- prefer `check_part_geometry_connected(...)` over warning-tier disconnected-geometry helpers when floating within-part geometry should block
 - prefer `warn_if_part_geometry_disconnected(...)` over the legacy alias `warn_if_part_geometry_connected(...)`
+- use `check_part_geometry_connected(...)` only when within-part disconnected geometry should block
 - prefer exact `expect_*` helpers over deprecated `expect_aabb_*` helpers
 - prefer pose-specific exact checks over deprecated `expect_joint_motion_axis(...)`
 
@@ -282,7 +366,8 @@ frame_leaf = frame.get_visual("frame_leaf")
 
 ctx.check_model_valid()
 ctx.check_mesh_files_exist()
-ctx.check_part_geometry_connected()
+ctx.check_no_isolated_parts()
+ctx.warn_if_part_geometry_disconnected()
 ctx.expect_overlap(lid, base, axes="xy", min_overlap=0.05)
 ctx.expect_origin_distance(lid, base, axes="xy", max_dist=0.02)
 ctx.expect_gap(lid, base, axis="z", max_gap=0.001, max_penetration=0.0)

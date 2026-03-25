@@ -393,7 +393,8 @@ def test_workbench_init_record_command(
     assert "def run_tests() -> TestReport:" in model_text
     assert "ctx.check_model_valid()" in model_text
     assert "ctx.check_mesh_files_exist()" in model_text
-    assert "ctx.check_part_geometry_connected()" in model_text
+    assert "ctx.check_no_isolated_parts()" in model_text
+    assert "ctx.warn_if_part_geometry_disconnected()" in model_text
     assert "ctx.check_no_part_overlaps()" in model_text
     assert "ctx.warn_if_articulation_origin_near_geometry" not in model_text
     assert "ctx.warn_if_articulation_overlaps(max_pose_samples=128)" not in model_text
@@ -401,8 +402,10 @@ def test_workbench_init_record_command(
         "ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)"
         not in model_text
     )
-    assert "Default exact visual connectivity gate" in model_text
-    assert "Default broad part-level rest-pose backstop" in model_text
+    assert "Preferred default QC stack" in model_text
+    assert "blocking broad-part floating check for isolated parts" in model_text
+    assert "warning-tier within-part sensor for disconnected geometry islands" in model_text
+    assert "blocking rest-pose part-to-part overlap backstop" in model_text
     assert "justify it with `ctx.allow_overlap(...)`" in model_text
     assert "If you add a warning-tier heuristic and it fires" in model_text
     assert "Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is" in model_text
