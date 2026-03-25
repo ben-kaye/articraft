@@ -212,6 +212,54 @@ dataset-delete-category category_slug:
       --execute \
       --confirm-slug "$confirm_slug"
 
+dataset-supercategories:
+    uv run articraft-dataset --repo-root . list-supercategories
+
+dataset-supercategory-upsert supercategory_slug supercategory_title='' supercategory_description='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    supercategory_slug={{ quote(supercategory_slug) }}
+    supercategory_title={{ quote(supercategory_title) }}
+    supercategory_description={{ quote(supercategory_description) }}
+    cmd=(
+      uv run articraft-dataset --repo-root . upsert-supercategory
+      --supercategory-slug "$supercategory_slug"
+    )
+    if [ -n "$supercategory_title" ]; then
+      cmd+=(--title "$supercategory_title")
+    fi
+    if [ -n "$supercategory_description" ]; then
+      cmd+=(--description "$supercategory_description")
+    fi
+    exec "${cmd[@]}"
+
+dataset-supercategory-set category_slug supercategory_slug:
+    uv run articraft-dataset --repo-root . set-supercategory \
+      --category-slug {{ quote(category_slug) }} \
+      --supercategory-slug {{ quote(supercategory_slug) }}
+
+dataset-supercategory-clear category_slug:
+    uv run articraft-dataset --repo-root . clear-supercategory --category-slug {{ quote(category_slug) }}
+
+dataset-supercategory-delete-preview supercategory_slug:
+    uv run articraft-dataset --repo-root . delete-supercategory --supercategory-slug {{ quote(supercategory_slug) }}
+
+dataset-supercategory-delete supercategory_slug:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    supercategory_slug={{ quote(supercategory_slug) }}
+    uv run articraft-dataset --repo-root . delete-supercategory --supercategory-slug "$supercategory_slug"
+    printf "\nType the supercategory slug '%s' to permanently delete it: " "$supercategory_slug"
+    read -r confirm_slug
+    if [ "$confirm_slug" != "$supercategory_slug" ]; then
+      echo "Confirmation mismatch. Aborting."
+      exit 1
+    fi
+    exec uv run articraft-dataset --repo-root . delete-supercategory \
+      --supercategory-slug "$supercategory_slug" \
+      --execute \
+      --confirm-slug "$confirm_slug"
+
 dataset-delete-record-preview record_path:
     uv run articraft-dataset --repo-root . delete-record --record-path {{ quote(record_path) }}
 

@@ -36,10 +36,12 @@ from storage.dataset_workflow import (
     upsert_category_metadata as _shared_upsert_category_metadata,
 )
 from storage.datasets import DatasetStore
+from storage.models import SupercategoryEntry
 from storage.queries import StorageQueries
 from storage.records import RecordStore
 from storage.repo import StorageRepo
 from storage.search import SearchIndex
+from storage.supercategories import SupercategoryStore
 
 
 def _utc_now() -> str:
@@ -63,6 +65,14 @@ class DeleteRecordPreview:
     run_id: str
     dataset_id: str
     in_workbench: bool
+
+
+@dataclass(slots=True, frozen=True)
+class DeleteSupercategoryPreview:
+    supercategory_slug: str
+    supercategory_title: str
+    description: str
+    category_slugs: list[str]
 
 
 @dataclass(slots=True, frozen=True)
@@ -101,6 +111,32 @@ def _print_delete_category_preview(preview: DeleteCategoryPreview) -> None:
         print(f"sample_run_ids={', '.join(preview.cached_run_ids[:5])}")
 
 
+def _build_delete_supercategory_preview(
+    repo: StorageRepo, supercategory_slug: str
+) -> DeleteSupercategoryPreview | None:
+    entry = SupercategoryStore(repo).load_entry(supercategory_slug)
+    if entry is None:
+        return None
+    return DeleteSupercategoryPreview(
+        supercategory_slug=entry.slug,
+        supercategory_title=entry.title,
+        description=entry.description,
+        category_slugs=list(entry.category_slugs),
+    )
+
+
+def _print_delete_supercategory_preview(preview: DeleteSupercategoryPreview) -> None:
+    print("Delete supercategory preview")
+    print(f"supercategory_slug={preview.supercategory_slug}")
+    print(f"supercategory_title={preview.supercategory_title or '(untitled)'}")
+    print(f"description={preview.description or '(none)'}")
+    print(f"categories_to_uncategorize={len(preview.category_slugs)}")
+    if preview.category_slugs:
+        print(f"sample_category_slugs={', '.join(preview.category_slugs[:10])}")
+    else:
+        print("sample_category_slugs=(none)")
+
+
 def _resolve_record_path(repo: StorageRepo, record_path: str) -> Path:
     resolved = Path(record_path).expanduser().resolve()
     records_root = repo.layout.records_root.resolve()
@@ -126,6 +162,13 @@ def _resolve_record_reference(repo: StorageRepo, record_ref: str) -> str:
     if repo.layout.record_dir(record_id).is_dir():
         return record_id
     raise ValueError(f"Record not found: {record_ref}")
+
+
+def _normalize_required_slug(value: str | None, label: str) -> str:
+    slug = str(value or "").strip()
+    if not slug:
+        raise ValueError(f"{label} is required.")
+    return slug
 
 
 def _slugify_category_title(title: str) -> str:
@@ -461,6 +504,26 @@ def _delete_record(
     return manifest, search_stats
 
 
+def _print_supercategories(repo: StorageRepo, store: SupercategoryStore) -> None:
+    manifest = store.load_manifest_or_default()
+    print(f"supercategories_path={repo.layout.supercategories_path}")
+    print(f"supercategory_count={len(manifest.supercategories)}")
+    if not manifest.supercategories:
+        print("supercategories=(none)")
+        return
+    for entry in manifest.supercategories:
+        print(
+            f"supercategory_slug={entry.slug} "
+            f"title={entry.title or '(untitled)'} "
+            f"category_count={len(entry.category_slugs)}"
+        )
+        print(f"description={entry.description or '(none)'}")
+        if entry.category_slugs:
+            print(f"category_slugs={', '.join(entry.category_slugs)}")
+        else:
+            print("category_slugs=(none)")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="articraft-dataset")
     add_data_root_argument(parser)
@@ -517,6 +580,68 @@ def _build_parser() -> argparse.ArgumentParser:
     delete_category.add_argument(
         "--confirm-slug",
         help="Exact category slug confirmation required when --execute is set.",
+    )
+    subparsers.add_parser(
+        "list-supercategories",
+        help="Show configured supercategories and their category members.",
+    )
+    upsert_supercategory = subparsers.add_parser(
+        "upsert-supercategory",
+        help="Create or update a supercategory entry in data/supercategories.json.",
+    )
+    upsert_supercategory.add_argument(
+        "--supercategory-slug",
+        required=True,
+        help="Stable supercategory slug to create or update.",
+    )
+    upsert_supercategory.add_argument(
+        "--title",
+        help="Optional display title. Defaults to the existing title or a slug-derived title.",
+    )
+    upsert_supercategory.add_argument(
+        "--description",
+        help="Optional description override.",
+    )
+    set_supercategory = subparsers.add_parser(
+        "set-supercategory",
+        help="Assign or move a category into an existing supercategory.",
+    )
+    set_supercategory.add_argument(
+        "--category-slug",
+        required=True,
+        help="Existing category slug to assign.",
+    )
+    set_supercategory.add_argument(
+        "--supercategory-slug",
+        required=True,
+        help="Existing supercategory slug to assign the category into.",
+    )
+    clear_supercategory = subparsers.add_parser(
+        "clear-supercategory",
+        help="Remove a category from any supercategory so it becomes uncategorized.",
+    )
+    clear_supercategory.add_argument(
+        "--category-slug",
+        required=True,
+        help="Category slug to clear from the supercategory manifest.",
+    )
+    delete_supercategory = subparsers.add_parser(
+        "delete-supercategory",
+        help="Preview or delete a supercategory entry and leave its categories uncategorized.",
+    )
+    delete_supercategory.add_argument(
+        "--supercategory-slug",
+        required=True,
+        help="Supercategory slug to preview or delete.",
+    )
+    delete_supercategory.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute the deletion after the preview checks pass.",
+    )
+    delete_supercategory.add_argument(
+        "--confirm-slug",
+        help="Exact supercategory slug confirmation required when --execute is set.",
     )
     delete_record = subparsers.add_parser(
         "delete-record",
@@ -646,6 +771,7 @@ def main(argv: list[str] | None = None) -> int:
     repo = StorageRepo(args.repo_root)
     datasets = DatasetStore(repo)
     queries = StorageQueries(repo)
+    supercategories = SupercategoryStore(repo)
 
     if args.command == "init-storage":
         repo.ensure_layout()
@@ -767,6 +893,150 @@ def main(argv: list[str] | None = None) -> int:
             f"records={search_stats.record_count} "
             f"categories={search_stats.category_count}"
         )
+        return 0
+
+    if args.command == "list-supercategories":
+        repo.ensure_layout()
+        _print_supercategories(repo, supercategories)
+        return 0
+
+    if args.command == "upsert-supercategory":
+        repo.ensure_layout()
+        try:
+            supercategory_slug = _normalize_required_slug(
+                args.supercategory_slug, "Supercategory slug"
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        existing_entry = supercategories.load_entry(supercategory_slug)
+        title = str(args.title or "").strip()
+        if not title:
+            if existing_entry is not None and existing_entry.title.strip():
+                title = existing_entry.title.strip()
+            else:
+                title = _category_title_from_slug(supercategory_slug)
+        description = (
+            str(args.description).strip()
+            if args.description is not None
+            else (
+                existing_entry.description.strip()
+                if existing_entry is not None and existing_entry.description.strip()
+                else ""
+            )
+        )
+        entry, created = supercategories.save_entry(
+            SupercategoryEntry(
+                slug=supercategory_slug,
+                title=title,
+                description=description,
+                category_slugs=list(existing_entry.category_slugs) if existing_entry else [],
+            )
+        )
+        print(
+            f"{'Created' if created else 'Updated'} "
+            f"supercategory_slug={entry.slug} "
+            f"title={entry.title or '(untitled)'} "
+            f"category_count={len(entry.category_slugs)}"
+        )
+        print(f"path={repo.layout.supercategories_path}")
+        return 0
+
+    if args.command == "set-supercategory":
+        repo.ensure_layout()
+        try:
+            category_slug = _normalize_required_slug(args.category_slug, "Category slug")
+            supercategory_slug = _normalize_required_slug(
+                args.supercategory_slug, "Supercategory slug"
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        if not isinstance(CategoryStore(repo).load(category_slug), dict):
+            print(f"Category not found: {category_slug}")
+            return 1
+        try:
+            previous_supercategory_slug = supercategories.assign_category(
+                category_slug=category_slug,
+                supercategory_slug=supercategory_slug,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        entry = supercategories.load_entry(supercategory_slug)
+        print(
+            f"Assigned category_slug={category_slug} "
+            f"supercategory_slug={supercategory_slug} "
+            f"previous_supercategory_slug={previous_supercategory_slug or '(uncategorized)'}"
+        )
+        if entry is not None:
+            print(
+                f"supercategory_title={entry.title or '(untitled)'} "
+                f"category_count={len(entry.category_slugs)}"
+            )
+        return 0
+
+    if args.command == "clear-supercategory":
+        repo.ensure_layout()
+        try:
+            category_slug = _normalize_required_slug(args.category_slug, "Category slug")
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        category_exists = isinstance(CategoryStore(repo).load(category_slug), dict)
+        previous_supercategory_slug = supercategories.remove_category(category_slug)
+        if previous_supercategory_slug is None:
+            if not category_exists:
+                print(f"Category not found: {category_slug}")
+                return 1
+            print(f"Category already uncategorized: {category_slug}")
+            return 0
+        print(
+            f"Cleared category_slug={category_slug} "
+            f"previous_supercategory_slug={previous_supercategory_slug}"
+        )
+        print(f"path={repo.layout.supercategories_path}")
+        return 0
+
+    if args.command == "delete-supercategory":
+        repo.ensure_layout()
+        try:
+            supercategory_slug = _normalize_required_slug(
+                args.supercategory_slug, "Supercategory slug"
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        preview = _build_delete_supercategory_preview(repo, supercategory_slug)
+        if preview is None:
+            print(f"Supercategory not found: {supercategory_slug}")
+            return 1
+
+        _print_delete_supercategory_preview(preview)
+        if not args.execute:
+            print(
+                "Preview only. Re-run with "
+                f"--execute --confirm-slug {preview.supercategory_slug} "
+                "to permanently delete this supercategory."
+            )
+            return 0
+
+        if args.confirm_slug != preview.supercategory_slug:
+            print(
+                "Refusing to delete supercategory: "
+                f"--confirm-slug must exactly match {preview.supercategory_slug}"
+            )
+            return 1
+
+        deleted_entry = supercategories.delete_supercategory(preview.supercategory_slug)
+        if deleted_entry is None:
+            print(f"Supercategory not found: {preview.supercategory_slug}")
+            return 1
+        print(
+            f"Deleted supercategory_slug={preview.supercategory_slug} "
+            f"categories_uncategorized={len(preview.category_slugs)}"
+        )
+        print(f"path={repo.layout.supercategories_path}")
         return 0
 
     if args.command == "delete-record":

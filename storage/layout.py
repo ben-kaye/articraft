@@ -13,6 +13,10 @@ class StorageLayout:
         return self.root / "data"
 
     @property
+    def supercategories_path(self) -> Path:
+        return self.data_root / "supercategories.json"
+
+    @property
     def categories_root(self) -> Path:
         return self.data_root / "categories"
 

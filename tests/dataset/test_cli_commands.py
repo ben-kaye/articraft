@@ -508,3 +508,193 @@ def test_promote_record_reuses_existing_category_and_allocates_next_dataset_id(
     workbench_entries = (CollectionStore(repo).load_workbench() or {}).get("entries", [])
     assert workbench_entries == []
     assert "dataset_id=ds_internet_router_0002" in output.getvalue()
+
+
+def test_supercategory_cli_commands_cover_list_mutation_and_delete(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(
+            schema_version=1,
+            slug="internet_router",
+            title="Internet Router",
+        )
+    )
+    CategoryStore(repo).save(
+        CategoryRecord(
+            schema_version=1,
+            slug="monitor_mount",
+            title="Monitor Mount",
+        )
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert dataset_main(["--repo-root", str(tmp_path), "list-supercategories"]) == 0
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "upsert-supercategory",
+                    "--supercategory-slug",
+                    "electronics_and_optics",
+                    "--title",
+                    "Electronics & Optics",
+                    "--description",
+                    "Devices and optical equipment",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "upsert-supercategory",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "set-supercategory",
+                    "--category-slug",
+                    "internet_router",
+                    "--supercategory-slug",
+                    "electronics_and_optics",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "set-supercategory",
+                    "--category-slug",
+                    "internet_router",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "clear-supercategory",
+                    "--category-slug",
+                    "internet_router",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "set-supercategory",
+                    "--category-slug",
+                    "monitor_mount",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "delete-supercategory",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                ]
+            )
+            == 0
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "delete-supercategory",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                    "--execute",
+                    "--confirm-slug",
+                    "wrong-slug",
+                ]
+            )
+            == 1
+        )
+        assert (
+            dataset_main(
+                [
+                    "--repo-root",
+                    str(tmp_path),
+                    "delete-supercategory",
+                    "--supercategory-slug",
+                    "mounts_and_positioning",
+                    "--execute",
+                    "--confirm-slug",
+                    "mounts_and_positioning",
+                ]
+            )
+            == 0
+        )
+
+    manifest = json.loads(repo.layout.supercategories_path.read_text(encoding="utf-8"))
+    assert manifest == {
+        "schema_version": 1,
+        "supercategories": [
+            {
+                "slug": "electronics_and_optics",
+                "title": "Electronics & Optics",
+                "description": "Devices and optical equipment",
+                "category_slugs": [],
+            }
+        ],
+    }
+    assert "supercategory_count=0" in output.getvalue()
+    assert (
+        "Created supercategory_slug=electronics_and_optics title=Electronics & Optics category_count=0"
+        in output.getvalue()
+    )
+    assert (
+        "Created supercategory_slug=mounts_and_positioning title=Mounts And Positioning category_count=0"
+        in output.getvalue()
+    )
+    assert (
+        "Assigned category_slug=internet_router supercategory_slug=electronics_and_optics "
+        "previous_supercategory_slug=(uncategorized)" in output.getvalue()
+    )
+    assert (
+        "Assigned category_slug=internet_router supercategory_slug=mounts_and_positioning "
+        "previous_supercategory_slug=electronics_and_optics" in output.getvalue()
+    )
+    assert (
+        "Cleared category_slug=internet_router previous_supercategory_slug=mounts_and_positioning"
+        in output.getvalue()
+    )
+    assert (
+        "Preview only. Re-run with --execute --confirm-slug mounts_and_positioning "
+        "to permanently delete this supercategory." in output.getvalue()
+    )
+    assert "Refusing to delete supercategory" in output.getvalue()
+    assert (
+        "Deleted supercategory_slug=mounts_and_positioning categories_uncategorized=1"
+        in output.getvalue()
+    )

@@ -303,6 +303,29 @@ class RunRecord:
 
 
 @dataclass(slots=True, frozen=True)
+class SupercategoryEntry:
+    slug: str
+    title: str
+    description: str = ""
+    category_slugs: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True, frozen=True)
+class SupercategoryManifest:
+    schema_version: int
+    supercategories: list[SupercategoryEntry] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "supercategories": [entry.to_dict() for entry in self.supercategories],
+        }
+
+
+@dataclass(slots=True, frozen=True)
 class AssetStatus:
     record_id: str
     assets_dir: Path
