@@ -60,6 +60,7 @@ _SUPPORTED_HEADERS = {
     "max_turns",
     "sdk_package",
     "label",
+    "design_audit",
 }
 _REQUIRED_HEADERS = {
     "category_slug",
@@ -106,6 +107,21 @@ def _infer_provider_from_model_id(model_id: str) -> str | None:
     return None
 
 
+def _parse_optional_bool(value: Any, *, row_index: int, field_name: str) -> bool | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise ValueError(
+        f"Row {row_index} has invalid {field_name}: {value!r}; use true/false, 1/0, yes/no, on/off"
+    )
+
+
 def _summary_value(values: set[str]) -> str:
     normalized = {value for value in values if value}
     if not normalized:
@@ -124,8 +140,10 @@ def _resolve_batch_concurrency(raw_value: str | int, *, candidate_count: int) ->
         return 1
 
     normalized = str(raw_value).strip().lower()
-    if normalized in {"auto", "max"}:
+    if normalized == "auto":
         return max(1, min(candidate_count, _logical_cpu_count()))
+    if normalized == "max":
+        return max(1, candidate_count)
 
     try:
         requested = int(normalized)
@@ -320,6 +338,7 @@ class BatchRowSpec:
     thinking_level: str
     max_turns: int
     sdk_package: str
+    post_success_design_audit: bool = True
     label: str | None = None
 
 
@@ -343,13 +362,14 @@ class BatchRunConfig:
     concurrency: int
     system_prompt_path: str
     sdk_docs_mode: str
-    qc_blurb_text: str | None
     resume: bool
     resume_policy: str
     keep_awake: bool
-    pause_file: Path | None
+    pause_file: Path
     pause_poll_seconds: float
     keyboard_pause_enabled: bool
+    qc_blurb_text: str | None = None
+    post_success_design_audit: bool = True
 
 
 def _read_csv_rows(spec_path: Path) -> list[dict[str, str]]:
@@ -373,7 +393,12 @@ def _read_csv_rows(spec_path: Path) -> list[dict[str, str]]:
         return rows
 
 
-def _load_batch_rows(spec_path: Path, repo: StorageRepo) -> list[BatchRowSpec]:
+def _load_batch_rows(
+    spec_path: Path,
+    repo: StorageRepo,
+    *,
+    default_post_success_design_audit: bool,
+) -> list[BatchRowSpec]:
     raw_rows = _read_csv_rows(spec_path)
     categories = CategoryStore(repo)
     rows: list[BatchRowSpec] = []
@@ -418,6 +443,13 @@ def _load_batch_rows(spec_path: Path, repo: StorageRepo) -> list[BatchRowSpec]:
         if max_turns <= 0:
             raise ValueError(f"Row {index} must set max_turns > 0")
         sdk_package = runner_normalize_sdk_package(sdk_package, row_index=index)
+        post_success_design_audit = _parse_optional_bool(
+            raw.get("design_audit"),
+            row_index=index,
+            field_name="design_audit",
+        )
+        if post_success_design_audit is None:
+            post_success_design_audit = default_post_success_design_audit
 
         existing_category = categories.load(category_slug)
         if existing_category is None and not category_title:
@@ -447,6 +479,7 @@ def _load_batch_rows(spec_path: Path, repo: StorageRepo) -> list[BatchRowSpec]:
                 thinking_level=thinking_level,
                 max_turns=max_turns,
                 sdk_package=sdk_package,
+                post_success_design_audit=post_success_design_audit,
                 label=label,
             )
         )
@@ -518,12 +551,14 @@ def _settings_summary(
     providers = {row.provider for row in rows}
     model_ids = {row.model_id for row in rows}
     sdk_packages = {row.sdk_package for row in rows}
+    post_success_design_audit_values = {str(row.post_success_design_audit) for row in rows}
     return {
         "providers": sorted(providers),
         "model_ids": sorted(model_ids),
         "thinking_levels": sorted({row.thinking_level for row in rows}),
         "max_turns": sorted({row.max_turns for row in rows}),
         "sdk_packages": sorted(sdk_packages),
+        "post_success_design_audit": _summary_value(post_success_design_audit_values),
         "system_prompt_path": system_prompt_path,
         "sdk_docs_mode": sdk_docs_mode,
         "qc_blurb_path": qc_blurb_path,
@@ -656,6 +691,7 @@ def _validate_resume_allocations(
             "model_id",
             "thinking_level",
             "sdk_package",
+            "post_success_design_audit",
         ):
             if str(existing.get(key) or "") != str(getattr(row, key) or ""):
                 raise ValueError(f"Resume spec mismatch for row_id={row.row_id} field={key}")
