@@ -758,7 +758,7 @@ def render_compile_signals(
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Failures are likely real issues. Investigate them first, then either correct the current code when the representation is sound or rethink the model when the representation itself is wrong.",
+        "- Failures are blocking and should be investigated. If an isolated or floating part is intentional because the assembly requires a gap, you may explicitly bypass it; otherwise decide judiciously whether the issue should be fixed or the representation should be rethought.",
         "- Warnings are possible issues and should not be ignored, but they are noisier than failures.",
         "- Before relaxing a warning-tier signal, use probe_model or exact checks to confirm whether it reflects a real issue.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",
