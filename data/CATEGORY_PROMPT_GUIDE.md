@@ -150,6 +150,8 @@ of the object. That often means more than one motion.
 
 - Do not artificially reduce a category to one motion if the real object
   normally has several canonical articulations.
+- Do not ignore motions of small parts (e.g., knobs, buttons, caster joints of
+  the wheel, etc.).
 - Do not add obscure or gimmicky motions that are not central to the category.
 - Every named articulation must be tied to a physical support:
   - "wheel mounted in a fork" not "wheel spins"
