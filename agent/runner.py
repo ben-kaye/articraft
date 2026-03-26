@@ -116,7 +116,7 @@ def run_tests() -> TestReport:
     ctx.check_mesh_files_exist()
 
     # Preferred default QC stack:
-    # 1) blocking broad-part floating check for isolated parts
+    # 1) blocking grounded-component floating check for disconnected part groups
     ctx.fail_if_isolated_parts()
     # 2) warning-tier within-part sensor for disconnected geometry islands
     ctx.warn_if_part_contains_disconnected_geometry_islands()
@@ -150,9 +150,17 @@ def run_tests() -> TestReport:
     # lid_hinge = object_model.get_articulation("lid_hinge")
     # hinge_leaf = lid.get_visual("hinge_leaf")
     # body_leaf = body.get_visual("body_leaf")
+    # hinge_limits = lid_hinge.motion_limits
     # ctx.expect_overlap(lid, body, axes="xy", min_overlap=0.05)
     # ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)
     # ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)
+    # if hinge_limits is not None and hinge_limits.lower is not None and hinge_limits.upper is not None:
+    #     with ctx.pose({lid_hinge: hinge_limits.lower}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
+    #     with ctx.pose({lid_hinge: hinge_limits.upper}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
     # If the object has a mounted subassembly, prefer exact `expect_contact(...)`,
     # `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` checks on
     # named local features over the broad rest-pose overlap backstop.

@@ -11,6 +11,7 @@ from sdk import (
 from sdk import (
     TestContext as SDKTestContext,
 )
+from sdk._core.v0.geometry_qc import find_unsupported_parts
 
 
 def _build_joint_origin_model(*, joint_z: float) -> ArticulatedObject:
@@ -95,6 +96,45 @@ def _build_isolated_part_model() -> ArticulatedObject:
         parent=base,
         child=antenna,
         origin=Origin(xyz=(0.6, 0.0, 0.0)),
+    )
+
+    return model
+
+
+def _build_floating_group_model() -> ArticulatedObject:
+    model = ArticulatedObject(name="floating_group")
+
+    base = model.part("base")
+    base.visual(Box((0.28, 0.2, 0.1)), origin=Origin(xyz=(0.14, 0.0, 0.05)))
+
+    lid = model.part("lid")
+    lid.visual(
+        Box((0.28, 0.2, 0.02)),
+        origin=Origin(xyz=(0.14, 0.0, -0.07)),
+    )
+
+    top_vent = model.part("top_vent")
+    top_vent.visual(
+        Box((0.06, 0.06, 0.04)),
+        origin=Origin(xyz=(0.0, 0.0, -0.08)),
+    )
+
+    model.articulation(
+        "lid_hinge",
+        ArticulationType.REVOLUTE,
+        parent=base,
+        child=lid,
+        origin=Origin(xyz=(0.0, 0.0, 0.18)),
+        axis=(0.0, 1.0, 0.0),
+        motion_limits=MotionLimits(effort=1.0, velocity=1.0, lower=0.0, upper=1.319468914507713),
+        meta={"qc_samples": [1.319468914507713]},
+    )
+    model.articulation(
+        "lid_to_top_vent",
+        ArticulationType.FIXED,
+        parent=lid,
+        child=top_vent,
+        origin=Origin(),
     )
 
     return model
@@ -355,7 +395,40 @@ def test_fail_if_isolated_parts_fails_for_isolated_part() -> None:
     assert len(report.failures) == 1
     assert report.failures[0].name == "fail_if_isolated_parts()"
     assert "Isolated parts detected" in report.failures[0].details
-    assert "part='antenna'" in report.failures[0].details
+    assert (
+        "part 'antenna' is disconnected from the grounded body rooted at 'base'"
+        in report.failures[0].details
+    )
+
+
+def test_find_unsupported_parts_reports_floating_connected_group() -> None:
+    findings = find_unsupported_parts(_build_floating_group_model(), max_pose_samples=8)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.parts == ("lid", "top_vent")
+    assert finding.root_parts == ("base",)
+    assert finding.nearest_part == "base"
+    assert finding.min_distance is not None
+    assert finding.min_distance > 0.0
+    assert finding.pose["lid_hinge"] == 1.319468914507713
+
+
+def test_fail_if_isolated_parts_reports_floating_group_with_pose_context() -> None:
+    ctx = SDKTestContext(_build_floating_group_model())
+
+    assert not ctx.fail_if_isolated_parts(max_pose_samples=8)
+
+    report = ctx.report()
+    assert report.checks == ("fail_if_isolated_parts(samples=8,contact_tol=1e-06)",)
+    assert len(report.failures) == 1
+    details = report.failures[0].details
+    assert "Isolated parts detected" in details
+    assert (
+        "floating group ['lid', 'top_vent'] is disconnected from the grounded body rooted at 'base'"
+        in details
+    )
+    assert "lid_hinge=1.319" in details
 
 
 def test_allow_isolated_part_suppresses_fail_if_isolated_parts() -> None:
@@ -372,6 +445,30 @@ def test_allow_isolated_part_suppresses_fail_if_isolated_parts() -> None:
     assert report.allowed_isolated_parts == ("antenna",)
     assert len(report.warnings) == 1
     assert "Isolated parts detected but allowed by justification" in report.warnings[0]
+
+
+def test_allow_isolated_part_requires_all_parts_in_floating_group() -> None:
+    model = _build_floating_group_model()
+    ctx = SDKTestContext(model)
+    ctx.allow_isolated_part("lid", reason="only part of the group is intentionally freestanding")
+
+    assert not ctx.fail_if_isolated_parts(max_pose_samples=8)
+
+    report = ctx.report()
+    assert len(report.failures) == 1
+    assert "floating group ['lid', 'top_vent']" in report.failures[0].details
+
+    ctx = SDKTestContext(model)
+    ctx.allow_isolated_part("lid", reason="intentional floating display assembly")
+    ctx.allow_isolated_part("top_vent", reason="intentional floating display assembly")
+
+    assert ctx.fail_if_isolated_parts(max_pose_samples=8)
+
+    report = ctx.report()
+    assert report.failures == ()
+    assert len(report.warnings) == 1
+    assert "Isolated parts detected but allowed by justification" in report.warnings[0]
+    assert "floating group ['lid', 'top_vent']" in report.warnings[0]
 
 
 def test_warn_if_overlaps_records_warning_only() -> None:

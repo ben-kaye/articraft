@@ -403,15 +403,18 @@ def test_workbench_init_record_command(
         not in model_text
     )
     assert "Preferred default QC stack" in model_text
-    assert "blocking broad-part floating check for isolated parts" in model_text
+    assert "blocking grounded-component floating check for disconnected part groups" in model_text
     assert "warning-tier within-part sensor for disconnected geometry islands" in model_text
     assert "blocking rest-pose part-to-part overlap backstop" in model_text
     assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in model_text
     assert "If you add a warning-tier heuristic and it fires" in model_text
     assert "Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is" in model_text
     assert 'hinge_leaf = lid.get_visual("hinge_leaf")' in model_text
+    assert "hinge_limits = lid_hinge.motion_limits" in model_text
     assert 'ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)' in model_text
     assert "ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)" in model_text
+    assert "with ctx.pose({lid_hinge: hinge_limits.lower}):" in model_text
+    assert 'ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")' in model_text
     assert "expect_aabb_" not in model_text
 
     materialization_dir = repo_root / "data" / "cache" / "record_materialization" / record_dir.name

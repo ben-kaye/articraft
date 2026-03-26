@@ -139,6 +139,14 @@ ISOLATED_PART_WARNING_SPEC = SignalSpec(
     code="WARN_ISOLATED_PART",
     group="design",
 )
+ISOLATED_PART_FAILURE_SPEC = SignalSpec(
+    severity="failure",
+    kind="isolated_part",
+    code="TEST_ISOLATED_PART",
+    source="tests",
+    group="qc",
+    blocking=True,
+)
 ALLOWED_ISOLATED_PART_SPEC = SignalSpec(
     severity="note",
     kind="allowed_isolated_part",
@@ -377,11 +385,11 @@ def _signal_from_spec(
 
 
 def _isolated_part_summary(headline: str) -> str:
-    summary = "Isolated parts detected."
+    summary = "Floating disconnected component(s) detected."
     if "(visual" in headline or "(visual," in headline:
-        return "Isolated visual parts detected."
+        return "Floating disconnected visual component(s) detected."
     if "(collision" in headline or "(collision," in headline:
-        return "Isolated collision parts detected."
+        return "Floating disconnected collision component(s) detected."
     return summary
 
 
@@ -440,12 +448,25 @@ def _iter_test_failures(test_report: TestReportLike | None) -> Iterable[CompileS
 
     signals: list[CompileSignal] = []
     for failure in test_report.failures:
+        name = str(failure.name)
+        details = str(failure.details).strip()
+        lowered = details.lower()
+        if name.startswith("fail_if_isolated_parts(") or "isolated parts detected" in lowered:
+            signals.append(
+                _signal_from_spec(
+                    ISOLATED_PART_FAILURE_SPEC,
+                    summary=_isolated_part_summary(details.splitlines()[0] if details else name),
+                    details=details,
+                    check_name=name,
+                )
+            )
+            continue
         signals.append(
             _signal_from_spec(
                 TEST_FAILURE_SPEC,
-                summary=str(failure.name),
-                details=str(failure.details).strip(),
-                check_name=str(failure.name),
+                summary=name,
+                details=details,
+                check_name=name,
             )
         )
     return signals
@@ -758,7 +779,7 @@ def render_compile_signals(
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Failures are blocking and should be investigated. If an isolated or floating part is intentional because the assembly requires a gap, you may explicitly bypass it; otherwise decide judiciously whether the issue should be fixed or the representation should be rethought.",
+        "- Failures are blocking and should be investigated. If an isolated or floating part/group is intentional because the assembly requires a gap, you may explicitly bypass it; otherwise decide judiciously whether the issue should be fixed or the representation should be rethought.",
         "- Warnings are possible issues and should not be ignored, but they are noisier than failures.",
         "- Before relaxing a warning-tier signal, use probe_model or exact checks to confirm whether it reflects a real issue.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",

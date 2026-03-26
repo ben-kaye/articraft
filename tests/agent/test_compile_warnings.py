@@ -349,7 +349,8 @@ def test_compile_signal_bundle_renders_allowed_isolated_part_distinctly() -> Non
             failures=(),
             warnings=(
                 "Isolated parts detected but allowed by justification: 1 part(s) ['antenna'].\n"
-                "- part='antenna' nearest_part='base' approx_gap=0.6m pose_index=0 pose=() backend=fcl",
+                "- pose_index=0 at rest pose, part 'antenna' is disconnected from the grounded body rooted at 'base'; "
+                "nearest_grounded_part='base'; approx_gap=0.6m; backend=fcl",
             ),
             allowances=(
                 "allow_isolated_part('antenna'): intentionally freestanding decorative part",
@@ -361,6 +362,37 @@ def test_compile_signal_bundle_renders_allowed_isolated_part_distinctly() -> Non
     assert len(signals) == 2
     assert any("allowed by justification" in signal.summary.lower() for signal in signals)
     assert any("allow_isolated_part('antenna')" in signal.details for signal in signals)
+
+
+def test_compile_signal_bundle_classifies_isolated_part_failures_cleanly() -> None:
+    bundle = build_compile_signal_bundle(
+        status="failure",
+        test_report=SDKTestReport(
+            passed=False,
+            checks_run=1,
+            checks=("fail_if_isolated_parts()",),
+            failures=(
+                SimpleNamespace(
+                    name="fail_if_isolated_parts()",
+                    details=(
+                        "Isolated parts detected (floating support-disconnected component groups from the grounded body; "
+                        "samples=8, contact_tol=1e-06):\n"
+                        "- pose_index=1 at pose (lid_hinge=1.319), floating group ['lid', 'top_vent'] "
+                        "is disconnected from the grounded body rooted at 'base'; "
+                        "nearest_grounded_part='base'; approx_gap=0.016m; backend=fcl"
+                    ),
+                ),
+            ),
+            warnings=(),
+            allowances=(),
+        ),
+    )
+
+    signal = next(signal for signal in bundle.signals if signal.kind == "isolated_part")
+    assert signal.severity == "failure"
+    assert signal.blocking is True
+    assert signal.summary == "Floating disconnected component(s) detected."
+    assert "floating group ['lid', 'top_vent']" in signal.details
 
 
 def test_harness_injects_structured_compile_signals() -> None:

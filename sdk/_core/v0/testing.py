@@ -135,11 +135,23 @@ def _overlap_rank(overlap: GeometryOverlap) -> tuple[float, float]:
 
 def _format_unsupported_part_finding(finding: object) -> str:
     part = getattr(finding, "part", None)
+    parts = getattr(finding, "parts", ())
     nearest_part = getattr(finding, "nearest_part", None)
     min_distance = getattr(finding, "min_distance", None)
     pose_index = getattr(finding, "pose_index", None)
     pose = getattr(finding, "pose", None)
     backend = getattr(finding, "backend", None)
+    root_parts = getattr(finding, "root_parts", ())
+
+    component_parts = tuple(
+        str(item).strip() for item in parts if isinstance(item, str) and str(item).strip()
+    )
+    if not component_parts and isinstance(part, str) and part.strip():
+        component_parts = (part.strip(),)
+
+    rooted_parts = tuple(
+        str(item).strip() for item in root_parts if isinstance(item, str) and str(item).strip()
+    )
 
     gap_text = "unknown"
     if isinstance(min_distance, (int, float)) and math.isfinite(float(min_distance)):
@@ -155,10 +167,43 @@ def _format_unsupported_part_finding(finding: object) -> str:
                 pairs.append(f"{key}={value}")
         pose_preview = ", ".join(pairs)
 
+    pose_label = "at rest pose"
+    if pose_preview:
+        pose_label = f"at pose ({pose_preview})"
+    if isinstance(pose_index, int):
+        pose_label = f"pose_index={pose_index} {pose_label}"
+
+    if len(component_parts) == 1:
+        subject = f"part {component_parts[0]!r}"
+    elif component_parts:
+        subject = f"floating group {list(component_parts)!r}"
+    else:
+        subject = "part <unknown>"
+
+    if len(rooted_parts) == 1:
+        grounded_body = f"the grounded body rooted at {rooted_parts[0]!r}"
+    elif rooted_parts:
+        grounded_body = f"the grounded body rooted at {list(rooted_parts)!r}"
+    else:
+        grounded_body = "the grounded body"
+
     return (
-        f"- part={part!r} nearest_part={nearest_part!r} approx_gap={gap_text} "
-        f"pose_index={pose_index} pose=({pose_preview}) backend={backend}"
+        f"- {pose_label}, {subject} is disconnected from {grounded_body}; "
+        f"nearest_grounded_part={nearest_part!r}; approx_gap={gap_text}; backend={backend}"
     )
+
+
+def _unsupported_finding_parts(finding: object) -> tuple[str, ...]:
+    parts = getattr(finding, "parts", ())
+    component_parts = tuple(
+        str(item).strip() for item in parts if isinstance(item, str) and str(item).strip()
+    )
+    if component_parts:
+        return component_parts
+    part = getattr(finding, "part", None)
+    if isinstance(part, str) and part.strip():
+        return (part.strip(),)
+    return ()
 
 
 def _truncate_decimal(value: float, *, decimals: int) -> float:
@@ -1204,18 +1249,26 @@ class TestContext:
 
         allowed_parts = set(self._allow_isolated_parts)
         allowed_findings = [
-            finding for finding in findings if getattr(finding, "part", None) in allowed_parts
+            finding
+            for finding in findings
+            if (member_parts := _unsupported_finding_parts(finding))
+            and all(name in allowed_parts for name in member_parts)
         ]
         remaining_findings = [
-            finding for finding in findings if getattr(finding, "part", None) not in allowed_parts
+            finding
+            for finding in findings
+            if not (
+                (member_parts := _unsupported_finding_parts(finding))
+                and all(name in allowed_parts for name in member_parts)
+            )
         ]
 
         if allowed_findings:
             allowed_names = sorted(
                 {
-                    str(getattr(finding, "part", "")).strip()
+                    part_name
                     for finding in allowed_findings
-                    if str(getattr(finding, "part", "")).strip()
+                    for part_name in _unsupported_finding_parts(finding)
                 }
             )
             preview = "\n".join(
@@ -1243,7 +1296,8 @@ class TestContext:
             resolved_name,
             False,
             "Isolated parts detected "
-            f"(samples={sample_count}, contact_tol={resolved_contact_tol:.4g}):\n"
+            "(floating support-disconnected component groups from the grounded body; "
+            f"samples={sample_count}, contact_tol={resolved_contact_tol:.4g}):\n"
             f"{preview}{more}",
         )
 

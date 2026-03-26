@@ -20,7 +20,7 @@ def run_tests() -> TestReport:
     ctx.check_mesh_files_exist()
 
     # Preferred default QC stack:
-    # 1) likely-failure broad-part floating check for isolated parts
+    # 1) likely-failure grounded-component floating check for disconnected part groups
     ctx.fail_if_isolated_parts()
     # 2) noisier warning-tier sensor for same-part disconnected geometry islands
     ctx.warn_if_part_contains_disconnected_geometry_islands()
@@ -32,6 +32,18 @@ def run_tests() -> TestReport:
     # `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, or
     # `expect_within(...)` checks instead.
     ctx.fail_if_parts_overlap_in_current_pose()
+
+    # For bounded REVOLUTE/PRISMATIC joints, also check at least the lower/upper
+    # motion-limit poses for both no overlap and no floating. Example:
+    # hinge = object_model.get_articulation("lid_hinge")
+    # limits = hinge.motion_limits
+    # if limits is not None and limits.lower is not None and limits.upper is not None:
+    #     with ctx.pose({hinge: limits.lower}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
+    #     with ctx.pose({hinge: limits.upper}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
 
     return ctx.report()
 

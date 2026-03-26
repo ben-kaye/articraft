@@ -27,7 +27,10 @@ def test_base_scaffold_matches_harness_fallback() -> None:
         "ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)"
         not in scaffold_text
     )
-    assert "likely-failure broad-part floating check for isolated parts" in scaffold_text
+    assert (
+        "likely-failure grounded-component floating check for disconnected part groups"
+        in scaffold_text
+    )
     assert (
         "noisier warning-tier sensor for same-part disconnected geometry islands" in scaffold_text
     )
@@ -39,6 +42,10 @@ def test_base_scaffold_matches_harness_fallback() -> None:
     assert "Investigate all three. Warning-tier signals are not free passes." in scaffold_text
     assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in scaffold_text
     assert "If parts are nested but should remain clear, prove that with exact" in scaffold_text
+    assert "For bounded REVOLUTE/PRISMATIC joints" in scaffold_text
+    assert "limits = hinge.motion_limits" in scaffold_text
+    assert "with ctx.pose({hinge: limits.lower}):" in scaffold_text
+    assert 'ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")' in scaffold_text
     assert "expect_aabb_" not in scaffold_text
 
 
@@ -66,7 +73,10 @@ def test_hybrid_scaffold_matches_harness_fallback() -> None:
         not in scaffold_text
     )
     assert "Preferred default QC stack" in scaffold_text
-    assert "likely-failure broad-part floating check for isolated parts" in scaffold_text
+    assert (
+        "likely-failure grounded-component floating check for disconnected part groups"
+        in scaffold_text
+    )
     assert (
         "noisier warning-tier sensor for same-part disconnected geometry islands" in scaffold_text
     )
@@ -78,4 +88,8 @@ def test_hybrid_scaffold_matches_harness_fallback() -> None:
     assert "Investigate all three. Warning-tier signals are not free passes." in scaffold_text
     assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in scaffold_text
     assert "If parts are nested but should remain clear, prove that with exact" in scaffold_text
+    assert "For bounded REVOLUTE/PRISMATIC joints" in scaffold_text
+    assert "limits = hinge.motion_limits" in scaffold_text
+    assert "with ctx.pose({hinge: limits.lower}):" in scaffold_text
+    assert 'ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")' in scaffold_text
     assert "expect_aabb_" not in scaffold_text

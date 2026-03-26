@@ -304,6 +304,8 @@ class UnsupportedPartFinding:
     min_distance: Optional[float]
     contact_tol: float
     backend: str
+    parts: Tuple[str, ...] = ()
+    root_parts: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -961,6 +963,124 @@ def _resolve_model_links_and_joints(model: object) -> tuple[list[object], list[o
     return links, joints
 
 
+def _pair_key(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+def _root_part_names(names: Sequence[str], joints: Sequence[object]) -> Tuple[str, ...]:
+    name_set = {str(name) for name in names}
+    child_names = {
+        str(child)
+        for joint in joints
+        if isinstance((child := getattr(joint, "child", None)), str) and child in name_set
+    }
+    roots = tuple(sorted(name for name in name_set if name not in child_names))
+    if roots:
+        return roots
+    if not name_set:
+        return ()
+    return (sorted(name_set)[0],)
+
+
+def _connected_components(
+    names: Sequence[str],
+    adjacency: Dict[str, set[str]],
+) -> List[Tuple[str, ...]]:
+    remaining = set(names)
+    components: list[tuple[str, ...]] = []
+    while remaining:
+        start = min(remaining)
+        stack = [start]
+        component: list[str] = []
+        remaining.remove(start)
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            for neighbor in sorted(adjacency.get(current, set())):
+                if neighbor not in remaining:
+                    continue
+                remaining.remove(neighbor)
+                stack.append(neighbor)
+        components.append(tuple(sorted(component)))
+    return components
+
+
+def _unsupported_component_findings(
+    names: Sequence[str],
+    *,
+    root_parts: Sequence[str],
+    support_pairs: Iterable[Tuple[str, str]],
+    pair_min_distances: Dict[Tuple[str, str], float],
+    pose_index: int,
+    pose: Dict[str, float],
+    contact_tol: float,
+    backend: str,
+) -> List[UnsupportedPartFinding]:
+    unique_names = tuple(sorted({str(name) for name in names}))
+    if len(unique_names) <= 1:
+        return []
+
+    adjacency: Dict[str, set[str]] = {name: set() for name in unique_names}
+    for raw_a, raw_b in support_pairs:
+        a, b = _pair_key(str(raw_a), str(raw_b))
+        if a == b or a not in adjacency or b not in adjacency:
+            continue
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+
+    components = _connected_components(unique_names, adjacency)
+    root_set = {str(name) for name in root_parts}
+    grounded_parts: set[str] = set()
+    for component in components:
+        if any(name in root_set for name in component):
+            grounded_parts.update(component)
+    if not grounded_parts and unique_names:
+        grounded_parts.add(unique_names[0])
+
+    findings: list[UnsupportedPartFinding] = []
+    for component in components:
+        if any(name in grounded_parts for name in component):
+            continue
+
+        nearest_part: Optional[str] = None
+        min_distance: Optional[float] = None
+        for name in component:
+            for grounded_name in grounded_parts:
+                if name == grounded_name:
+                    continue
+                distance = pair_min_distances.get(_pair_key(name, grounded_name))
+                if distance is None:
+                    continue
+                if (
+                    min_distance is None
+                    or distance < float(min_distance)
+                    or (
+                        math.isclose(distance, float(min_distance), abs_tol=_EPS)
+                        and isinstance(nearest_part, str)
+                        and grounded_name < nearest_part
+                    )
+                    or (nearest_part is None and math.isfinite(distance))
+                ):
+                    min_distance = float(distance)
+                    nearest_part = grounded_name
+
+        findings.append(
+            UnsupportedPartFinding(
+                pose_index=pose_index,
+                pose=dict(pose),
+                part=component[0],
+                nearest_part=nearest_part,
+                min_distance=min_distance,
+                contact_tol=float(contact_tol),
+                backend=backend,
+                parts=component,
+                root_parts=tuple(sorted(root_set)),
+            )
+        )
+
+    return findings
+
+
 def _unsupported_parts_from_world_aabbs(
     part_aabbs: Dict[str, AABB],
     *,
@@ -968,14 +1088,14 @@ def _unsupported_parts_from_world_aabbs(
     pose: Dict[str, float],
     contact_tol: float,
     backend: str,
+    root_parts: Sequence[str] = (),
 ) -> List[UnsupportedPartFinding]:
     names = sorted(part_aabbs.keys())
     if len(names) <= 1:
         return []
 
-    supported: Dict[str, bool] = {name: False for name in names}
-    nearest_part: Dict[str, Optional[str]] = {name: None for name in names}
-    nearest_distance: Dict[str, Optional[float]] = {name: None for name in names}
+    support_pairs: set[tuple[str, str]] = set()
+    pair_min_distances: dict[tuple[str, str], float] = {}
 
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
@@ -984,35 +1104,22 @@ def _unsupported_parts_from_world_aabbs(
             aabb_a = part_aabbs[a]
             aabb_b = part_aabbs[b]
             if _aabbs_touch_or_overlap(aabb_a, aabb_b, tol=contact_tol):
-                supported[a] = True
-                supported[b] = True
+                support_pairs.add((a, b))
                 dist = 0.0
             else:
                 dist = _aabb_separation_distance(aabb_a, aabb_b)
+            pair_min_distances[_pair_key(a, b)] = float(dist)
 
-            if nearest_distance[a] is None or dist < float(nearest_distance[a]):
-                nearest_distance[a] = dist
-                nearest_part[a] = b
-            if nearest_distance[b] is None or dist < float(nearest_distance[b]):
-                nearest_distance[b] = dist
-                nearest_part[b] = a
-
-    findings: list[UnsupportedPartFinding] = []
-    for name in names:
-        if supported[name]:
-            continue
-        findings.append(
-            UnsupportedPartFinding(
-                pose_index=pose_index,
-                pose=dict(pose),
-                part=name,
-                nearest_part=nearest_part[name],
-                min_distance=nearest_distance[name],
-                contact_tol=float(contact_tol),
-                backend=backend,
-            )
-        )
-    return findings
+    return _unsupported_component_findings(
+        names,
+        root_parts=tuple(root_parts) if root_parts else _root_part_names(names, ()),
+        support_pairs=support_pairs,
+        pair_min_distances=pair_min_distances,
+        pose_index=pose_index,
+        pose=pose,
+        contact_tol=float(contact_tol),
+        backend=backend,
+    )
 
 
 def _find_unsupported_parts_physical(
@@ -1028,7 +1135,7 @@ def _find_unsupported_parts_physical(
         asset_root=asset_root,
     )
     resolved_asset_root = resolve_asset_root(asset_root, compiled_model, model)
-    links, _joints = _resolve_model_links_and_joints(compiled_model)
+    links, joints = _resolve_model_links_and_joints(compiled_model)
     if len(links) <= 1:
         return []
 
@@ -1087,9 +1194,9 @@ def _find_unsupported_parts_physical(
         if len(names) <= 1:
             continue
 
-        supported: Dict[str, bool] = {name: False for name in names}
-        nearest_part: Dict[str, Optional[str]] = {name: None for name in names}
-        nearest_distance: Dict[str, Optional[float]] = {name: None for name in names}
+        root_parts = _root_part_names(names, joints)
+        support_pairs: set[tuple[str, str]] = set()
+        pair_min_distances: dict[tuple[str, str], float] = {}
 
         for i in range(len(names)):
             for j in range(i + 1, len(names)):
@@ -1119,35 +1226,23 @@ def _find_unsupported_parts_physical(
                         break
 
                 if pair_supported:
-                    supported[a] = True
-                    supported[b] = True
+                    support_pairs.add((a, b))
 
                 if pair_min_distance is not None:
-                    if nearest_distance[a] is None or pair_min_distance < float(
-                        nearest_distance[a]
-                    ):
-                        nearest_distance[a] = pair_min_distance
-                        nearest_part[a] = b
-                    if nearest_distance[b] is None or pair_min_distance < float(
-                        nearest_distance[b]
-                    ):
-                        nearest_distance[b] = pair_min_distance
-                        nearest_part[b] = a
+                    pair_min_distances[_pair_key(a, b)] = float(pair_min_distance)
 
-        for name in names:
-            if supported[name]:
-                continue
-            findings.append(
-                UnsupportedPartFinding(
-                    pose_index=pose_index,
-                    pose=dict(pose),
-                    part=name,
-                    nearest_part=nearest_part[name],
-                    min_distance=nearest_distance[name],
-                    contact_tol=float(contact_tol),
-                    backend="fcl",
-                )
+        findings.extend(
+            _unsupported_component_findings(
+                names,
+                root_parts=root_parts,
+                support_pairs=support_pairs,
+                pair_min_distances=pair_min_distances,
+                pose_index=pose_index,
+                pose=pose,
+                contact_tol=float(contact_tol),
+                backend="fcl",
             )
+        )
 
     return findings
 
@@ -1310,6 +1405,14 @@ def find_unsupported_parts(
     contact_tol: float = 1e-6,
     seed: int = 0,
 ) -> List[UnsupportedPartFinding]:
+    """
+    Find support-disconnected floating components across sampled poses.
+
+    Parts are grouped by exact physical contact / near-contact into connected
+    components. Any component that has no path to a rooted body part is
+    reported, so a floating multi-part island such as `lid + top_vent` is
+    flagged even when those parts still touch each other.
+    """
     return _find_unsupported_parts_physical(
         model,
         asset_root=asset_root,

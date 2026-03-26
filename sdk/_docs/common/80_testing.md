@@ -76,6 +76,29 @@ ctx.fail_if_parts_overlap_in_current_pose()
 Then add prompt-specific exact assertions such as `expect_gap(...)`,
 `expect_overlap(...)`, `expect_contact(...)`, and `expect_within(...)`.
 
+For bounded `REVOLUTE` and `PRISMATIC` joints, also add explicit lower/upper
+pose checks for both no overlap and no floating:
+
+```python
+hinge = object_model.get_articulation("lid_hinge")
+limits = hinge.motion_limits
+if limits is not None and limits.lower is not None and limits.upper is not None:
+    with ctx.pose({hinge: limits.lower}):
+        ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
+        ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
+    with ctx.pose({hinge: limits.upper}):
+        ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
+        ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
+```
+
+This pattern is not applicable to `CONTINUOUS` joints because they do not expose
+finite `lower` / `upper` limits.
+
+`ctx.fail_if_isolated_parts()` and `find_unsupported_parts()` use
+grounded-component semantics: they group parts by actual physical contact and
+flag any floating connected component that has no rooted body part. This catches
+detached groups such as `lid + top_vent`, not only singleton orphan parts.
+
 ## Parameter Conventions
 
 These rules apply across the API unless a method says otherwise.
@@ -134,6 +157,9 @@ footprint or cavity.
 
 Records that a named part is allowed to remain isolated in
 `fail_if_isolated_parts(...)`.
+
+If the intentional floating assembly is a multi-part group, allow each authored
+part in that group.
 
 ### `allow_coplanar_surfaces(link_a, link_b, *, reason, elem_a=None, elem_b=None) -> None`
 
@@ -222,7 +248,11 @@ default.
 
 ### `fail_if_isolated_parts(*, max_pose_samples=1, contact_tol=None, name=None) -> bool`
 
-Fails when a whole part is unsupported or floating in the checked pose set.
+Fails when a support-connected component is unsupported or floating in the
+checked pose set.
+
+This catches disconnected floating groups such as `lid + top_vent`, not only
+singleton parts.
 
 - `max_pose_samples`: number of sampled poses to inspect. `1` means only the
   current pose.
