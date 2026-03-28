@@ -33,6 +33,8 @@ class BatchRunDisplay:
         total_runs: int,
         concurrency: int,
         model_id: str,
+        scaffold_summary: str,
+        show_row_scaffold_mode: bool,
         enabled: bool = True,
     ):
         self.console = console
@@ -40,6 +42,8 @@ class BatchRunDisplay:
         self.total_runs = total_runs
         self.concurrency = concurrency
         self.model_id = model_id
+        self.scaffold_summary = scaffold_summary
+        self.show_row_scaffold_mode = show_row_scaffold_mode
         self.enabled = enabled
 
         self.start_time = time.time()
@@ -149,6 +153,7 @@ class BatchRunDisplay:
         line.append(self.experiment_name, style="bold white on blue")
         line.append(f"  model={self.model_id}", style="dim")
         line.append(f"  row_concurrency={self.concurrency}", style="dim")
+        line.append(f"  {self.scaffold_summary}", style="dim")
         line.append(f"  {self.total_runs} runs", style="dim")
         self.console.print(line)
         self.console.print()
@@ -229,7 +234,7 @@ class BatchRunDisplay:
         if slug not in self.run_numbers:
             self.run_numbers[slug] = self._assign_run_number(slug)
 
-    def start_run(self, slug: str):
+    def start_run(self, slug: str, *, scaffold_mode: str | None = None):
         if not self.enabled:
             return
         self.runs[slug] = time.time()
@@ -238,6 +243,9 @@ class BatchRunDisplay:
         line.append("  start   ", style="bold cyan")
         line.append(f"[{self._run_label(slug)}] ", style="bold black on cyan")
         line.append(truncate_text(slug, 50), style="bold")
+        if self.show_row_scaffold_mode and scaffold_mode:
+            line.append("  scaffold=", style="dim")
+            line.append(scaffold_mode, style="bold magenta")
         self.console.print(line)
 
     def update_run_progress(self, slug: str, turn: int, cost: float):

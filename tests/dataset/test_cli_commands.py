@@ -569,6 +569,12 @@ def test_run_single_generates_dataset_record_and_creates_category(
     )
     assert record["collections"] == ["dataset"]
     assert record["category_slug"] == "internet_router"
+    provenance = json.loads(
+        (repo.layout.record_dir("rec_router_single") / "provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["prompting"]["scaffold_mode"] == "lite"
 
     dataset_entry = json.loads(
         repo.layout.record_dataset_entry_path("rec_router_single").read_text(encoding="utf-8")
@@ -699,6 +705,12 @@ def test_run_single_reuses_existing_category_and_allocates_next_dataset_id(
         repo.layout.record_dataset_entry_path("rec_router_single_2").read_text(encoding="utf-8")
     )
     assert dataset_entry["dataset_id"] == "ds_internet_router_0002"
+    provenance = json.loads(
+        (repo.layout.record_dir("rec_router_single_2") / "provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["prompting"]["scaffold_mode"] == "lite"
 
     category = json.loads(
         repo.layout.category_metadata_path("internet_router").read_text(encoding="utf-8")

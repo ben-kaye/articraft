@@ -6,6 +6,7 @@ port := "8765"
 model := ""
 thinking := ""
 sdk := ""
+scaffold_mode := ""
 image := ""
 dataset_id := ""
 category := ""
@@ -62,6 +63,7 @@ wb prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
     if [ -z "$model" ]; then
@@ -103,6 +105,9 @@ wb prompt:
       --thinking "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ "$design_audit" = "false" ]; then
       cmd+=(--no-design-audit)
     elif [ "$design_audit" = "true" ]; then
@@ -119,6 +124,7 @@ wb-init prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
     if [ -z "$model" ]; then
@@ -161,6 +167,9 @@ wb-init prompt:
       --thinking-level "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ -n "$image" ]; then
       cmd+=(--image "$image")
     fi
@@ -177,6 +186,7 @@ wb-category prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
     category={{ quote(category) }}
@@ -226,6 +236,9 @@ wb-category prompt:
       --thinking-level "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ -n "$dataset_id" ]; then
       cmd+=(--dataset-id "$dataset_id")
     fi
@@ -374,6 +387,7 @@ dataset-batch spec_path="":
     row_concurrency_value={{ quote(row_concurrency) }}
     legacy_concurrency_value={{ quote(concurrency) }}
     design_audit_value={{ quote(design_audit) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     subprocess_concurrency_value={{ quote(subprocess_concurrency) }}
     legacy_local_work_value={{ quote(local_work_concurrency) }}
     resume_value={{ quote(resume) }}
@@ -393,6 +407,9 @@ dataset-batch spec_path="":
       subprocess_concurrency_value="$legacy_local_work_value"
     fi
     extra_args=(--row-concurrency "$row_concurrency_value")
+    if [ -n "$scaffold_mode_value" ]; then
+      extra_args+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ -n "$subprocess_concurrency_value" ]; then
       extra_args+=(--subprocess-concurrency "$subprocess_concurrency_value")
     fi
@@ -428,7 +445,7 @@ batch-spec-new:
       exit 1
     fi
     mkdir -p "$(dirname "$spec_path")"
-    printf '%s\n' 'row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label,design_audit' >"$spec_path"
+    printf '%s\n' 'row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,scaffold_mode,label,design_audit' >"$spec_path"
     echo "Created $spec_path"
 
 search-index:
@@ -441,6 +458,7 @@ rerun record:
     model_override={{ quote(model) }}
     thinking_override={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     case "$sdk" in
       "")
         sdk_package=""
@@ -470,6 +488,9 @@ rerun record:
     fi
     if [ -n "$sdk_package" ]; then
       cmd+=(--sdk-package "$sdk_package")
+    fi
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
     fi
     exec "${cmd[@]}"
 

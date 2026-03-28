@@ -139,6 +139,7 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     assert len(run_dirs) == 1
     run_metadata = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     assert run_metadata["status"] == "success"
+    assert run_metadata["settings_summary"]["scaffold_mode"] == "lite"
     results_lines = (run_dirs[0] / "results.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(results_lines) == 1
     assert json.loads(results_lines[0])["record_id"] == record_dir.name
@@ -149,8 +150,14 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     original_run_id = original_record["source"]["run_id"]
     original_created_at = original_record["created_at"]
     original_provenance = json.loads((record_dir / "provenance.json").read_text(encoding="utf-8"))
+    assert original_provenance["prompting"]["scaffold_mode"] == "lite"
     system_prompt_sha = original_provenance["prompting"]["system_prompt_sha256"]
     assert (repo_root / "data" / "system_prompts" / f"{system_prompt_sha}.txt").exists()
+    original_provenance["prompting"].pop("scaffold_mode", None)
+    (record_dir / "provenance.json").write_text(
+        json.dumps(original_provenance, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     workbench["entries"][0]["archived"] = True
     workbench_path.write_text(json.dumps(workbench, indent=2) + "\n", encoding="utf-8")
@@ -176,9 +183,11 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     record_dirs = [path for path in records_root.iterdir() if path.is_dir()]
     assert [path.name for path in record_dirs] == [record_dir.name]
     updated_record = json.loads((record_dir / "record.json").read_text(encoding="utf-8"))
+    updated_provenance = json.loads((record_dir / "provenance.json").read_text(encoding="utf-8"))
     assert updated_record["record_id"] == record_dir.name
     assert updated_record["created_at"] == original_created_at
     assert updated_record["source"]["run_id"] != original_run_id
+    assert updated_provenance["prompting"]["scaffold_mode"] == "strict"
     assert (
         (record_dir / "model.py")
         .read_text(encoding="utf-8")

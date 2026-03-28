@@ -15,9 +15,20 @@ def _make_display() -> tuple[SingleRunDisplay, StringIO]:
         model_id="gpt-5.4",
         thinking_level="high",
         max_turns=30,
+        scaffold_mode="lite",
         enabled=True,
     )
     return display, buffer
+
+
+def test_start_shows_scaffold_mode() -> None:
+    display, buffer = _make_display()
+
+    display.start()
+
+    output = buffer.getvalue()
+    assert "run gpt-5.4" in output
+    assert "scaffold=lite" in output
 
 
 def test_add_tool_call_shows_success_result_and_compilation() -> None:

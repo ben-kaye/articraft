@@ -112,6 +112,7 @@ class PromptingSettings:
     system_prompt_sha256: str | None
     sdk_docs_mode: str
     post_success_design_audit: bool = True
+    scaffold_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

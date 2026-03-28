@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
@@ -29,6 +29,7 @@ from agent.runner import (
 from agent.runtime_limits import BatchRuntimeLimits
 from agent.tools import build_initial_user_content
 from agent.tui.batch_run import BatchRunDisplay
+from sdk._profiles import DEFAULT_SCAFFOLD_MODE, LEGACY_SCAFFOLD_MODE, normalize_scaffold_mode
 from storage.batch_specs import BatchSpecStore
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
@@ -68,6 +69,7 @@ _SUPPORTED_HEADERS = {
     "thinking_level",
     "max_turns",
     "sdk_package",
+    "scaffold_mode",
     "label",
     "design_audit",
 }
@@ -96,6 +98,7 @@ class BatchAttemptRecord:
     turn_count: int | None
     tool_call_count: int | None
     compile_attempt_count: int | None
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -211,6 +214,20 @@ def _parse_optional_bool(value: Any, *, row_index: int, field_name: str) -> bool
     )
 
 
+def _parse_optional_scaffold_mode(value: Any, *, row_index: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        return normalize_scaffold_mode(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Row {row_index} has invalid scaffold_mode: {value!r}; use lite or strict"
+        ) from exc
+
+
 def _summary_value(values: set[str]) -> str:
     normalized = {value for value in values if value}
     if not normalized:
@@ -218,6 +235,18 @@ def _summary_value(values: set[str]) -> str:
     if len(normalized) == 1:
         return next(iter(normalized))
     return "mixed"
+
+
+def _scaffold_mode_display_summary(
+    rows: list[BatchRowSpec], *, default_mode: str
+) -> tuple[str, bool]:
+    unique_modes = sorted({row.scaffold_mode for row in rows})
+    if not unique_modes:
+        return f"default={default_mode} rows=none", False
+    if len(unique_modes) == 1:
+        mode = unique_modes[0]
+        return f"default={default_mode} rows={mode}", False
+    return f"default={default_mode} rows=mixed({','.join(unique_modes)})", True
 
 
 def _logical_cpu_count() -> int:
@@ -507,10 +536,12 @@ class BatchRowSpec:
     thinking_level: str
     max_turns: int
     sdk_package: str
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE
+    scaffold_mode_explicit: bool = False
     post_success_design_audit: bool = True
     label: str | None = None
 
-    def resume_signature(self) -> tuple[str, str, str, str, str, int, str, bool]:
+    def resume_signature(self) -> tuple[str, str, str, str, str, int, str, str, bool]:
         return (
             self.category_slug,
             self.prompt,
@@ -519,6 +550,7 @@ class BatchRowSpec:
             self.thinking_level,
             self.max_turns,
             self.sdk_package,
+            self.scaffold_mode,
             self.post_success_design_audit,
         )
 
@@ -543,6 +575,7 @@ class BatchRunConfig:
     concurrency: int
     local_work_concurrency: int
     system_prompt_path: str
+    scaffold_mode: str
     sdk_docs_mode: str
     resume: bool
     resume_policy: str
@@ -620,6 +653,7 @@ def _parse_batch_row(
     *,
     row_index: int,
     categories: CategoryStore,
+    default_scaffold_mode: str,
     default_post_success_design_audit: bool,
 ) -> BatchRowSpec:
     row_id = raw_row.get("row_id") or f"row_{row_index:04d}"
@@ -630,6 +664,8 @@ def _parse_batch_row(
     thinking_level = raw_row.get("thinking_level", "").lower()
     max_turns_text = raw_row.get("max_turns", "")
     sdk_package = raw_row.get("sdk_package", "")
+    scaffold_mode = _parse_optional_scaffold_mode(raw_row.get("scaffold_mode"), row_index=row_index)
+    scaffold_mode_explicit = scaffold_mode is not None
     category_title = raw_row.get("category_title") or None
     label = raw_row.get("label") or None
 
@@ -654,6 +690,8 @@ def _parse_batch_row(
 
     max_turns = _parse_max_turns(max_turns_text, row_index=row_index)
     sdk_package = runner_normalize_sdk_package(sdk_package, row_index=row_index)
+    if scaffold_mode is None:
+        scaffold_mode = default_scaffold_mode
     post_success_design_audit = _parse_optional_bool(
         raw_row.get("design_audit"),
         row_index=row_index,
@@ -680,6 +718,8 @@ def _parse_batch_row(
         thinking_level=thinking_level,
         max_turns=max_turns,
         sdk_package=sdk_package,
+        scaffold_mode=scaffold_mode,
+        scaffold_mode_explicit=scaffold_mode_explicit,
         post_success_design_audit=post_success_design_audit,
         label=label,
     )
@@ -689,6 +729,7 @@ def _load_batch_rows(
     spec_path: Path,
     repo: StorageRepo,
     *,
+    default_scaffold_mode: str,
     default_post_success_design_audit: bool,
 ) -> list[BatchRowSpec]:
     raw_rows = _read_csv_rows(spec_path)
@@ -700,6 +741,7 @@ def _load_batch_rows(
             raw_row,
             row_index=index,
             categories=categories,
+            default_scaffold_mode=default_scaffold_mode,
             default_post_success_design_audit=default_post_success_design_audit,
         )
         row_id = row.row_id
@@ -769,12 +811,14 @@ def _settings_summary(
     concurrency: int,
     local_work_concurrency: int,
     system_prompt_path: str,
+    scaffold_mode: str,
     sdk_docs_mode: str,
     qc_blurb_path: str | None,
 ) -> dict[str, Any]:
     providers = {row.provider for row in rows}
     model_ids = {row.model_id for row in rows}
     sdk_packages = {row.sdk_package for row in rows}
+    scaffold_modes = {row.scaffold_mode for row in rows}
     post_success_design_audit_values = {str(row.post_success_design_audit) for row in rows}
     return {
         "providers": sorted(providers),
@@ -782,6 +826,8 @@ def _settings_summary(
         "thinking_levels": sorted({row.thinking_level for row in rows}),
         "max_turns": sorted({row.max_turns for row in rows}),
         "sdk_packages": sorted(sdk_packages),
+        "scaffold_mode": scaffold_mode,
+        "scaffold_modes": sorted(scaffold_modes),
         "post_success_design_audit": _summary_value(post_success_design_audit_values),
         "row_concurrency": concurrency,
         "subprocess_concurrency": local_work_concurrency,
@@ -868,6 +914,11 @@ def _resume_signature_mismatch_field(existing: dict[str, Any], row: BatchRowSpec
             "sdk_package",
             _resume_signature_text(existing.get("sdk_package")),
             _resume_signature_text(row.sdk_package),
+        ),
+        (
+            "scaffold_mode",
+            _resume_signature_text(existing.get("scaffold_mode") or LEGACY_SCAFFOLD_MODE),
+            _resume_signature_text(row.scaffold_mode),
         ),
         (
             "post_success_design_audit",
@@ -968,6 +1019,39 @@ def _write_allocations(
     repo.write_json(repo.layout.run_allocations_path(run_id), payload)
 
 
+def _apply_legacy_resume_scaffold_modes(
+    repo: StorageRepo,
+    *,
+    run_id: str,
+    rows: list[BatchRowSpec],
+) -> list[BatchRowSpec]:
+    payload = repo.read_json(repo.layout.run_allocations_path(run_id))
+    raw_rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(raw_rows, list):
+        return rows
+
+    existing_by_row_id: dict[str, dict[str, Any]] = {}
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        row_id = str(raw.get("row_id") or "")
+        if row_id:
+            existing_by_row_id[row_id] = raw
+
+    normalized_rows: list[BatchRowSpec] = []
+    for row in rows:
+        existing = existing_by_row_id.get(row.row_id)
+        if (
+            existing is not None
+            and existing.get("scaffold_mode") in {None, ""}
+            and not row.scaffold_mode_explicit
+        ):
+            normalized_rows.append(replace(row, scaffold_mode=LEGACY_SCAFFOLD_MODE))
+            continue
+        normalized_rows.append(row)
+    return normalized_rows
+
+
 def _validate_resume_allocations(
     repo: StorageRepo,
     *,
@@ -1026,6 +1110,7 @@ async def _write_run_metadata(
         concurrency=config.concurrency,
         local_work_concurrency=config.local_work_concurrency,
         system_prompt_path=config.system_prompt_path,
+        scaffold_mode=config.scaffold_mode,
         sdk_docs_mode=config.sdk_docs_mode,
         qc_blurb_path=None,
     )
@@ -1138,6 +1223,7 @@ def _build_batch_attempt_record(row: BatchRowSpec, outcome: BatchRowOutcome) -> 
         thinking_level=row.thinking_level,
         max_turns=row.max_turns,
         sdk_package=row.sdk_package,
+        scaffold_mode=row.scaffold_mode,
         post_success_design_audit=row.post_success_design_audit,
         success=outcome.success,
         message=outcome.message,
@@ -1269,6 +1355,7 @@ async def _run_batch_row(
         display_enabled=False,
         on_turn_start=lambda turn: display.update_run_progress(context.record_id, turn, 0.0),
         sdk_package=row.sdk_package,
+        scaffold_mode=row.scaffold_mode,
         sdk_docs_mode=config.sdk_docs_mode,
         openai_reasoning_summary="auto",
         label=row.label,
@@ -1531,7 +1618,7 @@ class BatchRunSession:
                 return
             await self.pause_controller.wait_until_resumed()
             allocation = self.config.allocations[row.row_id]
-            self.display.start_run(allocation.record_id)
+            self.display.start_run(allocation.record_id, scaffold_mode=row.scaffold_mode)
             outcome = await _run_batch_row(
                 config=self.config,
                 repo=self.repo,
@@ -1607,12 +1694,18 @@ async def run_dataset_batch(config: BatchRunConfig) -> dict[str, Any]:
     repo = StorageRepo(config.repo_root)
     await asyncio.to_thread(repo.ensure_layout)
     run_store = RunStore(repo)
+    scaffold_summary, show_row_scaffold_mode = _scaffold_mode_display_summary(
+        config.rows,
+        default_mode=config.scaffold_mode,
+    )
     display = BatchRunDisplay(
         console=CONSOLE,
         experiment_name=config.batch_spec_id,
         total_runs=len(config.rows),
         concurrency=config.concurrency,
         model_id=_summary_value({row.model_id for row in config.rows}) or "mixed",
+        scaffold_summary=scaffold_summary,
+        show_row_scaffold_mode=show_row_scaffold_mode,
         enabled=os.environ.get("URDF_TUI_ENABLED", "1") != "0",
     )
     for row in config.rows:
@@ -1648,6 +1741,7 @@ def build_batch_config(
     concurrency: str | int,
     local_work_concurrency: str | int = "auto",
     system_prompt_path: str,
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE,
     sdk_docs_mode: str = "full",
     qc_blurb_path: str | None,
     post_success_design_audit: bool = True,
@@ -1662,9 +1756,11 @@ def build_batch_config(
     repo = StorageRepo(repo_root.resolve())
     repo.ensure_layout()
     spec_path, batch_spec_id = _resolve_spec_path(repo, spec_arg)
+    resolved_scaffold_mode = normalize_scaffold_mode(scaffold_mode)
     rows = _load_batch_rows(
         spec_path,
         repo,
+        default_scaffold_mode=resolved_scaffold_mode,
         default_post_success_design_audit=post_success_design_audit,
     )
     resolved_concurrency = _resolve_batch_concurrency(concurrency, candidate_count=len(rows))
@@ -1680,6 +1776,7 @@ def build_batch_config(
         if latest_run_id is None:
             raise ValueError(f"No prior batch run found for batch_spec_id={batch_spec_id}")
         run_id = latest_run_id
+        rows = _apply_legacy_resume_scaffold_modes(repo, run_id=run_id, rows=rows)
         allocations = _validate_resume_allocations(
             repo,
             run_id=run_id,
@@ -1714,6 +1811,7 @@ def build_batch_config(
         concurrency=resolved_concurrency,
         local_work_concurrency=resolved_local_work_concurrency,
         system_prompt_path=system_prompt_path,
+        scaffold_mode=resolved_scaffold_mode,
         sdk_docs_mode=sdk_docs_mode,
         qc_blurb_text=qc_blurb_text,
         resume=resume,

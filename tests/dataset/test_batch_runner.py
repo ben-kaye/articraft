@@ -22,6 +22,7 @@ def _make_row() -> batch_runner.BatchRowSpec:
         thinking_level="high",
         max_turns=12,
         sdk_package="sdk",
+        scaffold_mode="lite",
         post_success_design_audit=True,
         label=None,
     )
@@ -50,6 +51,7 @@ def _make_config(tmp_path: Path) -> batch_runner.BatchRunConfig:
         concurrency=1,
         local_work_concurrency=1,
         system_prompt_path="designer_system_prompt.txt",
+        scaffold_mode="lite",
         sdk_docs_mode="full",
         resume=False,
         resume_policy="failed_or_pending",
@@ -103,6 +105,7 @@ def test_resume_signature_and_mismatch_field() -> None:
         "thinking_level": "high",
         "max_turns": 12,
         "sdk_package": "sdk",
+        "scaffold_mode": "lite",
         "post_success_design_audit": True,
     }
 
@@ -114,6 +117,7 @@ def test_resume_signature_and_mismatch_field() -> None:
         "high",
         12,
         "sdk",
+        "lite",
         True,
     )
     assert batch_runner._resume_signature_mismatch_field(existing, row) is None
@@ -132,6 +136,7 @@ def test_resume_signature_mismatch_field_preserves_false_bool_normalization() ->
         "thinking_level": "high",
         "max_turns": 12,
         "sdk_package": "sdk",
+        "scaffold_mode": "lite",
         "post_success_design_audit": False,
     }
 

@@ -42,12 +42,14 @@ class SingleRunDisplay:
         model_id: str,
         thinking_level: str,
         max_turns: int,
+        scaffold_mode: str,
         enabled: bool = True,
     ):
         self.console = console
         self.model_id = model_id
         self.thinking_level = thinking_level
         self.max_turns = max_turns
+        self.scaffold_mode = scaffold_mode
         self.enabled = enabled
 
         self.start_time = time.time()
@@ -158,6 +160,7 @@ class SingleRunDisplay:
         line.append(self.model_id, style="bold")
         line.append(f"  thinking={self.thinking_level}", style="dim")
         line.append(f"  max_turns={self.max_turns}", style="dim")
+        line.append(f"  scaffold={self.scaffold_mode}", style="dim")
         self.console.print(line)
 
     def stop(self):

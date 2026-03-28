@@ -13,6 +13,7 @@ from agent.prompts import normalize_sdk_package
 from agent.runner import run_from_input
 from agent.tools import build_initial_user_content, resolve_image_path
 from cli.common import add_data_root_argument
+from sdk._profiles import DEFAULT_SCAFFOLD_MODE, normalize_scaffold_mode
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
 from storage.dataset_workflow import (
@@ -277,6 +278,7 @@ def _run_single_category_workflow(
     max_turns: int,
     system_prompt_path: str,
     sdk_package: str,
+    scaffold_mode: str,
     design_audit: bool,
     dataset_id: str | None,
     record_id: str | None,
@@ -318,6 +320,7 @@ def _run_single_category_workflow(
             max_turns=max_turns,
             system_prompt_path=system_prompt_path,
             sdk_package=sdk_package,
+            scaffold_mode=scaffold_mode,
             sdk_docs_mode="full",
             post_success_design_audit=design_audit,
             collection="dataset",
@@ -691,6 +694,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="SDK package to use for prompt selection, scaffolding, and compilation.",
     )
     run_single.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=("lite", "strict"),
+        help="Scaffold variant to seed for the run.",
+    )
+    run_single.add_argument(
         "--design-audit",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -825,6 +834,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run a tracked dataset batch CSV spec into canonical records and a batch run cache entry.",
     )
     run_batch.add_argument("spec", help="CSV spec path, typically under data/batch_specs/.")
+    run_batch.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=("lite", "strict"),
+        help="Default scaffold variant for rows that do not set scaffold_mode in the CSV.",
+    )
     run_batch.add_argument(
         "--row-concurrency",
         "--concurrency",
@@ -1002,6 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
         repo.ensure_layout()
         try:
             sdk_package = normalize_sdk_package(args.sdk_package)
+            scaffold_mode = normalize_scaffold_mode(args.scaffold_mode)
             record_id, dataset_id, category, search_stats = _run_single_category_workflow(
                 repo,
                 datasets,
@@ -1014,6 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_turns=args.max_turns,
                 system_prompt_path=args.system_prompt_path,
                 sdk_package=sdk_package,
+                scaffold_mode=scaffold_mode,
                 design_audit=args.design_audit,
                 dataset_id=args.dataset_id,
                 record_id=args.record_id,
@@ -1305,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.row_concurrency,
                 local_work_concurrency=args.subprocess_concurrency,
                 system_prompt_path=args.system_prompt_path,
+                scaffold_mode=args.scaffold_mode,
                 qc_blurb_path=args.qc_blurb,
                 post_success_design_audit=args.design_audit,
                 resume=args.resume,

@@ -10,6 +10,7 @@ from agent.prompts import normalize_sdk_package
 from agent.runner import create_workbench_draft_record, rerun_record_in_place
 from agent.tools import resolve_image_path
 from cli.common import add_data_root_argument
+from sdk._profiles import DEFAULT_SCAFFOLD_MODE, normalize_scaffold_mode
 from storage.collections import CollectionStore
 from storage.models import WorkbenchCollection
 from storage.queries import StorageQueries
@@ -101,6 +102,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="SDK package metadata to attach to the draft record.",
     )
     init_record.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=("lite", "strict"),
+        help="Scaffold variant to store in the draft and use for later reruns.",
+    )
+    init_record.add_argument(
         "--design-audit",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -146,6 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sdk-package",
         default=None,
         help="Optional SDK package override for this rerun.",
+    )
+    rerun.add_argument(
+        "--scaffold-mode",
+        default=None,
+        choices=("lite", "strict"),
+        help="Optional scaffold-mode override for this rerun.",
     )
     rerun.add_argument(
         "--design-audit",
@@ -203,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_turns=args.max_turns,
                 system_prompt_path=args.system_prompt_path,
                 sdk_package=args.sdk_package,
+                scaffold_mode=args.scaffold_mode,
                 openai_reasoning_summary=args.openai_reasoning_summary,
                 post_success_design_audit=args.design_audit,
                 label=args.label,
@@ -241,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
             sdk_package = (
                 normalize_sdk_package(args.sdk_package) if args.sdk_package is not None else None
             )
+            scaffold_mode = (
+                normalize_scaffold_mode(args.scaffold_mode)
+                if args.scaffold_mode is not None
+                else None
+            )
         except ValueError as exc:
             print(str(exc))
             return 1
@@ -252,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 model_id=args.model_id,
                 thinking_level=args.thinking_level,
                 sdk_package=sdk_package,
+                scaffold_mode=scaffold_mode,
                 post_success_design_audit=args.design_audit,
             )
         )
