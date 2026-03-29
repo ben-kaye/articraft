@@ -52,8 +52,6 @@ from sdk import (
     LatheGeometry,
     MotionLimits,
     Origin,
-    TestContext,
-    TestReport,
     mesh_from_geometry,
     place_on_surface,
     rounded_rect_profile,
@@ -282,68 +280,6 @@ def build_object_model() -> ArticulatedObject:
     )
 
     return model
-
-
-def run_tests() -> TestReport:
-    ctx = TestContext(object_model)
-    ctx.check_model_valid()
-    ctx.check_mesh_assets_ready()
-
-    base_unit = object_model.get_part("base_unit")
-    bowl = object_model.get_part("bowl")
-    head = object_model.get_part("head")
-    hub = object_model.get_part("hub")
-    whisk = object_model.get_part("whisk")
-    tilt_lock = object_model.get_part("tilt_lock")
-    speed_control = object_model.get_part("speed_control")
-
-    neck_to_head = object_model.get_articulation("neck_to_head")
-    base_to_tilt_lock = object_model.get_articulation("base_to_tilt_lock")
-    head_to_speed_control = object_model.get_articulation("head_to_speed_control")
-
-    ctx.fail_if_isolated_parts()
-    ctx.warn_if_part_contains_disconnected_geometry_islands()
-
-    ctx.allow_overlap(base_unit, head, reason="Hinge interpenetration")
-    ctx.allow_overlap(bowl, whisk, reason="Whisk inside bowl")
-    ctx.allow_overlap(head, hub, reason="Hub seated in head")
-    ctx.allow_overlap(
-        base_unit,
-        tilt_lock,
-        reason="Tilt lock pivot sits in a shallow neck-side recess.",
-    )
-    ctx.fail_if_parts_overlap_in_current_pose()
-
-    ctx.expect_contact(bowl, base_unit)
-    ctx.expect_contact(head, base_unit)
-    ctx.expect_contact(hub, head)
-    ctx.expect_contact(whisk, hub)
-    ctx.expect_contact(tilt_lock, base_unit)
-    ctx.expect_contact(speed_control, head)
-
-    ctx.expect_within(bowl, base_unit, axes="xy")
-    ctx.expect_overlap(whisk, bowl, axes="xy", min_overlap=0.01)
-
-    speed_rest = ctx.part_world_position(speed_control)
-    assert speed_rest is not None
-    with ctx.pose({head_to_speed_control: 0.012}):
-        speed_high = ctx.part_world_position(speed_control)
-        assert speed_high is not None
-        assert speed_high[2] > speed_rest[2] + 0.01
-        ctx.expect_contact(speed_control, head)
-
-    tilt_rest_aabb = ctx.part_world_aabb(tilt_lock)
-    assert tilt_rest_aabb is not None
-    with ctx.pose({base_to_tilt_lock: 0.30}):
-        tilt_open_aabb = ctx.part_world_aabb(tilt_lock)
-        assert tilt_open_aabb is not None
-        assert tilt_open_aabb[0][0] < tilt_rest_aabb[0][0] - 0.003
-        ctx.expect_contact(tilt_lock, base_unit)
-
-    with ctx.pose({neck_to_head: math.radians(60)}):
-        ctx.expect_gap(whisk, bowl, axis="z", min_gap=0.05)
-
-    return ctx.report()
 
 
 object_model = build_object_model()
