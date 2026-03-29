@@ -192,7 +192,11 @@ export type ViewerSelection =
 
 export type SourceFilter = "workbench" | "dataset";
 export type BrowserTab = SourceFilter | "staging";
-export type TimeFilter = "any" | "24h" | "7d" | "30d" | "90d";
+export type TimeFilterPoint = "1y" | "180d" | "90d" | "60d" | "30d" | "14d" | "7d" | "3d" | "24h" | "12h" | "6h" | "1h";
+export type TimeFilter = {
+  oldest: TimeFilterPoint | null;
+  newest: TimeFilterPoint | null;
+};
 export type CostFilter = {
   min: number | null;
   max: number | null;
@@ -214,6 +218,7 @@ export type ViewerState = {
   sourceFilter: SourceFilter;
   timeFilter: TimeFilter;
   modelFilter: string | null;
+  sdkFilter: string | null;
   categoryFilters: string[];
   costFilter: CostFilter;
   ratingFilter: RatingFilter;
@@ -234,6 +239,7 @@ export type ViewerAction =
         sourceFilter: SourceFilter;
         timeFilter: TimeFilter;
         modelFilter: string | null;
+        sdkFilter: string | null;
         categoryFilters: string[];
         costFilter: CostFilter;
         ratingFilter: RatingFilter;
@@ -254,6 +260,7 @@ export type ViewerAction =
   | { type: "SET_SOURCE_FILTER"; payload: SourceFilter }
   | { type: "SET_TIME_FILTER"; payload: TimeFilter }
   | { type: "SET_MODEL_FILTER"; payload: string | null }
+  | { type: "SET_SDK_FILTER"; payload: string | null }
   | { type: "SET_CATEGORY_FILTERS"; payload: string[] }
   | { type: "SET_COST_FILTER"; payload: CostFilter }
   | { type: "SET_RATING_FILTER"; payload: RatingFilter }

@@ -10,8 +10,15 @@ import {
 } from "recharts";
 
 import { formatCost } from "@/lib/dashboard-stats";
-import type { SupercategoryOption } from "@/lib/types";
+import type { DatasetEntry, SupercategoryOption, TimeFilter } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   ChartContainer,
   type ChartConfig,
@@ -24,6 +31,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  pillClass,
+  TIME_DURATIONS,
+  STAR_SLIDER_MIN,
+  STAR_SLIDER_MAX,
+  type CostBounds,
+  DashboardTimeFilter,
+  DashboardStarsFilter,
+  DashboardCostFilter,
+} from "@/components/dashboard/dashboard-filters";
 
 type CategoryStats = {
   count: number;
@@ -35,6 +52,7 @@ type CategoryStats = {
 type SupercategoriesSectionProps = {
   categoryStats: Record<string, CategoryStats>;
   supercategories: SupercategoryOption[];
+  datasetEntries?: DatasetEntry[];
 };
 
 const HEAD_CLASSES = "h-8 px-3 text-[10px] font-medium uppercase tracking-[0.06em] text-[var(--text-quaternary)]";
@@ -55,6 +73,10 @@ const PALETTE = [
   "#22c55e",
   "#2563eb",
 ];
+
+/* ---------------------------------------------------------------------------
+ * Data types & computation
+ * --------------------------------------------------------------------------- */
 
 type SupercategoryRow = {
   slug: string;
@@ -196,12 +218,83 @@ function CustomTooltip({
 export function SupercategoriesSection({
   categoryStats,
   supercategories,
+  datasetEntries,
 }: SupercategoriesSectionProps): JSX.Element | null {
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
 
+  // --- local filter state ---
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>({ oldest: null, newest: null });
+  const [starsFilter, setStarsFilter] = useState<[number, number]>([STAR_SLIDER_MIN, STAR_SLIDER_MAX]);
+  const [costFilter, setCostFilter] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
+  const [sdkFilter, setSdkFilter] = useState<string | null>(null);
+
+  const timeFilterActive = timeFilter.oldest != null || timeFilter.newest != null;
+  const starsFilterActive = starsFilter[0] !== STAR_SLIDER_MIN || starsFilter[1] !== STAR_SLIDER_MAX;
+  const costFilterActive = costFilter.min != null || costFilter.max != null;
+  const sdkFilterActive = sdkFilter !== null;
+  const anyFilterActive = timeFilterActive || starsFilterActive || costFilterActive || sdkFilterActive;
+
+  // Compute which categories pass the time filter using dataset_entries
+  const timeSlugs = useMemo<Set<string> | null>(() => {
+    if (!timeFilterActive || !datasetEntries) return null;
+    const now = Date.now();
+    const maxAge = timeFilter.oldest ? TIME_DURATIONS[timeFilter.oldest] : null;
+    const minAge = timeFilter.newest ? TIME_DURATIONS[timeFilter.newest] : null;
+    const slugs = new Set<string>();
+    for (const entry of datasetEntries) {
+      const ts = entry.record?.created_at ? new Date(entry.record.created_at).getTime() : 0;
+      if (!ts) continue;
+      const age = now - ts;
+      if (maxAge != null && age > maxAge) continue;
+      if (minAge != null && age < minAge) continue;
+      slugs.add(entry.category_slug);
+    }
+    return slugs;
+  }, [timeFilterActive, timeFilter, datasetEntries]);
+
+  // Available SDK values from category stats
+  const availableSdks = useMemo(() => {
+    return Array.from(
+      new Set(
+        Object.values(categoryStats)
+          .map((s) => s.sdk_package)
+          .filter((v): v is string => Boolean(v)),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+  }, [categoryStats]);
+
+  // Cost bounds across all categories
+  const categoryCostBounds = useMemo<CostBounds | null>(() => {
+    const costs = Object.values(categoryStats)
+      .map((s) => s.average_cost_usd)
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    if (costs.length === 0) return null;
+    return { min: Math.min(...costs), max: Math.max(...costs) };
+  }, [categoryStats]);
+
+  // Apply filters to category stats
+  const filteredCategoryStats = useMemo(() => {
+    const result: Record<string, CategoryStats> = {};
+    for (const [slug, stats] of Object.entries(categoryStats)) {
+      if (timeSlugs && !timeSlugs.has(slug)) continue;
+      if (sdkFilter && stats.sdk_package !== sdkFilter) continue;
+      if (starsFilterActive) {
+        if (stats.average_rating == null) continue;
+        if (stats.average_rating < starsFilter[0] || stats.average_rating > starsFilter[1]) continue;
+      }
+      if (costFilterActive) {
+        if (stats.average_cost_usd == null) continue;
+        if (costFilter.min != null && stats.average_cost_usd < costFilter.min) continue;
+        if (costFilter.max != null && stats.average_cost_usd > costFilter.max) continue;
+      }
+      result[slug] = stats;
+    }
+    return result;
+  }, [categoryStats, timeSlugs, sdkFilter, starsFilter, starsFilterActive, costFilter, costFilterActive]);
+
   const rows = useMemo(
-    () => computeRows(supercategories, categoryStats),
-    [supercategories, categoryStats],
+    () => computeRows(supercategories, filteredCategoryStats),
+    [supercategories, filteredCategoryStats],
   );
 
   const totalRecords = useMemo(
@@ -233,7 +326,13 @@ export function SupercategoriesSection({
     [displayRows, activeSlug],
   );
 
-  if (displayRows.length === 0) return null;
+  // Only bail if the unfiltered data has no supercategories at all
+  const unfilteredRows = useMemo(
+    () => computeRows(supercategories, categoryStats),
+    [supercategories, categoryStats],
+  );
+  const hasAnyData = unfilteredRows.some((row) => row.recordCount > 0);
+  if (!hasAnyData) return null;
 
   return (
     <section>
@@ -247,6 +346,48 @@ export function SupercategoriesSection({
       </div>
 
       <div className="rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] p-4">
+        {/* --- filter bar --- */}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <DashboardStarsFilter value={starsFilter} onChange={setStarsFilter} />
+          <DashboardTimeFilter value={timeFilter} onChange={setTimeFilter} />
+          <DashboardCostFilter bounds={categoryCostBounds} value={costFilter} onChange={setCostFilter} />
+
+          {availableSdks.length > 1 ? (
+            <Select value={sdkFilter ?? "all"} onValueChange={(v) => setSdkFilter(v === "all" ? null : v)}>
+              <SelectTrigger size="sm" className={cn(pillClass(sdkFilterActive), "h-6")}>
+                <SelectValue placeholder="All SDKs" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All SDKs</SelectItem>
+                {availableSdks.map((sdk) => (
+                  <SelectItem key={sdk} value={sdk}>
+                    <span className="truncate font-mono text-[10px]">{sdk}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          {anyFilterActive ? (
+            <button
+              type="button"
+              onClick={() => {
+                setTimeFilter({ oldest: null, newest: null });
+                setStarsFilter([STAR_SLIDER_MIN, STAR_SLIDER_MAX]);
+                setCostFilter({ min: null, max: null });
+                setSdkFilter(null);
+              }}
+              className="h-6 px-2 text-[10px] text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]"
+            >
+              Clear all
+            </button>
+          ) : null}
+        </div>
+        {displayRows.length === 0 ? (
+          <div className="py-8 text-center text-[11px] text-[var(--text-quaternary)]">
+            No supercategories match the current filters
+          </div>
+        ) : (
         <div
           className="flex flex-col gap-4 md:flex-row"
           onMouseLeave={() => setActiveSlug(null)}
@@ -397,6 +538,7 @@ export function SupercategoriesSection({
             </Table>
           </div>
         </div>
+        )}
       </div>
     </section>
   );

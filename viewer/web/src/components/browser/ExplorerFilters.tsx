@@ -15,13 +15,61 @@ import {
 } from "@/components/ui/select";
 import { cn, formatCategoryLabel } from "@/lib/utils";
 
-const timeOptions: Array<{ value: TimeFilter; label: string }> = [
-  { value: "any", label: "Any time" },
-  { value: "24h", label: "Last 24h" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
-  { value: "90d", label: "Last 90 days" },
+import type { TimeFilterPoint } from "@/lib/types";
+
+const TIME_STEPS: Array<{ value: TimeFilterPoint | null; label: string }> = [
+  { value: null, label: "All time" },
+  { value: "1y", label: "1 year" },
+  { value: "180d", label: "6 months" },
+  { value: "90d", label: "90 days" },
+  { value: "60d", label: "60 days" },
+  { value: "30d", label: "30 days" },
+  { value: "14d", label: "14 days" },
+  { value: "7d", label: "7 days" },
+  { value: "3d", label: "3 days" },
+  { value: "24h", label: "24 hours" },
+  { value: "12h", label: "12 hours" },
+  { value: "6h", label: "6 hours" },
+  { value: "1h", label: "1 hour" },
+  { value: null, label: "Now" },
 ];
+const TIME_OLDEST_MAX = 0;
+const TIME_NEWEST_MAX = TIME_STEPS.length - 1;
+const TIME_STEP_INDEX = new Map(TIME_STEPS.map((s, i) => [s.value, i]));
+
+const TIME_TICKS: Array<{ index: number; label: string }> = [
+  { index: 0, label: "All" },
+  { index: 3, label: "90d" },
+  { index: 5, label: "30d" },
+  { index: 7, label: "7d" },
+  { index: 9, label: "24h" },
+  { index: TIME_STEPS.length - 1, label: "Now" },
+];
+
+function timeFilterToSlider(filter: TimeFilter): [number, number] {
+  const oldest = filter.oldest ? (TIME_STEP_INDEX.get(filter.oldest) ?? TIME_OLDEST_MAX) : TIME_OLDEST_MAX;
+  const newest = filter.newest ? (TIME_STEP_INDEX.get(filter.newest) ?? TIME_NEWEST_MAX) : TIME_NEWEST_MAX;
+  return [oldest, newest];
+}
+
+function sliderToTimeFilter(values: [number, number]): TimeFilter {
+  const oldestStep = TIME_STEPS[values[0]];
+  const newestStep = TIME_STEPS[values[1]];
+  return {
+    oldest: values[0] === TIME_OLDEST_MAX ? null : oldestStep?.value ?? null,
+    newest: values[1] === TIME_NEWEST_MAX ? null : newestStep?.value ?? null,
+  };
+}
+
+function timeFilterLabel(filter: TimeFilter): string {
+  if (!filter.oldest && !filter.newest) return "Any time";
+  const oldestLabel = filter.oldest ? (TIME_STEPS.find((s) => s.value === filter.oldest)?.label ?? filter.oldest) : null;
+  const newestLabel = filter.newest ? (TIME_STEPS.find((s) => s.value === filter.newest)?.label ?? filter.newest) : null;
+  if (oldestLabel && newestLabel) return `${newestLabel} – ${oldestLabel} ago`;
+  if (oldestLabel) return `Last ${oldestLabel}`;
+  if (newestLabel) return `Older than ${newestLabel}`;
+  return "Any time";
+}
 
 const ratingOptions: Array<{ value: RatingFilterValue; label: string }> = [
   { value: "5", label: "5 stars" },
@@ -335,6 +383,160 @@ function costTriggerLabel(bounds: CostBounds | null, costFilter: CostFilter): st
   return `${formatCostValue(min)} to ${formatCostValue(max)}`;
 }
 
+function TimeRangeFilter({
+  value,
+  onChange,
+}: {
+  value: TimeFilter;
+  onChange: (nextValue: TimeFilter) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [popoverPosition, setPopoverPosition] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const hasActiveFilter = value.oldest != null || value.newest != null;
+  const sliderValue = timeFilterToSlider(value);
+
+  useEffect(() => {
+    if (!open || !triggerRef.current) {
+      return;
+    }
+
+    const updatePosition = () => {
+      if (!triggerRef.current) {
+        return;
+      }
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPopoverPosition({
+        top: rect.bottom + 6,
+        left: rect.left,
+        width: Math.max(rect.width, 288),
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current) {
+        return;
+      }
+      if (event.target instanceof Node && !containerRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((current) => !current)}
+        className={cn(
+          "flex max-w-[16rem] items-center justify-between gap-2 border outline-none transition-all duration-150 hover:border-[var(--border-strong)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
+          filterTriggerClass(hasActiveFilter),
+          !hasActiveFilter && "focus-visible:border-[var(--accent)]",
+        )}
+      >
+        <span className="truncate">{timeFilterLabel(value)}</span>
+        <ChevronDown
+          className={cn(
+            "size-3 transition-transform duration-150",
+            hasActiveFilter ? "text-[var(--accent)]" : "text-[var(--text-tertiary)]",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && popoverPosition
+        ? createPortal(
+            <div
+              className="fixed z-[120] rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]"
+              style={{
+                top: popoverPosition.top,
+                left: popoverPosition.left,
+                width: popoverPosition.width,
+              }}
+            >
+              <div className="flex items-center justify-between px-2 py-1">
+                <span className="text-[10px] font-medium uppercase tracking-[0.04em] text-[var(--text-tertiary)]">Time range</span>
+                {hasActiveFilter ? (
+                  <button
+                    type="button"
+                    onClick={() => onChange({ oldest: null, newest: null })}
+                    className="text-[10px] text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="space-y-2 px-2.5 py-2">
+                <div className="text-[10px] text-[var(--text-secondary)]">
+                  {timeFilterLabel(value)}
+                </div>
+
+                <Slider
+                  min={0}
+                  max={TIME_STEPS.length - 1}
+                  step={1}
+                  minStepsBetweenThumbs={0}
+                  value={sliderValue}
+                  onValueChange={(values) => {
+                    if (values.length === 2) {
+                      onChange(sliderToTimeFilter([values[0], values[1]]));
+                    }
+                  }}
+                />
+
+                <div className="relative h-3 text-[10px] text-[var(--text-quaternary)]">
+                  {TIME_TICKS.map((tick) => (
+                    <span
+                      key={tick.index}
+                      className="absolute -translate-x-1/2"
+                      style={{ left: `${(tick.index / (TIME_STEPS.length - 1)) * 100}%` }}
+                    >
+                      {tick.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 function CostRangeFilter({
   bounds,
   costFilter,
@@ -504,7 +706,7 @@ function CostRangeFilter({
 }
 
 export function ExplorerFilters(): JSX.Element | null {
-  const { bootstrap, sourceFilter, timeFilter, modelFilter, categoryFilters, costFilter, ratingFilter, selectedRunId } =
+  const { bootstrap, sourceFilter, timeFilter, modelFilter, sdkFilter, categoryFilters, costFilter, ratingFilter, selectedRunId } =
     useViewer();
   const dispatch = useViewerDispatch();
 
@@ -524,15 +726,22 @@ export function ExplorerFilters(): JSX.Element | null {
     ).sort((left, right) => left.localeCompare(right));
   }, [sourceRecords]);
 
+  const availableSdks = useMemo(() => {
+    return Array.from(
+      new Set(sourceRecords.map((record) => record.sdk_package).filter((value): value is string => Boolean(value))),
+    ).sort((left, right) => left.localeCompare(right));
+  }, [sourceRecords]);
+
   const availableCostBounds = useMemo(
     () => getCostBounds(sourceRecords, selectedRunId),
     [selectedRunId, sourceRecords],
   );
 
   const costFilterActive = costFilter.min != null || costFilter.max != null;
-  const timeFilterActive = timeFilter !== "any";
+  const timeFilterActive = timeFilter.oldest != null || timeFilter.newest != null;
   const ratingFilterActive = ratingFilter.length > 0;
   const modelFilterActive = modelFilter !== null;
+  const sdkFilterActive = sdkFilter !== null;
   const categoryFilterActive = sourceFilter === "dataset" && categoryFilters.length > 0;
 
   const availableCategories = useMemo(() => {
@@ -604,6 +813,7 @@ export function ExplorerFilters(): JSX.Element | null {
     costFilterActive ||
     ratingFilterActive ||
     modelFilterActive ||
+    sdkFilterActive ||
     categoryFilterActive;
 
   return (
@@ -616,10 +826,11 @@ export function ExplorerFilters(): JSX.Element | null {
             variant="ghost"
             size="sm"
             onClick={() => {
-              dispatch({ type: "SET_TIME_FILTER", payload: "any" });
+              dispatch({ type: "SET_TIME_FILTER", payload: { oldest: null, newest: null } });
               dispatch({ type: "SET_COST_FILTER", payload: { min: null, max: null } });
               dispatch({ type: "SET_RATING_FILTER", payload: [] });
               dispatch({ type: "SET_MODEL_FILTER", payload: null });
+              dispatch({ type: "SET_SDK_FILTER", payload: null });
               dispatch({ type: "SET_CATEGORY_FILTERS", payload: [] });
             }}
             className="h-5 px-1.5 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
@@ -630,18 +841,10 @@ export function ExplorerFilters(): JSX.Element | null {
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        <Select value={timeFilter} onValueChange={(value) => dispatch({ type: "SET_TIME_FILTER", payload: value as TimeFilter })}>
-          <SelectTrigger size="sm" className={filterTriggerClass(timeFilterActive)}>
-            <SelectValue placeholder="Any time" />
-          </SelectTrigger>
-          <SelectContent>
-            {timeOptions.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <TimeRangeFilter
+          value={timeFilter}
+          onChange={(nextValue) => dispatch({ type: "SET_TIME_FILTER", payload: nextValue })}
+        />
 
         <CostRangeFilter
           bounds={availableCostBounds}
@@ -680,6 +883,30 @@ export function ExplorerFilters(): JSX.Element | null {
             ))}
           </SelectContent>
         </Select>
+
+        {availableSdks.length > 1 ? (
+          <Select
+            value={sdkFilter ?? "all"}
+            onValueChange={(value) =>
+              dispatch({
+                type: "SET_SDK_FILTER",
+                payload: value === "all" ? null : value,
+              })
+            }
+          >
+            <SelectTrigger size="sm" className={filterTriggerClass(sdkFilterActive)}>
+              <SelectValue placeholder="All SDKs" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All SDKs</SelectItem>
+              {availableSdks.map((sdk) => (
+                <SelectItem key={sdk} value={sdk}>
+                  <span className="truncate font-mono text-[11px]">{sdk}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
 
         {sourceFilter === "dataset" && availableCategories.length > 0 ? (
           <MultiSelectFilter

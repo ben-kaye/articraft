@@ -12,6 +12,7 @@ import type {
   RatingFilter,
   RunDetail,
   StagingEntry,
+  TimeFilter,
   ViewerBootstrap,
 } from "@/lib/types";
 
@@ -70,7 +71,7 @@ export async function searchRecords(params: {
   query: string;
   source: "workbench" | "dataset";
   runId: string | null;
-  timeFilter: "any" | "24h" | "7d" | "30d" | "90d";
+  timeFilter: TimeFilter;
   modelFilter: string | null;
   categoryFilters: string[];
   costFilter: CostFilter;
@@ -83,8 +84,8 @@ export async function searchRecords(params: {
   if (params.runId) {
     searchParams.set("run_id", params.runId);
   }
-  if (params.timeFilter !== "any") {
-    searchParams.set("time", params.timeFilter);
+  if (params.timeFilter.oldest) {
+    searchParams.set("time", params.timeFilter.oldest);
   }
   if (params.modelFilter) {
     searchParams.set("model", params.modelFilter);
