@@ -2,9 +2,16 @@ import { useCallback, useState, useMemo, type JSX } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, Download, Search } from "lucide-react";
 
 import { formatCost } from "@/lib/dashboard-stats";
-import { formatCategoryLabel } from "@/lib/utils";
-import type { SupercategoryOption } from "@/lib/types";
+import { formatCategoryLabel, cn } from "@/lib/utils";
+import type { DatasetEntry, SupercategoryOption, TimeFilter } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -13,6 +20,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  pillClass,
+  TIME_DURATIONS,
+  STAR_SLIDER_MIN,
+  STAR_SLIDER_MAX,
+  type CostBounds,
+  DashboardTimeFilter,
+  DashboardStarsFilter,
+  DashboardCostFilter,
+} from "@/components/dashboard/dashboard-filters";
 
 type CategoryStats = {
   count: number;
@@ -24,6 +41,7 @@ type CategoryStats = {
 type CategoriesSectionProps = {
   categoryStats: Record<string, CategoryStats>;
   supercategories?: SupercategoryOption[];
+  datasetEntries?: DatasetEntry[];
 };
 
 type SortKey = "category" | "sdk_package" | "count" | "average_rating" | "average_cost_usd";
@@ -193,15 +211,85 @@ function CategoryTableRows({
   );
 }
 
-export function CategoriesSection({ categoryStats, supercategories }: CategoriesSectionProps): JSX.Element | null {
+export function CategoriesSection({ categoryStats, supercategories, datasetEntries }: CategoriesSectionProps): JSX.Element | null {
   const [filter, setFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("count");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
+  // --- local filter state ---
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>({ oldest: null, newest: null });
+  const [starsFilter, setStarsFilter] = useState<[number, number]>([STAR_SLIDER_MIN, STAR_SLIDER_MAX]);
+  const [costFilter, setCostFilter] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
+  const [sdkFilter, setSdkFilter] = useState<string | null>(null);
+
+  const timeFilterActive = timeFilter.oldest != null || timeFilter.newest != null;
+  const starsFilterActive = starsFilter[0] !== STAR_SLIDER_MIN || starsFilter[1] !== STAR_SLIDER_MAX;
+  const costFilterActive = costFilter.min != null || costFilter.max != null;
+  const sdkFilterActive = sdkFilter !== null;
+  const anyFilterActive = timeFilterActive || starsFilterActive || costFilterActive || sdkFilterActive;
+
+  // Compute which categories pass the time filter using dataset_entries
+  const timeSlugs = useMemo<Set<string> | null>(() => {
+    if (!timeFilterActive || !datasetEntries) return null;
+    const now = Date.now();
+    const maxAge = timeFilter.oldest ? TIME_DURATIONS[timeFilter.oldest] : null;
+    const minAge = timeFilter.newest ? TIME_DURATIONS[timeFilter.newest] : null;
+    const slugs = new Set<string>();
+    for (const entry of datasetEntries) {
+      const ts = entry.record?.created_at ? new Date(entry.record.created_at).getTime() : 0;
+      if (!ts) continue;
+      const age = now - ts;
+      if (maxAge != null && age > maxAge) continue;
+      if (minAge != null && age < minAge) continue;
+      slugs.add(entry.category_slug);
+    }
+    return slugs;
+  }, [timeFilterActive, timeFilter, datasetEntries]);
+
+  // Available SDK values from category stats
+  const availableSdks = useMemo(() => {
+    return Array.from(
+      new Set(
+        Object.values(categoryStats)
+          .map((s) => s.sdk_package)
+          .filter((v): v is string => Boolean(v)),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
+  }, [categoryStats]);
+
+  // Cost bounds across all categories
+  const categoryCostBounds = useMemo<CostBounds | null>(() => {
+    const costs = Object.values(categoryStats)
+      .map((s) => s.average_cost_usd)
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    if (costs.length === 0) return null;
+    return { min: Math.min(...costs), max: Math.max(...costs) };
+  }, [categoryStats]);
+
+  // Apply dimension filters to category stats
+  const filteredCategoryStats = useMemo(() => {
+    const result: Record<string, CategoryStats> = {};
+    for (const [slug, stats] of Object.entries(categoryStats)) {
+      if (timeSlugs && !timeSlugs.has(slug)) continue;
+      if (sdkFilter && stats.sdk_package !== sdkFilter) continue;
+      if (starsFilterActive) {
+        if (stats.average_rating == null) continue;
+        if (stats.average_rating < starsFilter[0] || stats.average_rating > starsFilter[1]) continue;
+      }
+      if (costFilterActive) {
+        if (stats.average_cost_usd == null) continue;
+        if (costFilter.min != null && stats.average_cost_usd < costFilter.min) continue;
+        if (costFilter.max != null && stats.average_cost_usd > costFilter.max) continue;
+      }
+      result[slug] = stats;
+    }
+    return result;
+  }, [categoryStats, timeSlugs, sdkFilter, starsFilter, starsFilterActive, costFilter, costFilterActive]);
+
   const allEntries = useMemo(
-    () => Object.entries(categoryStats) as CategoryRow[],
-    [categoryStats],
+    () => Object.entries(filteredCategoryStats) as CategoryRow[],
+    [filteredCategoryStats],
   );
 
   const allSorted = useMemo(
@@ -251,7 +339,10 @@ export function CategoriesSection({ categoryStats, supercategories }: Categories
     );
   }, [filtered, hasSupercategories, supercategories, sortKey, sortDirection]);
 
-  if (allSorted.length === 0) return null;
+  // Total unfiltered count for the header counter
+  const unfilteredCount = Object.keys(categoryStats).length;
+
+  if (unfilteredCount === 0) return null;
 
   function toggleSort(nextSortKey: SortKey): void {
     if (nextSortKey === sortKey) {
@@ -294,9 +385,9 @@ export function CategoriesSection({ categoryStats, supercategories }: Categories
         </h2>
         <div className="flex items-center gap-2">
           <span className="text-[10px] tabular-nums text-[var(--text-quaternary)]">
-            {filtered.length === allSorted.length
-              ? `${allSorted.length}`
-              : `${filtered.length} / ${allSorted.length}`}
+            {filtered.length === unfilteredCount
+              ? `${unfilteredCount}`
+              : `${filtered.length} / ${unfilteredCount}`}
           </span>
           <button
             type="button"
@@ -309,18 +400,60 @@ export function CategoriesSection({ categoryStats, supercategories }: Categories
         </div>
       </div>
       <div className="rounded-md border border-[var(--border-default)] bg-[var(--surface-0)]">
-        {allSorted.length > 12 ? (
-          <div className="flex items-center gap-2 border-b border-[var(--border-default)] px-3 py-1.5">
-            <Search className="size-3 shrink-0 text-[var(--text-quaternary)]" />
-            <input
-              type="text"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter categories..."
-              className="h-6 w-full bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-quaternary)] focus:outline-none"
-            />
-          </div>
-        ) : null}
+        {/* --- filter bar --- */}
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--border-default)] px-3 py-1.5">
+          <DashboardStarsFilter value={starsFilter} onChange={setStarsFilter} />
+          <DashboardTimeFilter value={timeFilter} onChange={setTimeFilter} />
+          <DashboardCostFilter bounds={categoryCostBounds} value={costFilter} onChange={setCostFilter} />
+
+          {availableSdks.length > 1 ? (
+            <Select value={sdkFilter ?? "all"} onValueChange={(v) => setSdkFilter(v === "all" ? null : v)}>
+              <SelectTrigger size="sm" className={cn(pillClass(sdkFilterActive), "h-6")}>
+                <SelectValue placeholder="All SDKs" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All SDKs</SelectItem>
+                {availableSdks.map((sdk) => (
+                  <SelectItem key={sdk} value={sdk}>
+                    <span className="truncate font-mono text-[10px]">{sdk}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          {anyFilterActive ? (
+            <button
+              type="button"
+              onClick={() => {
+                setTimeFilter({ oldest: null, newest: null });
+                setStarsFilter([STAR_SLIDER_MIN, STAR_SLIDER_MAX]);
+                setCostFilter({ min: null, max: null });
+                setSdkFilter(null);
+              }}
+              className="h-6 px-2 text-[10px] text-[var(--text-tertiary)] transition-colors hover:text-[var(--text-secondary)]"
+            >
+              Clear all
+            </button>
+          ) : null}
+
+          {/* spacer pushes search to the right */}
+          <div className="flex-1" />
+
+          {unfilteredCount > 12 ? (
+            <div className="flex items-center gap-1.5">
+              <Search className="size-3 shrink-0 text-[var(--text-quaternary)]" />
+              <input
+                type="text"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter categories..."
+                className="h-6 w-36 bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-quaternary)] focus:outline-none"
+              />
+            </div>
+          ) : null}
+        </div>
+
         <div className="custom-scrollbar max-h-[320px] overflow-y-auto">
           {filtered.length === 0 ? (
             <div className="px-4 py-3">

@@ -56,7 +56,6 @@ import math
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    AssetContext,
     Box,
     Cylinder,
     ExtrudeGeometry,
@@ -69,8 +68,6 @@ from sdk import (
     place_on_surface,
     rounded_rect_profile,
 )
-
-ASSETS = AssetContext.from_script(__file__)
 
 
 def _add_quad(geom: MeshGeometry, a: int, b: int, c: int, d: int) -> None:
@@ -208,7 +205,7 @@ def _write_white_key_mesh(
         cap=True,
         closed=True,
     )
-    return mesh_from_geometry(geom, ASSETS.mesh_path(mesh_name))
+    return mesh_from_geometry(geom, mesh_name)
 
 
 def _build_black_key_outline(
@@ -278,11 +275,11 @@ def _write_black_key_mesh(mesh_name: str):
         cap=True,
         closed=True,
     )
-    return mesh_from_geometry(geom, ASSETS.mesh_path(mesh_name))
+    return mesh_from_geometry(geom, mesh_name)
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="midi_keyboard", assets=ASSETS)
+    model = ArticulatedObject(name="midi_keyboard")
 
     body = model.material("body_charcoal", rgba=(0.17, 0.18, 0.20, 1.0))
     deck = model.material("deck_black", rgba=(0.10, 0.11, 0.12, 1.0))
@@ -297,7 +294,7 @@ def build_object_model() -> ArticulatedObject:
     chassis = model.part("chassis")
     rear_housing_mesh = mesh_from_geometry(
         _build_rear_housing_mesh(),
-        ASSETS.mesh_path("midi_keyboard_rear_housing.obj"),
+        "midi_keyboard_rear_housing",
     )
     rear_housing = chassis.visual(rear_housing_mesh, material=body, name="rear_housing")
     chassis.visual(
@@ -365,7 +362,7 @@ def build_object_model() -> ArticulatedObject:
         cache_key = (left_relief, right_relief)
         white_key_mesh = white_key_mesh_cache.get(cache_key)
         if white_key_mesh is None:
-            variant_name = f"white_key_{int(left_relief)}{int(right_relief)}.obj"
+            variant_name = f"white_key_{int(left_relief)}{int(right_relief)}"
             white_key_mesh = _write_white_key_mesh(
                 variant_name,
                 width=white_key_width * 0.92,
@@ -404,7 +401,7 @@ def build_object_model() -> ArticulatedObject:
             ),
         )
 
-    black_key_mesh = _write_black_key_mesh("midi_black_key.obj")
+    black_key_mesh = _write_black_key_mesh("midi_black_key")
     for visual_index, white_index in enumerate(sorted(black_key_positions)):
         key_center_x = (white_key_centers[white_index] + white_key_centers[white_index + 1]) / 2.0
         black_key_part = model.part(f"black_key_{visual_index}_part")
@@ -472,7 +469,6 @@ def build_object_model() -> ArticulatedObject:
                 rear_housing,
                 point_hint=point_hint,
                 clearance=clearance,
-                asset_root=ASSETS.asset_root,
                 prefer_collisions=False,
                 child_prefer_collisions=False,
             ),

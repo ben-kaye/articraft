@@ -3,7 +3,6 @@ from .v0 import (
     ArticulatedObject,
     Articulation,
     ArticulationType,
-    AssetContext,
     Box,
     BoxGeometry,
     BufferGeometry,
@@ -52,6 +51,7 @@ from .v0 import (
     boolean_union,
     cut_opening_on_face,
     mesh_from_geometry,
+    mesh_from_input,
     part_local_aabb,
     partition_shell,
     place_on_face,
@@ -82,7 +82,6 @@ from .v0 import (
 __all__ = [
     "SDKError",
     "ValidationError",
-    "AssetContext",
     "ArticulatedObject",
     "Part",
     "Articulation",
@@ -125,6 +124,7 @@ __all__ = [
     "tube_from_spline_points",
     "sweep_profile_along_spline",
     "mesh_from_geometry",
+    "mesh_from_input",
     "LoftSection",
     "LoftTessellation",
     "SectionLoftSpec",
@@ -159,3 +159,17 @@ __all__ = [
     "wrap_profile_onto_surface",
     "wrap_mesh_onto_surface",
 ]
+
+
+def __getattr__(name: str):
+    if name == "AssetContext":
+        from . import v0 as _v0
+
+        value = getattr(_v0, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

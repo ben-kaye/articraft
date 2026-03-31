@@ -1,5 +1,5 @@
 from .articulated_object import ArticulatedObject
-from .assets import AssetContext
+from .assets import mesh_from_input
 from .cadquery import (
     CadQueryMeshExport,
     cadquery_local_aabb,
@@ -7,7 +7,6 @@ from .cadquery import (
     export_cadquery_mesh,
     mesh_components_from_cadquery,
     mesh_from_cadquery,
-    save_cadquery_obj,
     tessellate_cadquery,
 )
 from .errors import SDKError, ValidationError
@@ -77,14 +76,13 @@ __all__ = [
     "JointType",
     "Limit",
     "Dynamics",
-    "AssetContext",
     "CadQueryMeshExport",
     "cadquery_local_aabb",
     "export_cadquery_components",
     "export_cadquery_mesh",
     "mesh_components_from_cadquery",
+    "mesh_from_input",
     "tessellate_cadquery",
-    "save_cadquery_obj",
     "mesh_from_cadquery",
     "ArticulatedObject",
     "TestContext",
@@ -143,6 +141,16 @@ def __getattr__(name: str):
         value = getattr(_gears, name)
         globals()[name] = value
         return value
+    if name == "AssetContext":
+        from .assets import AssetContext
+
+        globals()[name] = AssetContext
+        return AssetContext
+    if name == "save_cadquery_obj":
+        from .cadquery import save_cadquery_obj
+
+        globals()[name] = save_cadquery_obj
+        return save_cadquery_obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

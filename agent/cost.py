@@ -5,8 +5,11 @@ Cost tracking and calculation for LLM API usage.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+MAX_COST_ENV_VAR = "ARTICRAFT_MAX_COST_USD"
 
 
 GEMINI_FLASH_PRICING: dict[str, float] = {
@@ -217,3 +220,23 @@ def pricing_for_provider_model(provider: str, model_id: str) -> dict[str, float]
     ):
         return OPENAI_GPT_5_3_CODEX_PRICING
     return None
+
+
+def parse_max_cost_usd(value: object, *, label: str = "max_cost_usd") -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        amount = float(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {label}: {value!r}") from exc
+    if amount <= 0:
+        raise ValueError(f"{label} must be > 0")
+    return amount
+
+
+def max_cost_usd_from_env(env: dict[str, str] | None = None) -> float | None:
+    values = os.environ if env is None else env
+    return parse_max_cost_usd(values.get(MAX_COST_ENV_VAR), label=MAX_COST_ENV_VAR)

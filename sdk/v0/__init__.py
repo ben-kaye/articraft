@@ -1,5 +1,5 @@
 from .articulated_object import ArticulatedObject
-from .assets import AssetContext
+from .assets import mesh_from_input
 from .errors import SDKError, ValidationError
 from .geometry_scale import scale_geometry_to_size
 from .mesh import (
@@ -87,7 +87,6 @@ from .types import (
 __all__ = [
     "SDKError",
     "ValidationError",
-    "AssetContext",
     "scale_geometry_to_size",
     "MeshGeometry",
     "WirePath",
@@ -116,6 +115,7 @@ __all__ = [
     "tube_from_spline_points",
     "sweep_profile_along_spline",
     "mesh_from_geometry",
+    "mesh_from_input",
     "LoftSection",
     "LoftTessellation",
     "SectionLoftSpec",
@@ -164,3 +164,16 @@ __all__ = [
     "Sphere",
     "Visual",
 ]
+
+
+def __getattr__(name: str):
+    if name == "AssetContext":
+        from .assets import AssetContext
+
+        globals()[name] = AssetContext
+        return AssetContext
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

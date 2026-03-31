@@ -143,6 +143,14 @@ def _within_category_filters(category_slug: str | None, filter_values: list[str]
     return category_slug in {value for value in filter_values if value}
 
 
+def _within_author_filters(author: str | None, filter_values: list[str] | None) -> bool:
+    if not filter_values:
+        return True
+    if not author:
+        return False
+    return author in {value.strip() for value in filter_values if value and value.strip()}
+
+
 def _collapse_text(value: str) -> str:
     return " ".join(value.split())
 
@@ -672,6 +680,10 @@ class ViewerStore:
             title=str(display.get("title") or record_id),
             prompt_preview=str(display.get("prompt_preview") or ""),
             rating=_coerce_rating(record.get("rating")),
+            secondary_rating=_coerce_rating(record.get("secondary_rating")),
+            author=_coerce_string(record.get("author")),
+            rated_by=_coerce_string(record.get("rated_by")),
+            secondary_rated_by=_coerce_string(record.get("secondary_rated_by")),
             created_at=record.get("created_at"),
             updated_at=record.get("updated_at"),
             sdk_package=record.get("sdk_package"),
@@ -1088,6 +1100,7 @@ class ViewerStore:
         run_id: str | None = None,
         time_filter: str | None = None,
         model_filter: str | None = None,
+        author_filters: list[str] | None = None,
         category_filters: list[str] | None = None,
         cost_min: float | None = None,
         cost_max: float | None = None,
@@ -1113,6 +1126,8 @@ class ViewerStore:
             if not _within_time_filter(summary.created_at, time_filter):
                 continue
             if model_filter and summary.model_id != model_filter:
+                continue
+            if not _within_author_filters(summary.author, author_filters):
                 continue
             if not _within_category_filters(summary.category_slug, category_filters):
                 continue

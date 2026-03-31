@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sdk import (
     ArticulatedObject,
     ArticulationType,
     Box,
+    Mesh,
     MotionLimits,
     Origin,
     Sphere,
@@ -12,6 +15,45 @@ from sdk import (
     TestContext as SDKTestContext,
 )
 from sdk._core.v0.geometry_qc import find_unsupported_parts
+
+
+def _write_disconnected_boxes_obj(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    centers = ((0.0, 0.0, 0.0), (0.45, 0.0, 0.0))
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+    cube_faces = (
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 4, 5),
+        (0, 5, 1),
+        (1, 5, 6),
+        (1, 6, 2),
+        (2, 6, 7),
+        (2, 7, 3),
+        (3, 7, 4),
+        (3, 4, 0),
+    )
+    for center_x, center_y, center_z in centers:
+        base_index = len(vertices) + 1
+        vertices.extend(
+            [
+                (center_x - 0.05, center_y - 0.05, center_z - 0.05),
+                (center_x + 0.05, center_y - 0.05, center_z - 0.05),
+                (center_x + 0.05, center_y + 0.05, center_z - 0.05),
+                (center_x - 0.05, center_y + 0.05, center_z - 0.05),
+                (center_x - 0.05, center_y - 0.05, center_z + 0.05),
+                (center_x + 0.05, center_y - 0.05, center_z + 0.05),
+                (center_x + 0.05, center_y + 0.05, center_z + 0.05),
+                (center_x - 0.05, center_y + 0.05, center_z + 0.05),
+            ]
+        )
+        faces.extend(tuple(base_index + idx for idx in face) for face in cube_faces)
+    lines = [f"v {x} {y} {z}" for x, y, z in vertices]
+    lines.extend(f"f {a} {b} {c}" for a, b, c in faces)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _build_joint_origin_model(*, joint_z: float) -> ArticulatedObject:
@@ -305,6 +347,33 @@ def _build_nested_parts_model() -> ArticulatedObject:
     return model
 
 
+def _build_mesh_connectivity_model(tmp_path: Path) -> ArticulatedObject:
+    mesh_path = tmp_path / "assets" / "meshes" / "frame.obj"
+    _write_disconnected_boxes_obj(mesh_path)
+
+    model = ArticulatedObject(name="mesh_connectivity")
+    frame = model.part("frame")
+    frame.visual(Mesh(filename=mesh_path.as_posix()), origin=Origin(), name="frame_body")
+    return model
+
+
+def _build_mesh_overlap_model(tmp_path: Path) -> ArticulatedObject:
+    mesh_path = tmp_path / "assets" / "meshes" / "frame.obj"
+    _write_disconnected_boxes_obj(mesh_path)
+
+    model = ArticulatedObject(name="mesh_overlap")
+    base = model.part("base")
+    base.visual(Mesh(filename=mesh_path.as_posix()), origin=Origin(), name="frame_body")
+
+    child = model.part("child")
+    child.visual(
+        Box((0.12, 0.12, 0.12)),
+        origin=Origin(xyz=(0.45, 0.0, 0.0)),
+        name="child_box",
+    )
+    return model
+
+
 def test_articulation_origin_tolerance_is_truncated_to_three_decimals() -> None:
     ctx = SDKTestContext(_build_joint_origin_model(joint_z=0.115))
 
@@ -383,6 +452,32 @@ def test_warn_if_part_contains_disconnected_geometry_islands_uses_exact_geometry
     assert report.checks == ("warn_if_part_contains_disconnected_geometry_islands(tol=1e-06)",)
     assert len(report.warnings) == 1
     assert "connected=1/2" in report.warnings[0]
+
+
+def test_warn_if_part_contains_disconnected_geometry_islands_records_mesh_component_warning(
+    tmp_path: Path,
+) -> None:
+    ctx = SDKTestContext(_build_mesh_connectivity_model(tmp_path))
+
+    assert not ctx.warn_if_part_contains_disconnected_geometry_islands()
+
+    report = ctx.report()
+    assert report.passed
+    assert len(report.warnings) == 1
+    assert "frame_body__component_002:Mesh" in report.warnings[0]
+
+
+def test_fail_if_part_contains_disconnected_geometry_islands_records_mesh_component_failure(
+    tmp_path: Path,
+) -> None:
+    ctx = SDKTestContext(_build_mesh_connectivity_model(tmp_path))
+
+    assert not ctx.fail_if_part_contains_disconnected_geometry_islands()
+
+    report = ctx.report()
+    assert not report.passed
+    assert len(report.failures) == 1
+    assert "frame_body__component_002:Mesh" in report.failures[0].details
 
 
 def test_fail_if_isolated_parts_fails_for_isolated_part() -> None:
@@ -568,6 +663,44 @@ def test_allow_overlap_suppresses_fail_if_parts_overlap_in_current_pose() -> Non
     assert "Overlaps detected but allowed by justification" in report.warnings[0]
 
 
+def test_allow_overlap_accepts_original_mesh_element_name_after_component_split(
+    tmp_path: Path,
+) -> None:
+    ctx = SDKTestContext(_build_mesh_overlap_model(tmp_path))
+    ctx.allow_overlap(
+        "base", "child", elem_a="frame_body", elem_b="child_box", reason="mesh contact"
+    )
+
+    assert ctx.fail_if_parts_overlap_in_current_pose(overlap_tol=0.001, overlap_volume_tol=0.0)
+
+    report = ctx.report()
+    assert report.passed
+    assert report.allowances == (
+        "allow_overlap('base', 'child', elem_a='frame_body', elem_b='child_box'): mesh contact",
+    )
+
+
+def test_allow_overlap_accepts_mesh_component_specific_name_after_component_split(
+    tmp_path: Path,
+) -> None:
+    ctx = SDKTestContext(_build_mesh_overlap_model(tmp_path))
+    ctx.allow_overlap(
+        "base",
+        "child",
+        elem_a="frame_body__component_002",
+        elem_b="child_box",
+        reason="mesh contact",
+    )
+
+    assert ctx.fail_if_parts_overlap_in_current_pose(overlap_tol=0.001, overlap_volume_tol=0.0)
+
+    report = ctx.report()
+    assert report.passed
+    assert report.allowances == (
+        "allow_overlap('base', 'child', elem_a='frame_body__component_002', elem_b='child_box'): mesh contact",
+    )
+
+
 def test_fail_if_parts_overlap_in_sampled_poses_records_failure() -> None:
     ctx = SDKTestContext(_build_overlapping_parts_model())
 
@@ -575,18 +708,14 @@ def test_fail_if_parts_overlap_in_sampled_poses_records_failure() -> None:
         max_pose_samples=8,
         overlap_tol=0.001,
         overlap_volume_tol=0.0,
+        name="sampled_clearance",
     )
 
     report = ctx.report()
     assert not report.passed
-    assert report.checks == (
-        "fail_if_parts_overlap_in_sampled_poses(samples=8,ignore_adjacent=False,ignore_fixed=True)",
-    )
+    assert report.checks == ("sampled_clearance",)
     assert len(report.failures) == 1
-    assert (
-        report.failures[0].name
-        == "fail_if_parts_overlap_in_sampled_poses(samples=8,ignore_adjacent=False,ignore_fixed=True)"
-    )
+    assert report.failures[0].name == "sampled_clearance"
     assert "Overlaps detected" in report.failures[0].details
     assert "relation=unrelated" in report.failures[0].details
 

@@ -2,7 +2,6 @@ from .v0 import (
     ArticulatedObject,
     Articulation,
     ArticulationType,
-    AssetContext,
     Box,
     CadQueryMeshExport,
     Cylinder,
@@ -29,12 +28,12 @@ from .v0 import (
     export_cadquery_mesh,
     mesh_components_from_cadquery,
     mesh_from_cadquery,
+    mesh_from_input,
     part_local_aabb,
     place_on_face,
     place_on_face_uv,
     place_on_surface,
     proud_for_flush_mount,
-    save_cadquery_obj,
     surface_frame,
     tessellate_cadquery,
     wrap_mesh_onto_surface,
@@ -62,6 +61,8 @@ _GEAR_EXPORTS = {
     "addGear",
 }
 
+_HIDDEN_COMPAT_EXPORTS = {"AssetContext", "save_cadquery_obj"}
+
 Link = Part
 Joint = Articulation
 JointType = ArticulationType
@@ -76,7 +77,6 @@ __all__ = [
     "JointType",
     "Limit",
     "Dynamics",
-    "AssetContext",
     "ArticulatedObject",
     "Part",
     "Articulation",
@@ -97,8 +97,8 @@ __all__ = [
     "export_cadquery_components",
     "export_cadquery_mesh",
     "mesh_components_from_cadquery",
+    "mesh_from_input",
     "tessellate_cadquery",
-    "save_cadquery_obj",
     "mesh_from_cadquery",
     "TestContext",
     "TestFailure",
@@ -136,7 +136,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in _GEAR_EXPORTS:
+    if name in _GEAR_EXPORTS or name in _HIDDEN_COMPAT_EXPORTS:
         from . import v0 as _v0
 
         value = getattr(_v0, name)

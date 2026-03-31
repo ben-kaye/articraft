@@ -9,7 +9,12 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from sdk._core.v0.assets import AssetContextLike, resolve_asset_context
+from sdk._core.v0.assets import (
+    AssetContextLike,
+    AssetSession,
+    get_active_asset_session,
+    resolve_asset_context,
+)
 from sdk._core.v0.types import Mesh
 from sdk._dependencies import require_cadquery
 
@@ -21,7 +26,6 @@ _CADQUERY_MESH_CACHE_VERSION = "v1"
 @dataclass(frozen=True)
 class CadQueryMeshExport:
     mesh: Mesh
-    mesh_path: Path
     local_aabb: AABB
     center_xyz: Vec3
     size_xyz: Vec3
@@ -240,6 +244,34 @@ def _resolve_export_path(
     return path
 
 
+def _looks_like_legacy_export_name(value: str | os.PathLike[str]) -> bool:
+    name = os.fspath(value)
+    if not name:
+        return False
+    if name.startswith(("assets/meshes/", "meshes/")):
+        return True
+    try:
+        path = Path(name)
+    except Exception:
+        return False
+    if path.is_absolute():
+        return True
+    return len(path.parts) > 1
+
+
+def _managed_export_session(assets: AssetContextLike | None) -> AssetSession:
+    current = get_active_asset_session(create_if_missing=False)
+    if current is not None:
+        return current
+    asset_ctx = resolve_asset_context(assets)
+    if asset_ctx is not None:
+        return AssetSession(asset_ctx.asset_root, mesh_subdir=asset_ctx.mesh_subdir)
+    session = get_active_asset_session(create_if_missing=True)
+    if session is None:
+        raise RuntimeError("Failed to create a managed asset session")
+    return session
+
+
 def _component_export_paths(
     filename: str | os.PathLike[str],
     *,
@@ -256,6 +288,18 @@ def _component_export_paths(
         path.parent / f"{stem}__component_{index:03d}{suffix}"
         for index in range(1, component_count + 1)
     ]
+
+
+def _component_export_names(
+    name: str | os.PathLike[str],
+    *,
+    component_count: int,
+) -> list[str]:
+    raw = os.fspath(name)
+    if component_count <= 1:
+        return [raw]
+    stem = Path(raw).stem if Path(raw).suffix else raw
+    return [f"{stem}__component_{index:03d}" for index in range(1, component_count + 1)]
 
 
 def _cache_root_for_export(
@@ -445,15 +489,27 @@ def cadquery_local_aabb(
 
 def export_cadquery_mesh(
     model: object,
-    filename: str | os.PathLike[str],
+    name: str | os.PathLike[str],
     *,
     assets: AssetContextLike | None = None,
     tolerance: float = 0.001,
     angular_tolerance: float = 0.1,
     unit_scale: float = 1.0,
 ) -> CadQueryMeshExport:
+    logical_name = os.fspath(name)
+    legacy_mode = _looks_like_legacy_export_name(logical_name)
     asset_ctx = resolve_asset_context(assets)
-    path = _resolve_export_path(filename, assets=asset_ctx)
+    if legacy_mode:
+        path = _resolve_export_path(logical_name, assets=asset_ctx)
+        mesh_ref = _export_friendly_mesh_filename(path.as_posix())
+        mesh_name = Path(logical_name).stem if Path(logical_name).stem else None
+        asset_owner: AssetContextLike | None = asset_ctx
+        cache_probe_path = path
+    else:
+        session = _managed_export_session(assets)
+        mesh_name = logical_name
+        asset_owner = session
+        cache_probe_path = session.mesh_path("__cadquery_cache_probe__.obj", ensure_dir=False)
     cq = _require_cadquery()
     shape = _coerce_shape(model, cq)
     cache_key = _cadquery_mesh_cache_key(
@@ -463,23 +519,7 @@ def export_cadquery_mesh(
         unit_scale=unit_scale,
         cq=cq,
     )
-    destination_metadata_path = _export_metadata_path(path)
-    destination_metadata = _read_cache_metadata(destination_metadata_path)
-    if (
-        path.exists()
-        and destination_metadata is not None
-        and destination_metadata.cache_key == cache_key
-    ):
-        local_aabb = destination_metadata.local_aabb
-        return CadQueryMeshExport(
-            mesh=Mesh(filename=_export_friendly_mesh_filename(path.as_posix())),
-            mesh_path=path,
-            local_aabb=local_aabb,
-            center_xyz=_aabb_center(local_aabb),
-            size_xyz=_aabb_size(local_aabb),
-        )
-
-    cache_root = _cache_root_for_export(path, assets=asset_ctx)
+    cache_root = _cache_root_for_export(cache_probe_path, assets=asset_owner)
     cache_mesh_path = _cache_mesh_path(cache_root, cache_key)
     cache_metadata_path = _cache_metadata_path(cache_root, cache_key)
     cached_metadata = _read_cache_metadata(cache_metadata_path)
@@ -488,41 +528,71 @@ def export_cadquery_mesh(
         and cached_metadata is not None
         and cached_metadata.cache_key == cache_key
     ):
+        metadata = cached_metadata
+    else:
+        vertices, triangles = _tessellate_cadquery_shape(
+            shape,
+            tolerance=tolerance,
+            angular_tolerance=angular_tolerance,
+            unit_scale=unit_scale,
+        )
+        _write_obj(cache_mesh_path, vertices=vertices, triangles=triangles)
+        local_aabb = _local_aabb_from_vertices(vertices)
+        metadata = _CadQueryMeshCacheMetadata(cache_key=cache_key, local_aabb=local_aabb)
+        _write_cache_metadata(cache_metadata_path, metadata)
+
+    if legacy_mode:
+        destination_metadata_path = _export_metadata_path(path)
+        destination_metadata = _read_cache_metadata(destination_metadata_path)
+        if (
+            path.exists()
+            and destination_metadata is not None
+            and destination_metadata.cache_key == cache_key
+        ):
+            local_aabb = destination_metadata.local_aabb
+            return CadQueryMeshExport(
+                mesh=Mesh(
+                    filename=mesh_ref,
+                    name=mesh_name,
+                    materialized_path=path.as_posix(),
+                ),
+                local_aabb=local_aabb,
+                center_xyz=_aabb_center(local_aabb),
+                size_xyz=_aabb_size(local_aabb),
+            )
         _copy_cached_mesh(cache_mesh_path, path)
-        _write_cache_metadata(destination_metadata_path, cached_metadata)
-        local_aabb = cached_metadata.local_aabb
+        _write_cache_metadata(destination_metadata_path, metadata)
         return CadQueryMeshExport(
-            mesh=Mesh(filename=_export_friendly_mesh_filename(path.as_posix())),
-            mesh_path=path,
-            local_aabb=local_aabb,
-            center_xyz=_aabb_center(local_aabb),
-            size_xyz=_aabb_size(local_aabb),
+            mesh=Mesh(
+                filename=mesh_ref,
+                name=mesh_name,
+                materialized_path=path.as_posix(),
+            ),
+            local_aabb=metadata.local_aabb,
+            center_xyz=_aabb_center(metadata.local_aabb),
+            size_xyz=_aabb_size(metadata.local_aabb),
         )
 
-    vertices, triangles = _tessellate_cadquery_shape(
-        shape,
-        tolerance=tolerance,
-        angular_tolerance=angular_tolerance,
-        unit_scale=unit_scale,
-    )
-    _write_obj(cache_mesh_path, vertices=vertices, triangles=triangles)
-    local_aabb = _local_aabb_from_vertices(vertices)
-    metadata = _CadQueryMeshCacheMetadata(cache_key=cache_key, local_aabb=local_aabb)
-    _write_cache_metadata(cache_metadata_path, metadata)
-    _copy_cached_mesh(cache_mesh_path, path)
-    _write_cache_metadata(destination_metadata_path, metadata)
+    info = session.register_mesh_file(logical_name, cache_mesh_path)
+    destination_metadata_path = _export_metadata_path(info.path)
+    destination_metadata = _read_cache_metadata(destination_metadata_path)
+    if destination_metadata is None or destination_metadata.cache_key != cache_key:
+        _write_cache_metadata(destination_metadata_path, metadata)
     return CadQueryMeshExport(
-        mesh=Mesh(filename=_export_friendly_mesh_filename(path.as_posix())),
-        mesh_path=path,
-        local_aabb=local_aabb,
-        center_xyz=_aabb_center(local_aabb),
-        size_xyz=_aabb_size(local_aabb),
+        mesh=Mesh(
+            filename=info.ref,
+            name=mesh_name,
+            materialized_path=info.path.as_posix(),
+        ),
+        local_aabb=metadata.local_aabb,
+        center_xyz=_aabb_center(metadata.local_aabb),
+        size_xyz=_aabb_size(metadata.local_aabb),
     )
 
 
 def save_cadquery_obj(
     model: object,
-    filename: str | os.PathLike[str],
+    name: str | os.PathLike[str],
     *,
     assets: AssetContextLike | None = None,
     tolerance: float = 0.001,
@@ -531,18 +601,21 @@ def save_cadquery_obj(
 ) -> Path:
     export = export_cadquery_mesh(
         model,
-        filename,
+        name,
         assets=assets,
         tolerance=tolerance,
         angular_tolerance=angular_tolerance,
         unit_scale=unit_scale,
     )
-    return export.mesh_path
+    materialized_path = export.mesh.materialized_path
+    if materialized_path is None:
+        raise RuntimeError("CadQuery export did not record a materialized mesh path")
+    return Path(materialized_path)
 
 
 def export_cadquery_components(
     model: object,
-    filename: str | os.PathLike[str],
+    name: str | os.PathLike[str],
     *,
     assets: AssetContextLike | None = None,
     tolerance: float = 0.001,
@@ -553,27 +626,31 @@ def export_cadquery_components(
     shapes = _coerce_shape_list(model, cq)
     if not shapes:
         raise TypeError("CadQuery model produced no exportable component shapes")
-    export_paths = _component_export_paths(
-        filename,
-        component_count=len(shapes),
-        assets=assets,
-    )
+    export_targets: list[str | Path]
+    if _looks_like_legacy_export_name(name):
+        export_targets = _component_export_paths(
+            name,
+            component_count=len(shapes),
+            assets=assets,
+        )
+    else:
+        export_targets = _component_export_names(name, component_count=len(shapes))
     return [
         export_cadquery_mesh(
             shape,
-            export_path,
-            assets=None,
+            export_target,
+            assets=assets,
             tolerance=tolerance,
             angular_tolerance=angular_tolerance,
             unit_scale=unit_scale,
         )
-        for shape, export_path in zip(shapes, export_paths, strict=True)
+        for shape, export_target in zip(shapes, export_targets, strict=True)
     ]
 
 
 def mesh_from_cadquery(
     model: object,
-    filename: str | os.PathLike[str],
+    name: str | os.PathLike[str],
     *,
     assets: AssetContextLike | None = None,
     tolerance: float = 0.001,
@@ -582,7 +659,7 @@ def mesh_from_cadquery(
 ) -> Mesh:
     export = export_cadquery_mesh(
         model,
-        filename,
+        name,
         assets=assets,
         tolerance=tolerance,
         angular_tolerance=angular_tolerance,
@@ -593,7 +670,7 @@ def mesh_from_cadquery(
 
 def mesh_components_from_cadquery(
     model: object,
-    filename: str | os.PathLike[str],
+    name: str | os.PathLike[str],
     *,
     assets: AssetContextLike | None = None,
     tolerance: float = 0.001,
@@ -604,7 +681,7 @@ def mesh_components_from_cadquery(
         export.mesh
         for export in export_cadquery_components(
             model,
-            filename,
+            name,
             assets=assets,
             tolerance=tolerance,
             angular_tolerance=angular_tolerance,

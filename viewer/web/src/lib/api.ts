@@ -7,11 +7,13 @@ import type {
   OpenRecordFolderResult,
   OpenStagingFolderResult,
   RecordRatingResponse,
+  RecordSecondaryRatingResponse,
   RecordSummary,
   RepoStats,
   RatingFilter,
   RunDetail,
   StagingEntry,
+  TimeFilter,
   ViewerBootstrap,
 } from "@/lib/types";
 
@@ -70,8 +72,9 @@ export async function searchRecords(params: {
   query: string;
   source: "workbench" | "dataset";
   runId: string | null;
-  timeFilter: "any" | "24h" | "7d" | "30d" | "90d";
+  timeFilter: TimeFilter;
   modelFilter: string | null;
+  authorFilters: string[];
   categoryFilters: string[];
   costFilter: CostFilter;
   ratingFilter: RatingFilter;
@@ -83,11 +86,14 @@ export async function searchRecords(params: {
   if (params.runId) {
     searchParams.set("run_id", params.runId);
   }
-  if (params.timeFilter !== "any") {
-    searchParams.set("time", params.timeFilter);
+  if (params.timeFilter.oldest) {
+    searchParams.set("time", params.timeFilter.oldest);
   }
   if (params.modelFilter) {
     searchParams.set("model", params.modelFilter);
+  }
+  for (const authorFilter of params.authorFilters) {
+    searchParams.append("author", authorFilter);
   }
   for (const categoryFilter of params.categoryFilters) {
     searchParams.append("category", categoryFilter);
@@ -278,4 +284,21 @@ export async function saveRecordRating(recordId: string, rating: number): Promis
     throw new Error(await readErrorMessage(response));
   }
   return (await response.json()) as RecordRatingResponse;
+}
+
+export async function saveRecordSecondaryRating(
+  recordId: string,
+  secondaryRating: number,
+): Promise<RecordSecondaryRatingResponse> {
+  const response = await fetch(`/api/records/${encodeURIComponent(recordId)}/secondary-rating`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ secondary_rating: secondaryRating }),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+  return (await response.json()) as RecordSecondaryRatingResponse;
 }

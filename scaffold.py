@@ -3,20 +3,18 @@ from __future__ import annotations
 # User code should import every SDK/stdlib symbol it uses instead of relying on
 # hidden scaffold imports.
 # >>> USER_CODE_START
-from sdk import ArticulatedObject, AssetContext, TestContext, TestReport
-
-ASSETS = AssetContext.from_script(__file__)
+from sdk import ArticulatedObject, TestContext, TestReport
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="draft_model", assets=ASSETS)
+    model = ArticulatedObject(name="draft_model")
     return model
 
 
 def run_tests() -> TestReport:
-    ctx = TestContext(object_model, asset_root=ASSETS.asset_root)
+    ctx = TestContext(object_model)
     ctx.check_model_valid()
-    ctx.check_mesh_files_exist()
+    ctx.check_mesh_assets_ready()
 
     # Preferred default QC stack:
     # 1) likely-failure grounded-component floating check for disconnected part groups

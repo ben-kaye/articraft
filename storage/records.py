@@ -62,14 +62,39 @@ class RecordStore:
     def load_record(self, record_id: str) -> dict | None:
         return self.repo.read_json(self.repo.layout.record_metadata_path(record_id))
 
-    def update_rating(self, record_id: str, rating: int) -> dict | None:
+    def _update_rating_field(
+        self,
+        record_id: str,
+        *,
+        rating_field: str,
+        rated_by_field: str,
+        rating: int,
+    ) -> dict | None:
         record = self.load_record(record_id)
         if not isinstance(record, dict):
             return None
-        record["rating"] = rating
+        record[rating_field] = rating
+        # Commit-time attribution becomes stale after a local edit, so clear it until git sync restores it.
+        record[rated_by_field] = None
         record["updated_at"] = self._utc_now()
         self.repo.write_json(self.repo.layout.record_metadata_path(record_id), record)
         return record
+
+    def update_rating(self, record_id: str, rating: int) -> dict | None:
+        return self._update_rating_field(
+            record_id,
+            rating_field="rating",
+            rated_by_field="rated_by",
+            rating=rating,
+        )
+
+    def update_secondary_rating(self, record_id: str, rating: int) -> dict | None:
+        return self._update_rating_field(
+            record_id,
+            rating_field="secondary_rating",
+            rated_by_field="secondary_rated_by",
+            rating=rating,
+        )
 
     def delete_record(self, record_id: str) -> bool:
         record_dir = self.repo.layout.record_dir(record_id)

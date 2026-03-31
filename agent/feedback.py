@@ -190,12 +190,11 @@ OVERLAP_WARNING_SPEC = SignalSpec(
     group="qc",
 )
 DISCONNECTED_GEOMETRY_SPEC = SignalSpec(
-    severity="failure",
+    severity="warning",
     kind="disconnected_geometry",
-    code="TEST_DISCONNECTED_GEOMETRY",
+    code="WARN_DISCONNECTED_GEOMETRY",
     source="tests",
     group="qc",
-    blocking=True,
 )
 ARTICULATION_ORIGIN_SPEC = SignalSpec(
     severity="warning",
@@ -532,12 +531,15 @@ def _overlap_warning_signal(parsed: ParsedTestWarning) -> CompileSignal | None:
 def _disconnected_geometry_signal(parsed: ParsedTestWarning) -> CompileSignal | None:
     if not parsed.check_name.startswith("warn_if_part_contains_disconnected_geometry_islands("):
         return None
-    summary = "Exact visual connectivity check found disconnected geometry within a part."
+    summary = (
+        "Exact visual connectivity check found disconnected geometry within a part; "
+        "this may be a real issue and should be investigated."
+    )
     if (
         parsed.detail_text
         and "disconnected geometry islands detected" not in parsed.detail_text.lower()
     ):
-        summary = "Part-geometry connectivity check reported a warning."
+        summary = "Part-geometry connectivity check reported a warning; investigate it."
     return _signal_from_spec(
         DISCONNECTED_GEOMETRY_SPEC,
         summary=summary,
@@ -779,8 +781,9 @@ def render_compile_signals(
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Failures are blocking and should be investigated. If an isolated or floating part/group is intentional because the assembly requires a gap, you may explicitly bypass it; otherwise decide judiciously whether the issue should be fixed or the representation should be rethought.",
+        "- Failures are blocking and should be investigated. If an isolated or floating part/group is intentional because the assembly requires a gap, you may explicitly bypass it; for `fail_if_parts_overlap_in_current_pose(...)`, be judicious because some overlaps are reasonable and may call for an allow-list or a better exact check rather than a geometry rewrite.",
         "- Warnings are possible issues and should not be ignored, but they are noisier than failures.",
+        "- `warn_if_part_contains_disconnected_geometry_islands(...)` can reflect a very real modeling issue. Investigate it before dismissing it as warning noise.",
         "- Before relaxing a warning-tier signal, use probe_model or exact checks to confirm whether it reflects a real issue.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",
     ]

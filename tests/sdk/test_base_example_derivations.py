@@ -34,7 +34,7 @@ def test_base_example_executes_and_passes_sdk_checks(tmp_path: Path, relative_pa
     exec(_extract_python_fence(path), namespace)
 
     object_model = namespace["object_model"]
-    assets = namespace["ASSETS"]
 
-    ctx = sdk.TestContext(object_model, asset_root=assets.asset_root)
+    ctx = sdk.TestContext(object_model)
     ctx.check_model_valid()
+    ctx.check_mesh_assets_ready()

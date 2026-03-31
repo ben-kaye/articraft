@@ -302,7 +302,7 @@ def test_compile_urdf_report_preserves_run_test_warnings_on_success(tmp_path: Pa
     assert report.signal_bundle.status == "success"
 
 
-def test_compile_urdf_report_promotes_floating_geometry_warnings_to_failures(
+def test_compile_urdf_report_preserves_disconnected_geometry_warnings_on_success(
     tmp_path: Path,
 ) -> None:
     script_path = tmp_path / "model.py"
@@ -333,11 +333,17 @@ def test_compile_urdf_report_promotes_floating_geometry_warnings_to_failures(
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="blocking_test_warning"):
-        compile_urdf_report(script_path, run_checks=True, target="full")
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert report.signal_bundle.status == "success"
+    assert report.warnings == [
+        "warn_if_part_contains_disconnected_geometry_islands(tol=1e-06): "
+        "Disconnected geometry islands detected:\npart='controls' connected=1/19"
+    ]
 
 
-def test_compile_urdf_report_keeps_disconnected_geometry_blocking_with_isolated_part_allowance(
+def test_compile_urdf_report_keeps_disconnected_geometry_as_warning_with_isolated_part_allowance(
     tmp_path: Path,
 ) -> None:
     script_path = tmp_path / "model.py"
@@ -347,8 +353,14 @@ def test_compile_urdf_report_keeps_disconnected_geometry_blocking_with_isolated_
         disconnected_base=True,
     )
 
-    with pytest.raises(RuntimeError, match="blocking_test_warning"):
-        compile_urdf_report(script_path, run_checks=True, target="full")
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert report.signal_bundle.status == "success"
+    assert any(
+        warning.startswith("warn_if_part_contains_disconnected_geometry_islands(tol=1e-06):")
+        for warning in report.warnings
+    )
 
 
 def test_compile_urdf_report_does_not_ignore_non_geometry_failures(tmp_path: Path) -> None:
@@ -480,6 +492,39 @@ def test_compile_urdf_report_rewrites_visual_obj_meshes_to_glb(tmp_path: Path) -
 
     assert "assets/meshes/part.glb" in report.urdf_xml
     assert (tmp_path / "assets" / "meshes" / "part.glb").exists()
+    assert report.signal_bundle.status == "success"
+
+
+def test_compile_urdf_report_auto_suffixes_managed_mesh_name_conflicts(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, BoxGeometry, Origin, mesh_from_geometry",
+                "",
+                "mesh_a = mesh_from_geometry(BoxGeometry((0.1, 0.1, 0.1)), 'shared_name')",
+                "mesh_b = mesh_from_geometry(BoxGeometry((0.2, 0.1, 0.1)), 'shared_name')",
+                "object_model = ArticulatedObject(name='managed_mesh_conflict')",
+                "base = object_model.part('base')",
+                "base.visual(mesh_a, origin=Origin())",
+                "base.visual(mesh_b, origin=Origin(xyz=(0.2, 0.0, 0.0)))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = compile_urdf_report(
+        script_path,
+        run_checks=False,
+        target="visual",
+        rewrite_visual_glb=False,
+    )
+
+    assert "assets/meshes/shared_name.obj" in report.urdf_xml
+    assert "assets/meshes/shared_name--" in report.urdf_xml
+    assert len(list((tmp_path / "assets" / "meshes").glob("shared_name*.obj"))) == 2
     assert report.signal_bundle.status == "success"
 
 

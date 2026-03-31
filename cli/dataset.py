@@ -8,11 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agent.cost import max_cost_usd_from_env, parse_max_cost_usd
 from agent.defaults import DEFAULT_MAX_TURNS
 from agent.prompts import normalize_sdk_package
 from agent.runner import run_from_input
 from agent.tools import build_initial_user_content, resolve_image_path
 from cli.common import add_data_root_argument
+from sdk._profiles import DEFAULT_SCAFFOLD_MODE, normalize_scaffold_mode
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
 from storage.dataset_workflow import (
@@ -42,6 +44,7 @@ from storage.dataset_workflow import (
 from storage.datasets import DatasetStore
 from storage.models import SupercategoryEntry
 from storage.queries import StorageQueries
+from storage.record_authors import sync_record_authors, sync_record_rated_by
 from storage.records import RecordStore
 from storage.repo import StorageRepo
 from storage.search import SearchIndex
@@ -275,8 +278,10 @@ def _run_single_category_workflow(
     image: str | None,
     thinking_level: str,
     max_turns: int,
+    max_cost_usd: float | None,
     system_prompt_path: str,
     sdk_package: str,
+    scaffold_mode: str,
     design_audit: bool,
     dataset_id: str | None,
     record_id: str | None,
@@ -316,8 +321,10 @@ def _run_single_category_workflow(
             model_id=model_id,
             thinking_level=thinking_level,
             max_turns=max_turns,
+            max_cost_usd=max_cost_usd,
             system_prompt_path=system_prompt_path,
             sdk_package=sdk_package,
+            scaffold_mode=scaffold_mode,
             sdk_docs_mode="full",
             post_success_design_audit=design_audit,
             collection="dataset",
@@ -681,6 +688,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max-turns cap for the generation run.",
     )
     run_single.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help="Optional per-run USD budget. Stops after the first response that pushes cumulative spend above this threshold.",
+    )
+    run_single.add_argument(
         "--system-prompt-path",
         default="designer_system_prompt.txt",
         help="System prompt file to use for the generation run.",
@@ -689,6 +702,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sdk-package",
         default="sdk",
         help="SDK package to use for prompt selection, scaffolding, and compilation.",
+    )
+    run_single.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=("lite", "strict"),
+        help="Scaffold variant to seed for the run.",
     )
     run_single.add_argument(
         "--design-audit",
@@ -810,6 +829,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("validate", help="Validate record-local dataset entries.")
     subparsers.add_parser(
+        "sync-authors",
+        help="Populate record.json author fields from the git author that added each record's model.py.",
+    )
+    subparsers.add_parser(
+        "sync-rated-by",
+        help="Populate record.json rated_by fields from the git author that last edited the rating line.",
+    )
+    subparsers.add_parser(
         "build-manifest", help="Build the derived dataset manifest under data/cache/manifests/."
     )
     prune_cache = subparsers.add_parser(
@@ -825,6 +852,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run a tracked dataset batch CSV spec into canonical records and a batch run cache entry.",
     )
     run_batch.add_argument("spec", help="CSV spec path, typically under data/batch_specs/.")
+    run_batch.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=("lite", "strict"),
+        help="Default scaffold variant for rows that do not set scaffold_mode in the CSV.",
+    )
     run_batch.add_argument(
         "--row-concurrency",
         "--concurrency",
@@ -849,6 +882,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--system-prompt-path",
         default="designer_system_prompt.txt",
         help="System prompt file to use for all rows in the batch.",
+    )
+    run_batch.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help="Default per-row USD budget for rows whose CSV max_cost_usd cell is blank.",
     )
     run_batch.add_argument(
         "--qc-blurb",
@@ -1002,6 +1041,12 @@ def main(argv: list[str] | None = None) -> int:
         repo.ensure_layout()
         try:
             sdk_package = normalize_sdk_package(args.sdk_package)
+            scaffold_mode = normalize_scaffold_mode(args.scaffold_mode)
+            max_cost_usd = (
+                parse_max_cost_usd(args.max_cost_usd, label="--max-cost-usd")
+                if args.max_cost_usd is not None
+                else max_cost_usd_from_env()
+            )
             record_id, dataset_id, category, search_stats = _run_single_category_workflow(
                 repo,
                 datasets,
@@ -1012,8 +1057,10 @@ def main(argv: list[str] | None = None) -> int:
                 image=args.image,
                 thinking_level=args.thinking_level,
                 max_turns=args.max_turns,
+                max_cost_usd=max_cost_usd,
                 system_prompt_path=args.system_prompt_path,
                 sdk_package=sdk_package,
+                scaffold_mode=scaffold_mode,
                 design_audit=args.design_audit,
                 dataset_id=args.dataset_id,
                 record_id=args.record_id,
@@ -1275,6 +1322,64 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Dataset valid: entries={len(datasets.list_entries())}")
         return 0
 
+    if args.command == "sync-authors":
+        repo.ensure_layout()
+        try:
+            summary = sync_record_authors(repo)
+        except RuntimeError as exc:
+            print(f"Failed to sync record authors: {exc}")
+            return 1
+        print(
+            "Synced record authors "
+            f"scanned={summary.scanned} "
+            f"updated={len(summary.updated_record_ids)} "
+            f"already_set={len(summary.already_set_record_ids)} "
+            f"missing_record={len(summary.missing_record_ids)} "
+            f"missing_model={len(summary.missing_model_record_ids)} "
+            f"missing_git_author={len(summary.missing_git_author_record_ids)}"
+        )
+        if summary.updated_record_ids:
+            print(f"sample_updated_record_ids={', '.join(summary.updated_record_ids[:10])}")
+        else:
+            print("sample_updated_record_ids=(none)")
+        if summary.missing_git_author_record_ids:
+            print(
+                "sample_missing_git_author_record_ids="
+                f"{', '.join(summary.missing_git_author_record_ids[:10])}"
+            )
+        else:
+            print("sample_missing_git_author_record_ids=(none)")
+        return 0
+
+    if args.command == "sync-rated-by":
+        repo.ensure_layout()
+        try:
+            summary = sync_record_rated_by(repo)
+        except RuntimeError as exc:
+            print(f"Failed to sync record rated_by fields: {exc}")
+            return 1
+        print(
+            "Synced record rated_by "
+            f"scanned={summary.scanned} "
+            f"updated={len(summary.updated_record_ids)} "
+            f"unchanged={len(summary.unchanged_record_ids)} "
+            f"missing_record={len(summary.missing_record_ids)} "
+            f"missing_rating_line={len(summary.missing_rating_line_record_ids)} "
+            f"missing_git_author={len(summary.missing_git_author_record_ids)}"
+        )
+        if summary.updated_record_ids:
+            print(f"sample_updated_record_ids={', '.join(summary.updated_record_ids[:10])}")
+        else:
+            print("sample_updated_record_ids=(none)")
+        if summary.missing_git_author_record_ids:
+            print(
+                "sample_missing_git_author_record_ids="
+                f"{', '.join(summary.missing_git_author_record_ids[:10])}"
+            )
+        else:
+            print("sample_missing_git_author_record_ids=(none)")
+        return 0
+
     if args.command == "build-manifest":
         repo.ensure_layout()
         manifest = datasets.write_dataset_manifest()
@@ -1305,6 +1410,8 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.row_concurrency,
                 local_work_concurrency=args.subprocess_concurrency,
                 system_prompt_path=args.system_prompt_path,
+                max_cost_usd=args.max_cost_usd,
+                scaffold_mode=args.scaffold_mode,
                 qc_blurb_path=args.qc_blurb,
                 post_success_design_audit=args.design_audit,
                 resume=args.resume,

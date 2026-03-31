@@ -58,7 +58,6 @@ import math
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    AssetContext,
     Box,
     Cylinder,
     Inertial,
@@ -67,8 +66,6 @@ from sdk import (
     mesh_from_geometry,
     tube_from_spline_points,
 )
-
-ASSETS = AssetContext.from_script(__file__)
 
 
 def _midpoint(
@@ -216,8 +213,6 @@ def _add_triangular_truss(
 
 
 def _build_hook_mesh():
-    mesh_dir = ASSETS.mesh_dir
-    mesh_dir.mkdir(parents=True, exist_ok=True)
     hook_geom = tube_from_spline_points(
         [
             (0.018, 0.0, -0.125),
@@ -233,11 +228,11 @@ def _build_hook_mesh():
         radial_segments=18,
         up_hint=(0.0, 1.0, 0.0),
     )
-    return mesh_from_geometry(hook_geom, mesh_dir / "tower_crane_hook.obj")
+    return mesh_from_geometry(hook_geom, "tower_crane_hook")
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="tower_crane", assets=ASSETS)
+    model = ArticulatedObject(name="tower_crane")
 
     tower_yellow = model.material("tower_yellow", rgba=(0.89, 0.75, 0.16, 1.0))
     dark_grey = model.material("dark_grey", rgba=(0.22, 0.24, 0.27, 1.0))

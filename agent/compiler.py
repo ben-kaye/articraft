@@ -19,6 +19,7 @@ from agent.feedback import build_compile_signal_bundle
 from agent.models import CompileReport, CompileSignalBundle
 from agent.mp_utils import get_mp_context
 from agent.prompts import normalize_sdk_package
+from sdk._core.v0.assets import activate_asset_session, asset_session_for_script
 from sdk._dependencies import ensure_sdk_hybrid_dependencies
 
 logger = logging.getLogger(__name__)
@@ -48,10 +49,6 @@ _GEOMETRY_QC_MARKERS = (
 )
 _HYBRID_BASE_SDK_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+sdk\s+import\b|import\s+sdk\b)", re.MULTILINE
-)
-_BLOCKING_TEST_WARNING_MARKERS = (
-    "disconnected geometry islands detected",
-    "floating geometry",
 )
 
 
@@ -210,6 +207,27 @@ def _nonblocking_geometry_qc_warning_from_exception(exc: BaseException) -> str |
 
 
 def compile_urdf_report(
+    script_path: Path,
+    *,
+    sdk_package: str = "sdk",
+    run_checks: bool = True,
+    ignore_geom_qc: bool = False,
+    target: str = "full",
+    rewrite_visual_glb: bool | None = None,
+) -> CompileReport:
+    session = asset_session_for_script(script_path)
+    with activate_asset_session(session):
+        return _compile_urdf_report_impl(
+            script_path,
+            sdk_package=sdk_package,
+            run_checks=run_checks,
+            ignore_geom_qc=ignore_geom_qc,
+            target=target,
+            rewrite_visual_glb=rewrite_visual_glb,
+        )
+
+
+def _compile_urdf_report_impl(
     script_path: Path,
     *,
     sdk_package: str = "sdk",
@@ -387,9 +405,9 @@ def _warn_cwd_relative_asset_paths(*, script_path: Path, warnings: list[str]) ->
     warnings.append(
         "URDF compile warning (non-blocking): cwd-relative asset paths detected.\n"
         + "\n".join(f"- {item}" for item in findings)
-        + "\nUse script-local paths instead: `ASSETS = AssetContext.from_script(__file__)`, "
-        "`MESH_DIR = ASSETS.mesh_dir`, and set `ArticulatedObject(..., assets=ASSETS)` "
-        "or `TestContext(..., asset_root=ASSETS.asset_root)`."
+        + "\nUse managed mesh helpers instead: `mesh_from_geometry(..., name='part_name')`, "
+        "`mesh_from_input('existing_mesh')`, `mesh_from_cadquery(..., name='part_name')`, "
+        "and `TestContext(object_model)`."
     )
 
 
@@ -930,23 +948,6 @@ def _run_required_tests(
             lines.append(f"- {name}: {details}")
         if len(list(failures)) > 10:
             lines.append(f"... ({len(list(failures)) - 10} more)")
-        exc = ValueError("\n".join(lines))
-        setattr(exc, "test_report", report)
-        raise exc
-
-    warnings = tuple(str(item) for item in getattr(report, "warnings", ()) or ())
-    blocking_warnings = [
-        warning
-        for warning in warnings
-        if any(marker in warning.lower() for marker in _BLOCKING_TEST_WARNING_MARKERS)
-    ]
-    if blocking_warnings:
-        lines = ["URDF tests failed:"]
-        for warning in blocking_warnings[:10]:
-            summary = warning.splitlines()[0]
-            lines.append(f"- blocking_test_warning: {summary}")
-        if len(blocking_warnings) > 10:
-            lines.append(f"... ({len(blocking_warnings) - 10} more)")
         exc = ValueError("\n".join(lines))
         setattr(exc, "test_report", report)
         raise exc

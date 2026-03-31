@@ -84,6 +84,47 @@ class MeshVisualAgent(FakeAgent):
         )
 
 
+class MeshVisualWithUnusedAssetsAgent(MeshVisualAgent):
+    async def run(self, user_content: object):  # type: ignore[override]
+        result = await super().run(user_content)
+        meshes_dir = self.file_path.parent / "assets" / "meshes"
+        (meshes_dir / "orphan.obj").write_text("# orphan\n", encoding="utf-8")
+        glb_dir = self.file_path.parent / "assets" / "glb"
+        glb_dir.mkdir(parents=True, exist_ok=True)
+        (glb_dir / "orphan.glb").write_bytes(b"orphan")
+        return result
+
+
+class ContextResetAgent(FakeAgent):
+    async def run(self, user_content: object):  # type: ignore[override]
+        result = await super().run(user_content)
+        result.context_reset_count = 2
+        return result
+
+
+class OverBudgetAgent(FakeAgent):
+    async def run(self, user_content: object):  # type: ignore[override]
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file_path.write_text("# over budget\n", encoding="utf-8")
+        (self.file_path.parent / "cost.json").write_text(
+            json.dumps({"total": {"costs_usd": {"total": 0.75}}}, indent=2),
+            encoding="utf-8",
+        )
+        return AgentResult(
+            success=False,
+            reason=TerminateReason.COST_LIMIT,
+            message="Cost limit exceeded after turn 2: cumulative $0.750000 exceeded limit $0.500000",
+            conversation=[{"role": "user", "content": user_content}],
+            final_code=self.file_path.read_text(encoding="utf-8"),
+            urdf_xml=None,
+            compile_warnings=[],
+            turn_count=2,
+            tool_call_count=1,
+            compile_attempt_count=0,
+            usage={"prompt_tokens": 10, "candidates_tokens": 5, "total_tokens": 15},
+        )
+
+
 def test_workbench_run_and_rerun_persist_runtime_artifacts(
     fake_agent: None,
     tmp_path: Path,
@@ -126,7 +167,7 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
         encoding="utf-8"
     ) == "<robot name='test'/>"
     assert (materialization_dir / "compile_report.json").exists()
-    assert (materialization_dir / "assets" / "meshes" / "part.obj").exists()
+    assert not (materialization_dir / "assets" / "meshes").exists()
 
     workbench_path = repo_root / "data" / "local" / "workbench.json"
     workbench = json.loads(workbench_path.read_text(encoding="utf-8"))
@@ -139,6 +180,7 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     assert len(run_dirs) == 1
     run_metadata = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
     assert run_metadata["status"] == "success"
+    assert run_metadata["settings_summary"]["scaffold_mode"] == "lite"
     results_lines = (run_dirs[0] / "results.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(results_lines) == 1
     assert json.loads(results_lines[0])["record_id"] == record_dir.name
@@ -149,8 +191,14 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     original_run_id = original_record["source"]["run_id"]
     original_created_at = original_record["created_at"]
     original_provenance = json.loads((record_dir / "provenance.json").read_text(encoding="utf-8"))
+    assert original_provenance["prompting"]["scaffold_mode"] == "lite"
     system_prompt_sha = original_provenance["prompting"]["system_prompt_sha256"]
     assert (repo_root / "data" / "system_prompts" / f"{system_prompt_sha}.txt").exists()
+    original_provenance["prompting"].pop("scaffold_mode", None)
+    (record_dir / "provenance.json").write_text(
+        json.dumps(original_provenance, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     workbench["entries"][0]["archived"] = True
     workbench_path.write_text(json.dumps(workbench, indent=2) + "\n", encoding="utf-8")
@@ -176,9 +224,11 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     record_dirs = [path for path in records_root.iterdir() if path.is_dir()]
     assert [path.name for path in record_dirs] == [record_dir.name]
     updated_record = json.loads((record_dir / "record.json").read_text(encoding="utf-8"))
+    updated_provenance = json.loads((record_dir / "provenance.json").read_text(encoding="utf-8"))
     assert updated_record["record_id"] == record_dir.name
     assert updated_record["created_at"] == original_created_at
     assert updated_record["source"]["run_id"] != original_run_id
+    assert updated_provenance["prompting"]["scaffold_mode"] == "strict"
     assert (
         (record_dir / "model.py")
         .read_text(encoding="utf-8")
@@ -196,7 +246,7 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     assert not (record_dir / "traces" / "stale.txt").exists()
     assert not (record_dir / "assets" / "glb").exists()
     assert not (record_dir / "assets" / "viewer").exists()
-    assert (materialization_dir / "assets" / "meshes" / "part.obj").exists()
+    assert not (materialization_dir / "assets" / "meshes").exists()
 
     workbench = json.loads(workbench_path.read_text(encoding="utf-8"))
     assert len(workbench["entries"]) == 1
@@ -213,6 +263,57 @@ def test_workbench_run_and_rerun_persist_runtime_artifacts(
     assert len(latest_results) == 1
     assert json.loads(latest_results[0])["record_id"] == record_dir.name
     assert not (run_dirs[-1] / "staging" / record_dir.name).exists()
+
+
+def test_over_budget_run_persists_failed_run_metadata_without_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runner, "ArticraftAgent", OverBudgetAgent)
+
+    exit_code = asyncio.run(
+        runner.run_from_input(
+            "make an expensive model",
+            prompt_text="make an expensive model",
+            display_prompt="make an expensive model",
+            repo_root=tmp_path,
+            image_path=None,
+            provider="openai",
+            thinking_level="high",
+            max_turns=30,
+            max_cost_usd=0.5,
+            system_prompt_path=DESIGNER_PROMPT_NAME,
+            sdk_package="sdk",
+            sdk_docs_mode="full",
+        )
+    )
+
+    assert exit_code == 2
+    records_root = tmp_path / "data" / "records"
+    assert not records_root.exists() or list(records_root.iterdir()) == []
+
+    run_dir = next(
+        path for path in (tmp_path / "data" / "cache" / "runs").iterdir() if path.is_dir()
+    )
+    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["status"] == "failed"
+    assert run_metadata["settings_summary"]["max_cost_usd"] == 0.5
+
+    result_rows = [
+        json.loads(line)
+        for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(result_rows) == 1
+    assert "Cost limit exceeded" in result_rows[0]["message"]
+
+    staging_dirs = [path for path in (run_dir / "staging").iterdir() if path.is_dir()]
+    assert len(staging_dirs) == 1
+    assert (
+        json.loads((staging_dirs[0] / "cost.json").read_text(encoding="utf-8"))["total"][
+            "costs_usd"
+        ]["total"]
+        == 0.75
+    )
 
 
 def test_successful_run_rewrites_visual_meshes_to_glb(
@@ -251,6 +352,46 @@ def test_successful_run_rewrites_visual_meshes_to_glb(
         encoding="utf-8"
     )
     assert (materialization_dir / "assets" / "meshes" / "part.glb").exists()
+
+
+def test_successful_run_copies_only_referenced_mesh_assets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runner, "ArticraftAgent", MeshVisualWithUnusedAssetsAgent)
+
+    exit_code = asyncio.run(
+        runner.run_from_input(
+            "make a mesh part with extras",
+            prompt_text="make a mesh part with extras",
+            display_prompt="make a mesh part with extras",
+            repo_root=tmp_path,
+            image_path=None,
+            provider="openai",
+            thinking_level="high",
+            max_turns=30,
+            system_prompt_path=DESIGNER_PROMPT_NAME,
+            sdk_package="sdk",
+            sdk_docs_mode="full",
+            label=None,
+            tags=[],
+        )
+    )
+
+    assert exit_code == 0
+
+    records_root = tmp_path / "data" / "records"
+    record_dirs = [path for path in records_root.iterdir() if path.is_dir()]
+    assert len(record_dirs) == 1
+    record_dir = record_dirs[0]
+    materialization_dir = tmp_path / "data" / "cache" / "record_materialization" / record_dir.name
+
+    assert "assets/meshes/part.glb" in (materialization_dir / "model.urdf").read_text(
+        encoding="utf-8"
+    )
+    assert (materialization_dir / "assets" / "meshes" / "part.glb").exists()
+    assert not (materialization_dir / "assets" / "meshes" / "orphan.obj").exists()
+    assert not (materialization_dir / "assets" / "glb").exists()
 
 
 def test_successful_hybrid_run_keeps_visual_meshes_as_obj(

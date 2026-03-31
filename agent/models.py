@@ -12,6 +12,7 @@ class TerminateReason(StrEnum):
     GOAL_COMPLETE = "GOAL_COMPLETE"
     CODE_VALID = "CODE_VALID"
     MAX_TURNS = "MAX_TURNS"
+    COST_LIMIT = "COST_LIMIT"
     ERROR = "ERROR"
 
 

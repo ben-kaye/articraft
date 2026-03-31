@@ -17,6 +17,7 @@ from storage.datasets import DatasetStore
 from storage.models import CategoryRecord
 from storage.queries import StorageQueries
 from storage.repo import StorageRepo
+from storage.search import SearchIndex
 from viewer.api.store import ViewerStore
 
 
@@ -148,7 +149,10 @@ class FailIfRunAgent(SuccessBatchAgent):
 class RecordingBatchDisplay:
     events: list[str] = []
 
-    def __init__(self, **_: object) -> None:
+    def __init__(self, **kwargs: object) -> None:
+        scaffold_summary = kwargs.get("scaffold_summary")
+        show_row_scaffold_mode = kwargs.get("show_row_scaffold_mode")
+        type(self).events.append(f"init:{scaffold_summary}:{show_row_scaffold_mode}")
         return None
 
     def add_run(self, slug: str, prompt: str) -> None:
@@ -160,8 +164,9 @@ class RecordingBatchDisplay:
     def stop(self) -> None:
         type(self).events.append("stop")
 
-    def start_run(self, slug: str) -> None:
-        type(self).events.append(f"start_run:{slug}")
+    def start_run(self, slug: str, *, scaffold_mode: str | None = None) -> None:
+        suffix = f":{scaffold_mode}" if scaffold_mode is not None else ""
+        type(self).events.append(f"start_run:{slug}{suffix}")
 
     def update_run_progress(self, slug: str, turn: int, cost: float) -> None:
         return None
@@ -438,6 +443,110 @@ def test_build_batch_config_supports_design_audit_default_and_row_overrides(
     assert row_by_id["defaulted_row"].post_success_design_audit is False
 
 
+def test_build_batch_config_supports_max_cost_default_and_row_overrides(
+    tmp_path: Path,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "max_cost_batch.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "explicit_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "max_cost_usd": "1.25",
+                "sdk_package": "sdk",
+            },
+            {
+                "row_id": "defaulted_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make another hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency=1,
+        system_prompt_path="designer_system_prompt.txt",
+        max_cost_usd=2.5,
+        sdk_docs_mode="full",
+        qc_blurb_path=None,
+        resume=False,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    row_by_id = {row.row_id: row for row in config.rows}
+    assert config.max_cost_usd == 2.5
+    assert row_by_id["explicit_row"].max_cost_usd == 1.25
+    assert row_by_id["defaulted_row"].max_cost_usd == 2.5
+
+
+def test_build_batch_config_rejects_invalid_max_cost_usd_value(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "invalid_max_cost.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "bad_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "max_cost_usd": "0",
+                "sdk_package": "sdk",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="max_cost_usd must be > 0"):
+        batch_runner.build_batch_config(
+            repo_root=tmp_path,
+            spec_arg=str(spec_path),
+            concurrency=1,
+            system_prompt_path="designer_system_prompt.txt",
+            sdk_docs_mode="full",
+            qc_blurb_path=None,
+            resume=False,
+            resume_policy="failed_or_pending",
+            keep_awake=False,
+            pause_file=None,
+            pause_poll_seconds=1.0,
+            keyboard_pause_enabled=False,
+        )
+
+
 def test_build_batch_config_rejects_invalid_design_audit_value(tmp_path: Path) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()
@@ -473,6 +582,110 @@ def test_build_batch_config_rejects_invalid_design_audit_value(tmp_path: Path) -
             sdk_docs_mode="full",
             qc_blurb_path=None,
             post_success_design_audit=True,
+            resume=False,
+            resume_policy="failed_or_pending",
+            keep_awake=False,
+            pause_file=None,
+            pause_poll_seconds=1.0,
+            keyboard_pause_enabled=False,
+        )
+
+
+def test_build_batch_config_supports_scaffold_mode_default_and_row_overrides(
+    tmp_path: Path,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "scaffold_mode_batch.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "strict_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+                "scaffold_mode": "strict",
+            },
+            {
+                "row_id": "defaulted_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make another hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency=1,
+        system_prompt_path="designer_system_prompt.txt",
+        scaffold_mode="lite",
+        sdk_docs_mode="full",
+        qc_blurb_path=None,
+        resume=False,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    row_by_id = {row.row_id: row for row in config.rows}
+    assert config.scaffold_mode == "lite"
+    assert row_by_id["strict_row"].scaffold_mode == "strict"
+    assert row_by_id["defaulted_row"].scaffold_mode == "lite"
+
+
+def test_build_batch_config_rejects_invalid_scaffold_mode_value(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "invalid_scaffold_mode.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "bad_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+                "scaffold_mode": "heavy",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="invalid scaffold_mode"):
+        batch_runner.build_batch_config(
+            repo_root=tmp_path,
+            spec_arg=str(spec_path),
+            concurrency=1,
+            system_prompt_path="designer_system_prompt.txt",
+            sdk_docs_mode="full",
+            qc_blurb_path=None,
             resume=False,
             resume_policy="failed_or_pending",
             keep_awake=False,
@@ -549,6 +762,274 @@ def test_run_batch_design_audit_cli_override(
     )
     assert exit_code == 0
     assert captured == [True, False]
+
+
+def test_run_batch_scaffold_mode_cli_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+    spec_path = tmp_path / "source_specs" / "scaffold_mode_cli.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "row_1",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make a hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+                "scaffold_mode": "strict",
+            },
+            {
+                "row_id": "row_2",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make another hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    captured: list[str] = []
+
+    async def fake_run_dataset_batch(config: object) -> dict[str, object]:
+        if hasattr(config, "rows"):
+            for row in getattr(config, "rows"):
+                captured.append(str(getattr(row, "scaffold_mode", "")))
+        return {
+            "run_id": "run_mocked",
+            "status": "success",
+            "prompt_count": 2,
+            "success_count": 2,
+            "failed_count": 0,
+        }
+
+    monkeypatch.setattr(batch_runner, "run_dataset_batch", fake_run_dataset_batch)
+
+    exit_code = dataset_main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "run-batch",
+            str(spec_path),
+            "--concurrency",
+            "1",
+            "--scaffold-mode",
+            "lite",
+        ]
+    )
+    assert exit_code == 0
+    assert captured == ["strict", "lite"]
+
+
+def test_run_batch_max_cost_cli_override_and_csv_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+    spec_path = tmp_path / "source_specs" / "max_cost_cli.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "row_1",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make a hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "max_cost_usd": "1.25",
+                "sdk_package": "sdk",
+            },
+            {
+                "row_id": "row_2",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make another hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_run_dataset_batch(config: object) -> dict[str, object]:
+        captured["config_max_cost_usd"] = getattr(config, "max_cost_usd", None)
+        captured["row_limits"] = [
+            getattr(row, "max_cost_usd", None) for row in getattr(config, "rows", [])
+        ]
+        return {
+            "run_id": "run_mocked",
+            "status": "success",
+            "prompt_count": 2,
+            "success_count": 2,
+            "failed_count": 0,
+        }
+
+    monkeypatch.setattr(batch_runner, "run_dataset_batch", fake_run_dataset_batch)
+
+    exit_code = dataset_main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "run-batch",
+            str(spec_path),
+            "--concurrency",
+            "1",
+            "--max-cost-usd",
+            "3.0",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["config_max_cost_usd"] == 3.0
+    assert captured["row_limits"] == [1.25, 3.0]
+
+
+def test_run_dataset_batch_continues_after_over_budget_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+    spec_path = tmp_path / "source_specs" / "over_budget_batch.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "expensive_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "expensive hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "max_cost_usd": "0.5",
+                "sdk_package": "sdk",
+            },
+            {
+                "row_id": "cheap_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "cheap hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "max_cost_usd": "0.5",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency=1,
+        system_prompt_path="designer_system_prompt.txt",
+        sdk_docs_mode="full",
+        qc_blurb_path=None,
+        resume=False,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    async def fake_execute_single_run(
+        *args: object, **kwargs: object
+    ) -> runner.RunExecutionOutcome:
+        context = kwargs["context"]
+        assert isinstance(context, runner.SingleRunContext)
+        prompt_text = str(kwargs["prompt_text"])
+        if "expensive" in prompt_text:
+            (context.staging_dir / "cost.json").write_text(
+                json.dumps({"total": {"costs_usd": {"total": 0.75}}}, indent=2),
+                encoding="utf-8",
+            )
+            return runner.RunExecutionOutcome(
+                exit_code=2,
+                run_id=context.run_id,
+                record_id=context.record_id,
+                status="failed",
+                message="Cost limit exceeded after turn 2: cumulative $0.750000 exceeded limit $0.500000",
+                staging_dir=context.staging_dir,
+                turn_count=2,
+                tool_call_count=1,
+                compile_attempt_count=0,
+                provider="openai",
+                model_id="gpt-5.4",
+                sdk_package="sdk",
+            )
+        (context.staging_dir / "cost.json").write_text(
+            json.dumps({"total": {"costs_usd": {"total": 0.1}}}, indent=2),
+            encoding="utf-8",
+        )
+        return runner.RunExecutionOutcome(
+            exit_code=0,
+            run_id=context.run_id,
+            record_id=context.record_id,
+            status="success",
+            message=None,
+            staging_dir=context.staging_dir,
+            turn_count=1,
+            tool_call_count=1,
+            compile_attempt_count=0,
+            provider="openai",
+            model_id="gpt-5.4",
+            sdk_package="sdk",
+        )
+
+    async def fake_finalize(
+        *,
+        repo: StorageRepo,
+        config: batch_runner.BatchRunConfig,
+        final_status_by_row: dict[str, str],
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(batch_runner, "_execute_single_run", fake_execute_single_run)
+    monkeypatch.setattr(batch_runner, "_finalize_batch_dataset_artifacts", fake_finalize)
+    monkeypatch.setattr(SearchIndex, "rebuild", lambda self: None)
+
+    summary = asyncio.run(batch_runner.run_dataset_batch(config))
+
+    assert summary["success_count"] == 1
+    assert summary["failed_count"] == 1
+    assert summary["status"] == "failed"
+
+    run_dir = repo.layout.run_dir(config.run_id)
+    result_rows = [
+        json.loads(line)
+        for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    result_by_row = {row["row_id"]: row for row in result_rows if row["status"] != "running"}
+    assert "Cost limit exceeded" in result_by_row["expensive_row"]["message"]
+    assert result_by_row["cheap_row"]["status"] == "success"
 
 
 def test_run_batch_persists_records_and_batch_metadata(
@@ -634,6 +1115,8 @@ def test_run_batch_persists_records_and_batch_metadata(
     assert run_payload["batch_spec_id"] == "mixed_batch"
     assert sorted(run_payload["category_slugs"]) == ["fan", "hinge"]
     assert run_payload["status"] == "success"
+    assert run_payload["settings_summary"]["scaffold_mode"] == "lite"
+    assert run_payload["settings_summary"]["scaffold_modes"] == ["lite"]
 
     result_rows = [
         json.loads(line)
@@ -650,6 +1133,10 @@ def test_run_batch_persists_records_and_batch_metadata(
     assert hinge_record["source"]["prompt_index"] == 1
     assert fan_record["source"]["row_id"] == "fan_row"
     assert fan_record["sdk_package"] == "sdk_hybrid"
+    hinge_provenance = repo.read_json(repo.layout.record_dir("rec_hinge_0001") / "provenance.json")
+    fan_provenance = repo.read_json(repo.layout.record_dir("rec_fan_0001") / "provenance.json")
+    assert hinge_provenance["prompting"]["scaffold_mode"] == "lite"
+    assert fan_provenance["prompting"]["scaffold_mode"] == "lite"
 
     queries = StorageQueries(repo)
     assert run_id in queries.list_run_ids_for_category("hinge")
@@ -965,6 +1452,71 @@ def test_run_batch_resume_reconciles_durable_success_without_rerunning(
     assert repaired_rows[0]["record_dir"] == "data/records/rec_hinge_0001"
 
 
+def test_build_batch_config_resume_treats_missing_legacy_scaffold_mode_as_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "ArticraftAgent", SuccessBatchAgent)
+    _patch_dataset_tokens(monkeypatch, "0001")
+
+    spec_path = tmp_path / "source_specs" / "legacy_scaffold_resume.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "legacy_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make a hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    first_exit_code = dataset_main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "run-batch",
+            str(spec_path),
+            "--concurrency",
+            "1",
+            "--scaffold-mode",
+            "strict",
+        ]
+    )
+    assert first_exit_code == 0
+
+    repo = StorageRepo(tmp_path)
+    run_id = next(path.name for path in repo.layout.runs_root.iterdir() if path.is_dir())
+    allocations = repo.read_json(repo.layout.run_allocations_path(run_id))
+    for row in allocations["rows"]:
+        row.pop("scaffold_mode", None)
+    repo.write_json(repo.layout.run_allocations_path(run_id), allocations)
+
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency=1,
+        system_prompt_path="designer_system_prompt.txt",
+        scaffold_mode="lite",
+        sdk_docs_mode="full",
+        qc_blurb_path=None,
+        resume=True,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    assert config.rows[0].scaffold_mode == "strict"
+
+
 def test_run_batch_resume_reruns_interrupted_running_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1093,3 +1645,65 @@ def test_run_batch_display_stops_after_finalization(
     assert finalize_indices
     stop_index = RecordingBatchDisplay.events.index("stop")
     assert stop_index > max(finalize_indices)
+
+
+def test_run_batch_display_reports_mixed_scaffold_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner, "ArticraftAgent", SuccessBatchAgent)
+    monkeypatch.setattr(batch_runner, "BatchRunDisplay", RecordingBatchDisplay)
+    _patch_dataset_tokens(monkeypatch, "0001", "0002")
+
+    spec_path = tmp_path / "source_specs" / "display_scaffold_modes.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "strict_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make a hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+                "scaffold_mode": "strict",
+            },
+            {
+                "row_id": "lite_row",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make another hinge",
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+                "max_turns": "12",
+                "sdk_package": "sdk",
+            },
+        ],
+    )
+
+    exit_code = dataset_main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "run-batch",
+            str(spec_path),
+            "--concurrency",
+            "1",
+            "--scaffold-mode",
+            "lite",
+        ]
+    )
+    assert exit_code == 0
+
+    assert any(
+        "init:default=lite rows=mixed(lite,strict):True" == event
+        for event in RecordingBatchDisplay.events
+    )
+    assert any(
+        event.startswith("start_run:rec_hinge_0001:strict")
+        for event in RecordingBatchDisplay.events
+    )

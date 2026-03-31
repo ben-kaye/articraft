@@ -17,7 +17,6 @@ Use this when:
 import cadquery as cq
 
 from sdk_hybrid import (
-    AssetContext,
     ArticulatedObject,
     ArticulationType,
     Box,
@@ -27,7 +26,7 @@ from sdk_hybrid import (
     TestReport,
     export_cadquery_mesh,
     mesh_from_cadquery,
-    save_cadquery_obj,
+    mesh_from_input,
     tessellate_cadquery,
 )
 ```
@@ -36,7 +35,6 @@ from sdk_hybrid import (
 
 - `tessellate_cadquery(...)`
 - `export_cadquery_mesh(...)`
-- `save_cadquery_obj(...)`
 - `mesh_from_cadquery(...)`
 
 ## Units
@@ -69,9 +67,7 @@ tessellate_cadquery(
 ```python
 export_cadquery_mesh(
     model: object,
-    filename,
-    *,
-    assets=None,
+    name: str,
     tolerance: float = 0.001,
     angular_tolerance: float = 0.1,
     unit_scale: float = 1.0,
@@ -81,39 +77,21 @@ export_cadquery_mesh(
 ```python
 CadQueryMeshExport(
     mesh: Mesh,
-    mesh_path: Path,
     local_aabb,
     center_xyz,
     size_xyz,
 )
 ```
 
-- Writes the OBJ, returns the `sdk.Mesh`, output path, and local bounds.
-
-### `save_cadquery_obj(...)`
-
-```python
-save_cadquery_obj(
-    model: object,
-    filename,
-    *,
-    assets=None,
-    tolerance: float = 0.001,
-    angular_tolerance: float = 0.1,
-    unit_scale: float = 1.0,
-) -> Path
-```
-
-- Writes the OBJ and returns the output path.
+- Materializes the OBJ internally and returns the managed `sdk.Mesh` plus local
+  bounds.
 
 ### `mesh_from_cadquery(...)`
 
 ```python
 mesh_from_cadquery(
     model: object,
-    filename,
-    *,
-    assets=None,
+    name: str,
     tolerance: float = 0.001,
     angular_tolerance: float = 0.1,
     unit_scale: float = 1.0,
@@ -127,9 +105,6 @@ mesh_from_cadquery(
 Use CadQuery for visible mesh authoring, then attach the result as a normal
 visual on an `ArticulatedObject` part.
 
-```python
-ASSETS = AssetContext.from_script(__file__)
-
 door_shape = (
     cq.Workplane("XY")
     .box(0.58, 0.02, 0.78)
@@ -137,7 +112,7 @@ door_shape = (
 )
 
 door = model.part("door")
-door.visual(mesh_from_cadquery(door_shape, "door.obj", assets=ASSETS))
+door.visual(mesh_from_cadquery(door_shape, "door"))
 ```
 
 ## Advice
@@ -145,8 +120,8 @@ door.visual(mesh_from_cadquery(door_shape, "door.obj", assets=ASSETS))
 - Keep joints explicit in `ArticulatedObject`. Do not try to infer URDF joints
   from CadQuery assemblies.
 - Keep inertials explicit rather than deriving them from the exported mesh.
-- Keep `assets=AssetContext.from_script(__file__)` attached to the model so
-  mesh paths resolve consistently in tests and exports.
+- Use stable logical mesh names such as `"door"` or `"left_bracket"` instead of
+  filesystem paths.
 - Be careful with repeated `faces(...).workplane()` loops in CadQuery. For
   repeated cuts or features, fixed reference planes are often more stable.
 
@@ -154,7 +129,7 @@ door.visual(mesh_from_cadquery(door_shape, "door.obj", assets=ASSETS))
 
 ```python
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject("cabinet_door", assets=ASSETS)
+    model = ArticulatedObject("cabinet_door")
 
     body = model.part("body")
     body.visual(Box((0.6, 0.3, 0.8)))
@@ -165,7 +140,7 @@ def build_object_model() -> ArticulatedObject:
         .edges("|Z").fillet(0.01)
     )
     door = model.part("door")
-    door.visual(mesh_from_cadquery(door_shape, "door.obj", assets=ASSETS))
+    door.visual(mesh_from_cadquery(door_shape, "door"))
 
     model.articulation(
         "body_to_door",

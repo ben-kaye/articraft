@@ -49,6 +49,7 @@ from agent.tools.code_region import extract_editable_code
 from agent.traces import TraceWriter
 from agent.tui.single_run import SingleRunDisplay
 from sdk._profiles import get_sdk_profile
+from sdk._profiles import normalize_scaffold_mode as _normalize_scaffold_mode
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -56,9 +57,15 @@ CONSOLE = Console()
 _FIND_EXAMPLES_SKIPPED_CONTENT = "{Skipped: full content already returned earlier in this run.}"
 
 
-def _minimal_scaffold_text(*, sdk_package: str = "sdk") -> str:
+def _minimal_scaffold_text(
+    *,
+    sdk_package: str = "sdk",
+    scaffold_mode: str = "strict",
+) -> str:
     repo_root = Path(__file__).resolve().parents[1]
-    scaffold_path = repo_root / get_sdk_profile(sdk_package).scaffold_path
+    scaffold_path = repo_root / get_sdk_profile(sdk_package).scaffold_path_for_mode(
+        _normalize_scaffold_mode(scaffold_mode)
+    )
     if not scaffold_path.exists():
         raise FileNotFoundError(f"Missing scaffold source of truth: {scaffold_path}")
     return scaffold_path.read_text(encoding="utf-8")
@@ -184,14 +191,17 @@ class ArticraftAgent:
         on_turn_start: Optional[Callable[[int], None]] = None,
         checkpoint_urdf_path: Optional[Path] = None,
         sdk_package: str = "sdk",
+        scaffold_mode: str = "lite",
         sdk_docs_mode: str = "full",
         openai_reasoning_summary: Optional[str] = "auto",
         post_success_design_audit: bool = True,
+        max_cost_usd: float | None = None,
         runtime_limits: BatchRuntimeLimits | None = None,
     ):
         self.file_path = file_path
         self.max_turns = max_turns
         self.sdk_package = _normalize_sdk_package(sdk_package)
+        self.scaffold_mode = _normalize_scaffold_mode(scaffold_mode)
         self.sdk_docs_mode = _normalize_sdk_docs_mode(sdk_docs_mode)
         self.runtime_limits = runtime_limits
         self._seen_compile_signal_sigs: set[str] = set()
@@ -235,6 +245,7 @@ class ArticraftAgent:
 
         actual_model_id = self.llm.model_id
         self.cost_tracker: Optional[CostTracker] = None
+        self.max_cost_usd = max_cost_usd
         pricing = pricing_for_provider_model(provider_norm, actual_model_id)
         if pricing:
             self.cost_tracker = CostTracker(model_id=actual_model_id, pricing=pricing)
@@ -253,6 +264,7 @@ class ArticraftAgent:
             model_id=actual_model_id,
             thinking_level=thinking_level,
             max_turns=max_turns,
+            scaffold_mode=self.scaffold_mode,
             enabled=display_enabled,
         )
 
@@ -295,11 +307,13 @@ class ArticraftAgent:
         *,
         bundle: CompileSignalBundle,
     ) -> bool:
-        if not any(signal.severity == "warning" for signal in bundle.signals):
+        warning_signals = [signal for signal in bundle.signals if signal.severity == "warning"]
+        if not warning_signals:
             return False
 
+        sticky_warning = any(signal.kind == "disconnected_geometry" for signal in warning_signals)
         sig = self._compile_signal_signature(bundle)
-        if sig in self._seen_compile_signal_sigs:
+        if not sticky_warning and sig in self._seen_compile_signal_sigs:
             return False
         self._seen_compile_signal_sigs.add(sig)
 
@@ -371,17 +385,15 @@ class ArticraftAgent:
             return False
 
         content = (
-            "Compile passed — no overlaps or structural violations remain. "
-            "Do a final design audit before concluding.\n\n"
+            "Compile passed. Do one brief final visual audit before concluding.\n\n"
             "<design_audit>\n"
-            "- Scan each part: where a crude box or cylinder stands in for something that "
-            "should be curved, tapered, or sculpted, upgrade it with lofts, sweeps, or booleans.\n"
-            "- Check the overall silhouette and proportions — do they read as the real object?\n"
-            "- Verify the prompt's defining features are prominent, not afterthoughts.\n"
-            "- Confirm materials and colors are realistic, not placeholder defaults.\n"
+            "- Focus on visual realism first: silhouette, proportions, and the prompt's defining features.\n"
+            "- Upgrade geometry only where an obvious placeholder box/cylinder should read as curved, tapered, or sculpted.\n"
+            "- Check materials and colors only if they still read as placeholder defaults.\n"
+            "- Do not add more tests or `probe_model` calls unless something looks clearly wrong or ambiguous.\n"
             "</design_audit>\n\n"
             "<instructions>\n"
-            "If any of the above are weak, revise now. Otherwise you may conclude.\n"
+            "If you see a clear visual weakness, revise it now. If the object already looks convincing, conclude immediately.\n"
             "</instructions>"
         )
         msg = {"role": "user", "content": content}
@@ -425,6 +437,16 @@ class ArticraftAgent:
             provider=self.provider,
             sdk_package=self.sdk_package,
         )
+
+    def _persist_cost_tracking(self) -> None:
+        if not self.cost_tracker:
+            return
+        try:
+            cost_path = Path(self.file_path).parent / "cost.json"
+            self.cost_tracker.save_json(cost_path)
+            logger.info("Saved cost tracking to %s", cost_path)
+        except Exception as exc:
+            logger.warning("Failed to save cost tracking: %s", exc)
 
     def _extract_tool_calls(self, message: dict) -> list[dict]:
         return message.get("tool_calls", []) if isinstance(message, dict) else []
@@ -526,7 +548,13 @@ class ArticraftAgent:
             if existing.strip():
                 return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_minimal_scaffold_text(sdk_package=self.sdk_package), encoding="utf-8")
+        path.write_text(
+            _minimal_scaffold_text(
+                sdk_package=self.sdk_package,
+                scaffold_mode=self.scaffold_mode,
+            ),
+            encoding="utf-8",
+        )
 
     def _seed_find_examples_cache_from_conversation(self, conversation: list[dict]) -> None:
         self._seen_find_example_paths = set()
@@ -873,6 +901,27 @@ class ArticraftAgent:
                 turn_cost = self.cost_tracker.add_turn(usage)
                 llm_duration = time.monotonic() - llm_start
                 self.display.add_llm_call(usage, turn_cost.total_cost, llm_duration)
+                if (
+                    self.max_cost_usd is not None
+                    and self.cost_tracker.total_breakdown.total_cost > self.max_cost_usd
+                ):
+                    total_cost = self.cost_tracker.total_breakdown.total_cost
+                    self._persist_cost_tracking()
+                    self.display.end_turn(success=False)
+                    return AgentResult(
+                        success=False,
+                        reason=TerminateReason.COST_LIMIT,
+                        message=(
+                            f"Cost limit exceeded after turn {completed_turns + 1}: "
+                            f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
+                        ),
+                        conversation=conversation,
+                        compile_warnings=list(last_compile_warnings),
+                        turn_count=completed_turns + 1,
+                        tool_call_count=tool_call_count,
+                        compile_attempt_count=compile_attempt_count,
+                        usage=usage_totals or None,
+                    )
 
             logger.info(
                 "Turn %s: %s tool calls, text_length=%s",
@@ -896,13 +945,7 @@ class ArticraftAgent:
                     except Exception:
                         pass
 
-                    if self.cost_tracker:
-                        try:
-                            cost_path = Path(self.file_path).parent / "cost.json"
-                            self.cost_tracker.save_json(cost_path)
-                            logger.info("Saved cost tracking to %s", cost_path)
-                        except Exception as exc:
-                            logger.warning("Failed to save cost tracking: %s", exc)
+                    self._persist_cost_tracking()
 
                     self.display.current_turn = completed_turns
                     self.display.end_turn(success=True)
@@ -1009,13 +1052,7 @@ class ArticraftAgent:
                 except Exception:
                     pass
 
-                if self.cost_tracker:
-                    try:
-                        cost_path = Path(self.file_path).parent / "cost.json"
-                        self.cost_tracker.save_json(cost_path)
-                        logger.info("Saved cost tracking to %s", cost_path)
-                    except Exception as exc:
-                        logger.warning("Failed to save cost tracking: %s", exc)
+                self._persist_cost_tracking()
 
                 self.display.end_turn(success=True)
                 return AgentResult(
@@ -1135,13 +1172,7 @@ class ArticraftAgent:
         except Exception:
             pass
 
-        if self.cost_tracker:
-            try:
-                cost_path = Path(self.file_path).parent / "cost.json"
-                self.cost_tracker.save_json(cost_path)
-                logger.info("Saved cost tracking to %s", cost_path)
-            except Exception as exc:
-                logger.warning("Failed to save cost tracking: %s", exc)
+        self._persist_cost_tracking()
 
         return AgentResult(
             success=False,

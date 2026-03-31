@@ -19,8 +19,10 @@ def test_runner_help_text(capsys: pytest.CaptureFixture[str]) -> None:
     assert "--design-audit" in help_text
     assert "--openai-transport {http,websocket}" in help_text
     assert "--sdk-package SDK_PACKAGE" in help_text
+    assert "--scaffold-mode {lite,strict}" in help_text
     assert "--collection {workbench,dataset}" in help_text
     assert "--dataset-id DATASET_ID" in help_text
+    assert "--max-cost-usd MAX_COST_USD" in help_text
     assert "--flash" not in help_text
     assert "--hybrid-sdk" not in help_text
     assert "--openai-reasoning-summary" not in help_text
@@ -67,13 +69,17 @@ def test_runner_accepts_openai_api_keys_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    captured: dict[str, object] = {}
+
     async def _fake_run_from_input(*args, **kwargs) -> int:  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
         return 0
 
     monkeypatch.setattr(runner, "run_from_input", _fake_run_from_input)
     monkeypatch.setattr(runner, "load_dotenv", lambda: None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEYS", "sk-first,sk-second")
+    monkeypatch.setenv("ARTICRAFT_MAX_COST_USD", "1.25")
 
     exit_code = runner.main(
         [
@@ -83,7 +89,11 @@ def test_runner_accepts_openai_api_keys_env(
             "openai",
             "--repo-root",
             str(tmp_path),
+            "--scaffold-mode",
+            "strict",
         ]
     )
 
     assert exit_code == 0
+    assert captured["scaffold_mode"] == "strict"
+    assert captured["max_cost_usd"] == 1.25

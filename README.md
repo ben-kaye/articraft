@@ -56,6 +56,12 @@ or:
 Set `GEMINI_API_KEYS` to your Gemini keys in `.env`
 ```
 
+Optional:
+
+```text
+Set `ARTICRAFT_MAX_COST_USD` to a positive per-run USD budget default in `.env`
+```
+
 ## 4. Open The Viewer Fast
 
 If you just cloned the repo and want to browse saved records in the viewer, precompile the saved records first:
@@ -105,6 +111,12 @@ just sdk=hybrid wb "Create a compact desk fan with adjustable tilt."
 just model=gpt-5.4 sdk=hybrid wb "Create a compact desk fan with adjustable tilt."
 ```
 
+To stop a run after it exceeds a USD budget, pass `max_cost_usd=...`:
+
+```bash
+just max_cost_usd=1.5 wb "Create a compact desk fan with adjustable tilt."
+```
+
 For `wb` and `wb-init`, leaving `sdk` blank uses the standard pipeline. Use `sdk=sdk` for an explicit standard override and `sdk=hybrid` for the hybrid rendering path. Record-based commands like `compile`, `compile-strict`, `compile-unsafe`, and `rerun` use the record's saved `sdk_package` unless you override them with `sdk=...`.
 
 To run a single prompt directly into a dataset category instead of the workbench, use:
@@ -124,6 +136,7 @@ uv run articraft-dataset --repo-root . run-single \
   --provider openai \
   --model-id gpt-5.4 \
   --thinking-level high \
+  --max-cost-usd 2.0 \
   --sdk-package sdk
 ```
 
@@ -156,7 +169,7 @@ data/batch_specs/<batch-id>.csv
 with the current v1 header:
 
 ```csv
-row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label,design_audit
+row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,max_cost_usd,sdk_package,scaffold_mode,label,design_audit
 ```
 
 ### 6.2 Fill the CSV
@@ -173,7 +186,9 @@ Each row is one dataset generation job.
 | `model_id` | Yes | Model to use for that row. It must agree with `provider`. |
 | `thinking_level` | Yes | Must be `low`, `med`, or `high`. |
 | `max_turns` | Yes | Positive integer turn cap for the row. |
+| `max_cost_usd` | No | Optional positive per-row USD budget. If blank, the row inherits the batch CLI flag or `ARTICRAFT_MAX_COST_USD`. |
 | `sdk_package` | Yes | Usually `sdk` or `sdk_hybrid`. |
+| `scaffold_mode` | No | Optional `lite` or `strict`. If blank, the row inherits the batch CLI default. |
 | `label` | No | Optional free-form label for your own tracking. |
 | `design_audit` | No | `true` or `false`. If blank, the row inherits the CLI default for the batch. |
 
@@ -186,9 +201,9 @@ Batch CSV v1 notes:
 Example:
 
 ```csv
-row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label,design_audit
-hinge_01,hinge,Hinge,"Create a steel door hinge with two rectangular leaves and a center pin.",openai,gpt-5.4,high,12,sdk,baseline,true
-hinge_02,hinge,Hinge,"Create a compact cabinet hinge with offset leaves and a short pin.",gemini,gemini-3-flash-preview,med,10,sdk_hybrid,hybrid,false
+row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,max_cost_usd,sdk_package,scaffold_mode,label,design_audit
+hinge_01,hinge,Hinge,"Create a steel door hinge with two rectangular leaves and a center pin.",openai,gpt-5.4,high,12,1.5,sdk,lite,baseline,true
+hinge_02,hinge,Hinge,"Create a compact cabinet hinge with offset leaves and a short pin.",gemini,gemini-3-flash-preview,med,10,,sdk_hybrid,strict,hybrid,false
 ```
 
 ### 6.3 Run the first pass
@@ -197,18 +212,21 @@ Use `uv` directly:
 
 ```bash
 uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --row-concurrency 8 --subprocess-concurrency auto
+uv run articraft-dataset --repo-root . run-batch data/batch_specs/<batch-id>.csv --row-concurrency 8 --subprocess-concurrency auto --max-cost-usd 2.0
 ```
 
 Or use the `just` wrapper:
 
 ```bash
 just row_concurrency=8 subprocess_concurrency=auto dataset-batch data/batch_specs/<batch-id>.csv
+just row_concurrency=8 subprocess_concurrency=auto max_cost_usd=2.0 dataset-batch data/batch_specs/<batch-id>.csv
 ```
 
 Useful execution controls:
 
 - `--row-concurrency`: maximum number of live batch rows at once; use `auto`, `max`, or a positive integer
 - `--subprocess-concurrency`: maximum number of compile/QC/probe subprocess-heavy operations at once; use `auto`, `max`, or a positive integer
+- `--max-cost-usd`: default per-row USD budget for rows whose `max_cost_usd` CSV cell is blank
 - `--design-audit` or `--no-design-audit`: set the batch-wide default for rows whose `design_audit` cell is blank
 
 If any row fails, the batch exits non-zero. That is expected. The normal recovery path is to fix the issue and rerun with `--resume`.
@@ -251,7 +269,7 @@ Important resume rules:
 
 - keep the CSV filename stable so the `batch_spec_id` stays the same
 - keep `row_id` stable; changing or reordering implicit row ids can break resume matching
-- by default, resume rejects spec changes for `category_slug`, `prompt`, `provider`, `model_id`, `thinking_level`, `max_turns`, `sdk_package`, and `design_audit`
+- by default, resume rejects spec changes for `category_slug`, `prompt`, `provider`, `model_id`, `thinking_level`, `max_turns`, `max_cost_usd`, `sdk_package`, `scaffold_mode`, and `design_audit`
 - if a row already produced a durable record but the cached state says `running`, resume reconciles that success instead of rerunning it
 
 You can bypass the spec-compatibility check:
@@ -268,7 +286,7 @@ just resume=true allow_resume_spec_mismatch=true dataset-batch data/batch_specs/
 
 Use `--allow-resume-spec-mismatch` only for deliberate recovery work. It forces the current CSV to reuse the prior run's row allocations even though the row definitions no longer match.
 
-This is the escape hatch for "retry the same row, but with different execution settings." A common example is raising `max_turns` for failed rows, or switching a failed row to a different `provider` and `model_id`, `thinking_level`, `sdk_package`, `prompt`, or `design_audit` setting before resuming.
+This is the escape hatch for "retry the same row, but with different execution settings." A common example is raising `max_turns` or `max_cost_usd` for failed rows, or switching a failed row to a different `provider`, `model_id`, `thinking_level`, `sdk_package`, `scaffold_mode`, `prompt`, or `design_audit` setting before resuming.
 
 Typical override workflow:
 

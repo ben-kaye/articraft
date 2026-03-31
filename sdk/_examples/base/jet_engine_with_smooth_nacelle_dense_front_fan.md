@@ -65,7 +65,6 @@ import math
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    AssetContext,
     Cylinder,
     CylinderGeometry,
     Inertial,
@@ -79,11 +78,9 @@ from sdk import (
     section_loft,
 )
 
-ASSETS = AssetContext.from_script(__file__)
-
 
 def _save_mesh(geometry: MeshGeometry, filename: str):
-    return mesh_from_geometry(geometry, ASSETS.mesh_path(filename))
+    return mesh_from_geometry(geometry, filename)
 
 
 def _merge_geometries(geometries: list[MeshGeometry]) -> MeshGeometry:
@@ -547,7 +544,7 @@ def _build_exhaust_cone_mesh() -> MeshGeometry:
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="jet_engine", assets=ASSETS)
+    model = ArticulatedObject(name="jet_engine")
 
     nacelle_paint = model.material("nacelle_paint", rgba=(0.78, 0.80, 0.84, 1.0))
     bright_metal = model.material("bright_metal", rgba=(0.62, 0.66, 0.72, 1.0))

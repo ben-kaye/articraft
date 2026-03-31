@@ -6,22 +6,38 @@ import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { RecordListItem } from "@/components/browser/RecordListItem";
 
+const TIME_DURATIONS: Record<string, number> = {
+  "1h": 1 * 60 * 60 * 1000,
+  "6h": 6 * 60 * 60 * 1000,
+  "12h": 12 * 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "3d": 3 * 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "14d": 14 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+  "60d": 60 * 24 * 60 * 60 * 1000,
+  "90d": 90 * 24 * 60 * 60 * 1000,
+  "180d": 180 * 24 * 60 * 60 * 1000,
+  "1y": 365 * 24 * 60 * 60 * 1000,
+};
+
 function withinTimeFilter(createdAt: string | null, filter: TimeFilter): boolean {
-  if (filter === "any") return true;
+  if (!filter.oldest && !filter.newest) return true;
   if (!createdAt) return false;
 
   const createdAtMs = new Date(createdAt).getTime();
   if (Number.isNaN(createdAtMs)) return false;
 
-  const now = Date.now();
-  const thresholds: Record<Exclude<TimeFilter, "any">, number> = {
-    "24h": 24 * 60 * 60 * 1000,
-    "7d": 7 * 24 * 60 * 60 * 1000,
-    "30d": 30 * 24 * 60 * 60 * 1000,
-    "90d": 90 * 24 * 60 * 60 * 1000,
-  };
-
-  return now - createdAtMs <= thresholds[filter];
+  const age = Date.now() - createdAtMs;
+  if (filter.oldest) {
+    const maxAge = TIME_DURATIONS[filter.oldest];
+    if (maxAge != null && age > maxAge) return false;
+  }
+  if (filter.newest) {
+    const minAge = TIME_DURATIONS[filter.newest];
+    if (minAge != null && age < minAge) return false;
+  }
+  return true;
 }
 
 function withinCostFilter(totalCostUsd: number | null, filter: CostFilter): boolean {
@@ -55,6 +71,8 @@ export function RecordList({ onVisibleIdsChange, onCountsChange }: RecordListPro
     sourceFilter,
     timeFilter,
     modelFilter,
+    sdkFilter,
+    authorFilters,
     categoryFilters,
     costFilter,
     ratingFilter,
@@ -113,6 +131,7 @@ export function RecordList({ onVisibleIdsChange, onCountsChange }: RecordListPro
       runId: selectedRunId,
       timeFilter,
       modelFilter,
+      authorFilters: sourceFilter === "dataset" ? authorFilters : [],
       categoryFilters: sourceFilter === "dataset" ? categoryFilters : [],
       costFilter,
       ratingFilter,
@@ -134,7 +153,7 @@ export function RecordList({ onVisibleIdsChange, onCountsChange }: RecordListPro
     return () => {
       cancelled = true;
     };
-  }, [categoryFilters, costFilter, deferredSearchQuery, modelFilter, ratingFilter, selectedRunId, sourceFilter, timeFilter]);
+  }, [authorFilters, categoryFilters, costFilter, deferredSearchQuery, modelFilter, ratingFilter, selectedRunId, sourceFilter, timeFilter]);
 
   const records = useMemo(() => {
     if (!bootstrap) return [];
@@ -150,12 +169,20 @@ export function RecordList({ onVisibleIdsChange, onCountsChange }: RecordListPro
       list = list.filter((record) => record.category_slug && selectedCategories.has(record.category_slug));
     }
 
+    if (sourceFilter === "dataset" && authorFilters.length > 0) {
+      const selectedAuthors = new Set(authorFilters);
+      list = list.filter((record) => record.author && selectedAuthors.has(record.author));
+    }
+
     if (!deferredSearchQuery) {
       list = list.filter((record) => withinTimeFilter(record.created_at, timeFilter));
       list = list.filter((record) => withinCostFilter(record.total_cost_usd, costFilter));
       list = list.filter((record) => withinRatingFilter(record.rating, ratingFilter));
       if (modelFilter) {
         list = list.filter((record) => record.model_id === modelFilter);
+      }
+      if (sdkFilter) {
+        list = list.filter((record) => record.sdk_package === sdkFilter);
       }
     }
 
@@ -170,10 +197,12 @@ export function RecordList({ onVisibleIdsChange, onCountsChange }: RecordListPro
     return list;
   }, [
     bootstrap,
+    authorFilters,
     categoryFilters,
     costFilter,
     deferredSearchQuery,
     modelFilter,
+    sdkFilter,
     ratingFilter,
     searchedRecords,
     selectedRunId,

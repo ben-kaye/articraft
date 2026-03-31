@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import { Copy, FolderOpen, RotateCcw, Star } from "lucide-react";
 
-import { fetchRecordFile, fetchStagingFile, openRecordFolder, openStagingFolder, saveRecordRating } from "@/lib/api";
+import {
+  fetchRecordFile,
+  fetchStagingFile,
+  openRecordFolder,
+  openStagingFolder,
+  saveRecordRating,
+  saveRecordSecondaryRating,
+} from "@/lib/api";
 import { buildRecordPath, copyTextToClipboard } from "@/lib/record-path";
 import { findRecordInBootstrap, findStagingEntryInBootstrap } from "@/lib/record-summary";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
@@ -48,6 +55,77 @@ function SectionLabel({ children }: { children: React.ReactNode }): JSX.Element 
       <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--text-tertiary)]">{children}</span>
       <div className="h-px flex-1 bg-[var(--border-subtle)]" />
     </div>
+  );
+}
+
+type EditableRatingSectionProps = {
+  label: string;
+  rating: number | null;
+  ratedBy: string | null;
+  hoveredRating: number | null;
+  saving: boolean;
+  error: string | null;
+  onHoveredRatingChange: (value: number | null) => void;
+  onSelect: (value: number) => void;
+};
+
+function EditableRatingSection({
+  label,
+  rating,
+  ratedBy,
+  hoveredRating,
+  saving,
+  error,
+  onHoveredRatingChange,
+  onSelect,
+}: EditableRatingSectionProps): JSX.Element {
+  return (
+    <section>
+      <SectionLabel>{label}</SectionLabel>
+      <div className="flex items-center justify-between">
+        <div
+          className="flex items-center gap-0.5"
+          onMouseLeave={() => onHoveredRatingChange(null)}
+        >
+          {[1, 2, 3, 4, 5].map((starValue) => {
+            const activeRating = hoveredRating ?? rating ?? 0;
+            const isActive = starValue <= activeRating;
+
+            return (
+              <button
+                key={starValue}
+                type="button"
+                aria-label={`${label}: rate ${starValue} star${starValue === 1 ? "" : "s"}`}
+                aria-pressed={rating === starValue}
+                disabled={saving}
+                className="rounded-md p-1 text-[var(--border-strong)] transition-colors duration-100 hover:text-[#e0a100] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)] disabled:cursor-not-allowed"
+                onMouseEnter={() => onHoveredRatingChange(starValue)}
+                onClick={() => onSelect(starValue)}
+              >
+                <Star
+                  className={`size-3.5 ${isActive ? "fill-[#e0a100] text-[#e0a100]" : "fill-transparent text-current"}`}
+                />
+              </button>
+            );
+          })}
+        </div>
+        <span className="text-[10px] text-[var(--text-tertiary)]">
+          {saving ? (
+            "Saving…"
+          ) : (
+            <>
+              {rating ? `${rating} / 5` : "Unrated"}
+              {ratedBy ? (
+                <>
+                  {" "}by <span className="font-semibold text-[var(--text-secondary)]">{ratedBy}</span>
+                </>
+              ) : null}
+            </>
+          )}
+        </span>
+      </div>
+      {error ? <p className="mt-1.5 text-[10px] text-[var(--destructive)]">{error}</p> : null}
+    </section>
   );
 }
 
@@ -170,8 +248,11 @@ export function InspectPanel({
   const [promptText, setPromptText] = useState<string | null>(null);
   const [promptStatus, setPromptStatus] = useState<"idle" | "loading" | "loaded" | "unavailable">("idle");
   const [hoveredRating, setHoveredRating] = useState<number | null>(null);
+  const [hoveredSecondaryRating, setHoveredSecondaryRating] = useState<number | null>(null);
   const [savingRating, setSavingRating] = useState(false);
+  const [savingSecondaryRating, setSavingSecondaryRating] = useState(false);
   const [ratingError, setRatingError] = useState<string | null>(null);
+  const [secondaryRatingError, setSecondaryRatingError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const [openState, setOpenState] = useState<"idle" | "opened" | "error">("idle");
 
@@ -276,8 +357,11 @@ export function InspectPanel({
 
   useEffect(() => {
     setHoveredRating(null);
+    setHoveredSecondaryRating(null);
     setSavingRating(false);
+    setSavingSecondaryRating(false);
     setRatingError(null);
+    setSecondaryRatingError(null);
     setCopyState("idle");
     setOpenState("idle");
   }, [selection]);
@@ -335,6 +419,34 @@ export function InspectPanel({
       setHoveredRating(null);
     }
   }, [dispatch, record, savingRating, selectedRecordId]);
+
+  const handleSecondaryRatingSelect = useCallback(async (nextRating: number): Promise<void> => {
+    if (!selectedRecordId || !record || savingSecondaryRating) {
+      return;
+    }
+
+    setSavingSecondaryRating(true);
+    setSecondaryRatingError(null);
+
+    try {
+      const updated = await saveRecordSecondaryRating(selectedRecordId, nextRating);
+      dispatch({
+        type: "UPDATE_RECORD_SECONDARY_RATING",
+        payload: {
+          recordId: updated.record_id,
+          secondaryRating: updated.secondary_rating,
+          updatedAt: updated.updated_at,
+        },
+      });
+    } catch (error) {
+      setSecondaryRatingError(
+        error instanceof Error ? error.message : "Failed to save secondary rating.",
+      );
+    } finally {
+      setSavingSecondaryRating(false);
+      setHoveredSecondaryRating(null);
+    }
+  }, [dispatch, record, savingSecondaryRating, selectedRecordId]);
 
   async function handleCopyRecordPath(): Promise<void> {
     if (!recordPath) {
@@ -589,46 +701,35 @@ export function InspectPanel({
           )}
         </section>
 
-        {/* Rating */}
+        {/* Author */}
         <section>
-          <SectionLabel>Rating</SectionLabel>
-          <div className="flex items-center justify-between">
-            <div
-              className="flex items-center gap-0.5"
-              onMouseLeave={() => setHoveredRating(null)}
-            >
-              {[1, 2, 3, 4, 5].map((starValue) => {
-                const activeRating = hoveredRating ?? record.rating ?? 0;
-                const isActive = starValue <= activeRating;
-
-                return (
-                  <button
-                    key={starValue}
-                    type="button"
-                    aria-label={`Rate ${starValue} star${starValue === 1 ? "" : "s"}`}
-                    aria-pressed={record.rating === starValue}
-                    disabled={savingRating}
-                    className="rounded-md p-1 text-[var(--border-strong)] transition-colors duration-100 hover:text-[#e0a100] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)] disabled:cursor-not-allowed"
-                    onMouseEnter={() => setHoveredRating(starValue)}
-                    onClick={() => void handleRatingSelect(starValue)}
-                  >
-                    <Star
-                      className={`size-3.5 ${isActive ? "fill-[#e0a100] text-[#e0a100]" : "fill-transparent text-current"}`}
-                    />
-                  </button>
-                );
-              })}
-            </div>
-            <span className="text-[10px] text-[var(--text-tertiary)]">
-              {savingRating
-                ? "Saving…"
-                : record.rating
-                  ? `${record.rating} / 5`
-                  : "Unrated"}
-            </span>
-          </div>
-          {ratingError ? <p className="mt-1.5 text-[10px] text-[var(--destructive)]">{ratingError}</p> : null}
+          <SectionLabel>Author</SectionLabel>
+          <p className="text-[12px] leading-[1.6] text-[var(--text-secondary)]">
+            {record.author || "Not set"}
+          </p>
         </section>
+
+        <EditableRatingSection
+          label="Rating"
+          rating={record.rating}
+          ratedBy={record.rated_by}
+          hoveredRating={hoveredRating}
+          saving={savingRating}
+          error={ratingError}
+          onHoveredRatingChange={setHoveredRating}
+          onSelect={(starValue) => void handleRatingSelect(starValue)}
+        />
+
+        <EditableRatingSection
+          label="Secondary Rating"
+          rating={record.secondary_rating}
+          ratedBy={record.secondary_rated_by}
+          hoveredRating={hoveredSecondaryRating}
+          saving={savingSecondaryRating}
+          error={secondaryRatingError}
+          onHoveredRatingChange={setHoveredSecondaryRating}
+          onSelect={(starValue) => void handleSecondaryRatingSelect(starValue)}
+        />
 
         {/* Record context */}
         <section>

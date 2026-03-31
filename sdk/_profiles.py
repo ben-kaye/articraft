@@ -2,21 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 OPENAI_DESIGNER_PROMPT_NAME = "designer_system_prompt_openai.txt"
 HYBRID_OPENAI_DESIGNER_PROMPT_NAME = "designer_system_prompt_openai_hybrid.txt"
 GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini.txt"
 HYBRID_GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini_hybrid.txt"
+ScaffoldMode = Literal["lite", "strict"]
+DEFAULT_SCAFFOLD_MODE: ScaffoldMode = "lite"
+LEGACY_SCAFFOLD_MODE: ScaffoldMode = "strict"
 
 
 @dataclass(slots=True, frozen=True)
 class SdkProfile:
     package_name: str
-    scaffold_path: Path
+    scaffold_paths: dict[ScaffoldMode, Path]
     docs_full: tuple[Path, ...]
     docs_core: tuple[Path, ...]
     openai_prompt_name: str
     gemini_prompt_name: str
+
+    def scaffold_path_for_mode(self, scaffold_mode: ScaffoldMode) -> Path:
+        try:
+            return self.scaffold_paths[scaffold_mode]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported scaffold mode: {scaffold_mode!r}") from exc
 
     def docs_for_mode(self, docs_mode: str) -> tuple[Path, ...]:
         if docs_mode == "full":
@@ -66,7 +76,10 @@ _CADQUERY_DOCS = (
 SDK_PROFILES: dict[str, SdkProfile] = {
     "sdk": SdkProfile(
         package_name="sdk",
-        scaffold_path=Path("scaffold.py"),
+        scaffold_paths={
+            "lite": Path("scaffold_lite.py"),
+            "strict": Path("scaffold.py"),
+        },
         docs_full=_COMMON_DOCS[:4] + _BASE_DOCS + _COMMON_DOCS[4:],
         docs_core=(
             Path("sdk/_docs/common/00_quickstart.md"),
@@ -78,7 +91,10 @@ SDK_PROFILES: dict[str, SdkProfile] = {
     ),
     "sdk_hybrid": SdkProfile(
         package_name="sdk_hybrid",
-        scaffold_path=Path("scaffold_hybrid.py"),
+        scaffold_paths={
+            "lite": Path("scaffold_hybrid_lite.py"),
+            "strict": Path("scaffold_hybrid.py"),
+        },
         docs_full=_COMMON_DOCS[:4] + _CADQUERY_DOCS + _COMMON_DOCS[4:],
         docs_core=(
             Path("sdk/_docs/common/00_quickstart.md"),
@@ -93,6 +109,17 @@ SDK_PROFILES: dict[str, SdkProfile] = {
 
 
 SUPPORTED_SDK_PACKAGES = frozenset(SDK_PROFILES)
+SUPPORTED_SCAFFOLD_MODES = frozenset({"lite", "strict"})
+
+
+def normalize_scaffold_mode(scaffold_mode: str) -> ScaffoldMode:
+    candidate = str(scaffold_mode or "").strip().lower()
+    if candidate in SUPPORTED_SCAFFOLD_MODES:
+        return candidate  # type: ignore[return-value]
+    raise ValueError(
+        f"Unsupported scaffold mode: {scaffold_mode!r}. "
+        f"Expected one of {sorted(SUPPORTED_SCAFFOLD_MODES)!r}."
+    )
 
 
 def get_sdk_profile(package_name: str) -> SdkProfile:

@@ -188,21 +188,25 @@ function buildPreviewJointSequence(urdfSpec: UrdfSpec): UrdfJoint[] {
 }
 
 function previewJointValue(joint: UrdfJoint, phase: number): number {
-  const wave = Math.sin(phase * Math.PI * 2);
-
   if (joint.type === "continuous") {
     return THREE.MathUtils.euclideanModulo((phase * Math.PI * 2) + Math.PI, Math.PI * 2) - Math.PI;
   }
 
   const lower = joint.limit?.lower;
   const upper = joint.limit?.upper;
-  const hasRange = Number.isFinite(lower) && Number.isFinite(upper) && lower !== undefined && upper !== undefined && upper > lower;
+  const hasRange =
+    typeof lower === "number"
+    && Number.isFinite(lower)
+    && typeof upper === "number"
+    && Number.isFinite(upper)
+    && upper > lower;
 
   if (hasRange) {
-    const center = (lower + upper) / 2;
-    const amplitude = (upper - lower) * 0.46;
-    return center + wave * amplitude;
+    const normalized = 0.5 - (0.5 * Math.cos(phase * Math.PI * 2));
+    return THREE.MathUtils.lerp(lower, upper, normalized);
   }
+
+  const wave = Math.sin(phase * Math.PI * 2);
 
   if (joint.type === "prismatic") {
     return wave * 0.12;

@@ -6,32 +6,37 @@ PHASE 1 — PLAN
 - Use `find_examples` for unfamiliar modeling or testing patterns. Treat returned code as inspiration only — adapt against current SDK docs, do not copy verbatim. If an entry is marked `[weakly relevant]`, treat it as a loose hint rather than a strong precedent.
 
 PHASE 2 — SCAFFOLD
-- Build the part tree with rough placeholder geometry and all articulations.
-- Get this skeleton to compile clean with every part attached and every joint correctly oriented.
-- Write initial tests: assert each part exists, key parts are connected (not floating), and articulations move on correct axes.
+- Build the part tree with simple envelope geometry or minimal sketches/extrusions that lock overall dimensions, attachment relationships, major clearances, and all articulations.
+- Get this layout skeleton to compile clean with every part attached and every joint correctly oriented before investing in complex geometry.
+- Write only the highest-signal initial tests: assert each part exists, key parts are connected (not floating), articulations move on correct axes, and visually separate geometry inside a part has a real support path. Do not add broad or repetitive checks just for coverage; too many tests make compile feedback noisy and harder to use.
 
 PHASE 3 — BUILD INCREMENTALLY
 - Implement geometry one part or subassembly at a time. Do NOT write all geometry in one giant edit.
+- Upgrade each region from envelope geometry to realistic geometry only when silhouette, openings/cavities, curvature, or local clearances depend on it.
 - The harness automatically compiles and runs tests after every successful edit. You will receive `<compile_signals>` feedback — you do not need to request compilation separately.
 - Fix issues from compile feedback before moving to the next part.
-- Write tests as you build: assert placement, contact with neighbors, and proportions for each new part.
+- Treat `warn_if_part_contains_disconnected_geometry_islands(...)` as potentially real floating-geometry evidence, not routine warning noise. Intra-part disconnected islands usually mean the object still reads as floating; investigate and fix them before dismissing the warning.
+- Add tests only when they protect a prompt-critical invariant that is easy to regress. Prefer a small number of high-signal checks over a dense test suite.
+- Do not over-test poses. Avoid broad pose sweeps or many near-duplicate articulated poses unless they are the only practical way to protect a critical mechanism.
 - When a test fails or geometry looks wrong, use `probe_model` to diagnose before editing blindly.
 - Use `probe_model` for geometry inspection and debugging; use `run_tests()` for persistent regression checks that survive across turns.
 - Probe in the object-first style: resolve `part(...)`, `joint(...)`, `visual(...)` locals once, then pass them into probe reports.
+- Solve stable spatial relationships first. Do not get stuck hand-tuning raw `Origin(...)` coordinates when placement helpers or a simpler reference shape would make the layout clearer.
 - Work in this order: dominant silhouette → major openings/cavities → nested layers → secondary detail → articulation refinement.
 
 PHASE 4 — VERIFY AND REFINE
 - Explicitly check the four hard requirements:
-  - Floating parts: use `find_floating_parts(...)`, `mount_report(...)`, `nearest_neighbors(...)`.
+  - Floating parts: use `find_floating_parts(...)`, `mount_report(...)`, `nearest_neighbors(...)`, and treat `warn_if_part_contains_disconnected_geometry_islands(...)` as the same class of problem at intra-part scale.
   - Overlaps: use `overlap_report(...)`, `pair_report(...)`, `find_clearance_risks(...)`.
   - Proportions: use `summary(...)`, `dims(...)`, `projection(...)`, `layout_report(...)`.
-- Test articulation at multiple poses: `pose(...)`, `sample_poses(...)`.
+- Keep verification lean. Use exact checks in the most important pose(s), and only add pose-specific checks when a prompt-critical articulation remains ambiguous. Prefer one or two decisive poses over pose grids, dense sweeps, or many small pose variations. If a test does not add clear signal, do not keep adding tests.
 - If geometry reads as placeholder despite passing tests, rewrite it from intent — do not preserve passing placeholders.
 
 REPAIR RULES
 - When you receive `<compile_signals>`, read `<summary>` first to understand the overall status.
 - Treat `<failures>` as blocking, `<warnings>` as design evidence, `<notes>` as context.
+- If `warn_if_part_contains_disconnected_geometry_islands(...)` fires, assume it may be valid until you disprove it with inspection or exact checks. Prefer adding the missing support geometry or splitting the assembly into real parts over waving the warning away.
 - Classify before patching: local bug, wrong representation, wrong composition, or wrong proportions.
-- If the same failure persists across 2 repair turns, stop patching and rewrite the affected region from scratch.
-- When you change geometry or motion, update tests in the same edit.
+- If the same failure persists across 2 repair turns, stop patching. Simplify only the failing region back to envelope geometry, keep its learned dimensions/joints/attachments, then rebuild that region from scratch.
+- When you change geometry or motion, update tests in the same edit only if an existing high-signal invariant changed or a new prompt-critical invariant needs coverage.
 </process>

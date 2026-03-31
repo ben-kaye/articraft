@@ -327,6 +327,24 @@ class PartGeometryConnectivityFinding:
     contact_tol: float
 
 
+@dataclass(frozen=True)
+class _MeshComponentCollision:
+    local_aabb: AABB
+    shape: object
+    index: int
+    total: int
+
+
+@dataclass(frozen=True)
+class _CompiledCollisionEntry:
+    item: object
+    collision_obj: object
+    aabb: AABB
+    name: Optional[str]
+    geometry_name: str
+    origin: Origin
+
+
 def _transform_aabb(aabb: AABB, tf: Mat4) -> AABB:
     (min_x, min_y, min_z), (max_x, max_y, max_z) = aabb
     corners = [(x, y, z) for x in (min_x, max_x) for y in (min_y, max_y) for z in (min_z, max_z)]
@@ -521,6 +539,106 @@ def _load_fcl_mesh(
     return model
 
 
+def _mesh_component_suffix(index: int) -> str:
+    return f"__component_{index + 1:03d}"
+
+
+def _mesh_component_name(name: object, *, index: int, total: int) -> Optional[str]:
+    base_name = str(name).strip() if isinstance(name, str) and str(name).strip() else None
+    if total <= 1:
+        return base_name
+    if base_name is None:
+        return f"mesh{_mesh_component_suffix(index)}"
+    return f"{base_name}{_mesh_component_suffix(index)}"
+
+
+def _mesh_local_aabb(mesh: object) -> AABB:
+    bounds = getattr(mesh, "bounds", None)
+    if bounds is None:
+        raise ValidationError("Mesh component is missing bounds")
+    return (
+        (float(bounds[0][0]), float(bounds[0][1]), float(bounds[0][2])),
+        (float(bounds[1][0]), float(bounds[1][1]), float(bounds[1][2])),
+    )
+
+
+def _build_fcl_bvh_model(mesh: object) -> object:
+    import fcl
+
+    vertices = getattr(mesh, "vertices", None)
+    faces = getattr(mesh, "faces", None)
+    if vertices is None or getattr(vertices, "size", 0) == 0:
+        raise ValidationError("Mesh component contains no vertices")
+    if faces is None or getattr(faces, "size", 0) == 0:
+        raise ValidationError("Mesh component contains no triangles")
+    model = fcl.BVHModel()
+    model.beginModel(len(vertices), len(faces))
+    model.addSubModel(vertices, faces)
+    model.endModel()
+    return model
+
+
+def _load_fcl_mesh_components(
+    mesh_path: Path,
+    *,
+    cache: Dict[tuple[Path, Optional[Vec3]], object],
+    scale: Optional[Vec3] = None,
+) -> tuple[_MeshComponentCollision, ...]:
+    cache_key = (
+        "components",
+        mesh_path,
+        None if scale is None else tuple(float(v) for v in scale),
+    )
+    cached = cache.get(cache_key)
+    if isinstance(cached, tuple):
+        return cached
+
+    import trimesh
+
+    loaded = trimesh.load_mesh(mesh_path, force="mesh")
+    if not isinstance(loaded, trimesh.Trimesh):
+        raise ValidationError(f"Expected mesh geometry at {mesh_path}, got {type(loaded).__name__}")
+    if loaded.vertices.size == 0:
+        raise ValidationError(f"OBJ contains no vertices: {mesh_path}")
+    if loaded.faces.size == 0:
+        raise ValidationError(f"OBJ contains no triangles: {mesh_path}")
+    if scale is not None:
+        loaded = loaded.copy()
+        loaded.apply_scale(scale)
+
+    raw_components = list(loaded.split(only_watertight=False))
+    components = [
+        component
+        for component in raw_components
+        if getattr(component, "vertices", None) is not None
+        and getattr(component.vertices, "size", 0) > 0
+        and getattr(component, "faces", None) is not None
+        and getattr(component.faces, "size", 0) > 0
+    ]
+    if not components:
+        components = [loaded]
+
+    total = len(components)
+    resolved = tuple(
+        _MeshComponentCollision(
+            local_aabb=_mesh_local_aabb(component),
+            shape=_build_fcl_bvh_model(component),
+            index=index,
+            total=total,
+        )
+        for index, component in enumerate(components)
+    )
+    cache[cache_key] = resolved
+    return resolved
+
+
+def _collision_object_from_shape(shape: object, *, elem_tf: Mat4) -> object:
+    import fcl
+
+    rot, trans = _mat4_rotation_translation(elem_tf)
+    return fcl.CollisionObject(shape, fcl.Transform(rot, trans))
+
+
 def _collision_object_from_geometry(
     geometry: object,
     *,
@@ -550,8 +668,7 @@ def _collision_object_from_geometry(
     else:
         raise ValidationError(f"Unsupported geometry type: {type(geometry).__name__}")
 
-    rot, trans = _mat4_rotation_translation(elem_tf)
-    return fcl.CollisionObject(shape, fcl.Transform(rot, trans))
+    return _collision_object_from_shape(shape, elem_tf=elem_tf)
 
 
 def _point_collision_object(point: Vec3, *, radius: float = 1e-9) -> object:
@@ -583,21 +700,66 @@ def _compiled_part_collision_entries(
     asset_root: Optional[Path],
     mesh_cache: Dict[tuple[Path, Optional[Vec3]], object],
     part_tf: Optional[Mat4] = None,
-) -> list[tuple[object, object]]:
+) -> list[_CompiledCollisionEntry]:
     resolved_part_tf = _identity4() if part_tf is None else part_tf
-    entries: list[tuple[object, object]] = []
+    obj_cache: Dict[Path, AABB] = {}
+    entries: list[_CompiledCollisionEntry] = []
     for item in list(getattr(part, "collisions", []) or []):
         geometry = getattr(item, "geometry", None)
         if geometry is None:
             continue
-        elem_tf = _mat4_mul(resolved_part_tf, _origin_to_mat4(getattr(item, "origin", Origin())))
-        collision_obj = _collision_object_from_geometry(
+        origin = getattr(item, "origin", Origin())
+        elem_tf = _mat4_mul(resolved_part_tf, _origin_to_mat4(origin))
+        geometry_name = type(geometry).__name__
+        if isinstance(geometry, Mesh):
+            filename = os.fspath(geometry.filename)
+            mesh_path = resolve_mesh_path(filename, assets=asset_root)
+            scale = None
+            if geometry.scale is not None:
+                scale = tuple(float(v) for v in geometry.scale)
+            for component in _load_fcl_mesh_components(
+                mesh_path,
+                cache=mesh_cache,
+                scale=scale,
+            ):
+                entries.append(
+                    _CompiledCollisionEntry(
+                        item=item,
+                        collision_obj=_collision_object_from_shape(
+                            component.shape, elem_tf=elem_tf
+                        ),
+                        aabb=_transform_aabb(component.local_aabb, elem_tf),
+                        name=_mesh_component_name(
+                            getattr(item, "name", None),
+                            index=component.index,
+                            total=component.total,
+                        ),
+                        geometry_name=geometry_name,
+                        origin=origin,
+                    )
+                )
+            continue
+
+        local_aabb = _geometry_local_aabb(
             geometry,
-            elem_tf=elem_tf,
             asset_root=asset_root,
-            mesh_cache=mesh_cache,
+            _obj_cache=obj_cache,
         )
-        entries.append((item, collision_obj))
+        entries.append(
+            _CompiledCollisionEntry(
+                item=item,
+                collision_obj=_collision_object_from_geometry(
+                    geometry,
+                    elem_tf=elem_tf,
+                    asset_root=asset_root,
+                    mesh_cache=mesh_cache,
+                ),
+                aabb=_transform_aabb(local_aabb, elem_tf),
+                name=getattr(item, "name", None),
+                geometry_name=geometry_name,
+                origin=origin,
+            )
+        )
     return entries
 
 
@@ -839,7 +1001,6 @@ def _find_collision_overlaps_fcl_for_poses(
             allowed.add((b, a))
 
     overlaps: list[GeometryOverlap] = []
-    obj_cache: Dict[Path, AABB] = {}
     mesh_cache: Dict[tuple[Path, Optional[Vec3]], object] = {}
     collision_request = fcl.CollisionRequest()
 
@@ -851,27 +1012,14 @@ def _find_collision_overlaps_fcl_for_poses(
             if not isinstance(name, str):
                 continue
             world_tf = tf.get(name, _identity4())
-            elements = list(getattr(link, "collisions", []) or [])
             bounds: list[tuple[AABB, object, object]] = []
-            for item in elements:
-                origin = getattr(item, "origin", Origin())
-                geometry = getattr(item, "geometry", None)
-                if geometry is None:
-                    continue
-                local_aabb = _geometry_local_aabb(
-                    geometry,
-                    asset_root=resolved_asset_root,
-                    _obj_cache=obj_cache,
-                )
-                elem_tf = _mat4_mul(world_tf, _origin_to_mat4(origin))
-                world_aabb = _transform_aabb(local_aabb, elem_tf)
-                collision_obj = _collision_object_from_geometry(
-                    geometry,
-                    elem_tf=elem_tf,
-                    asset_root=resolved_asset_root,
-                    mesh_cache=mesh_cache,
-                )
-                bounds.append((world_aabb, collision_obj, item))
+            for entry in _compiled_part_collision_entries(
+                link,
+                asset_root=resolved_asset_root,
+                mesh_cache=mesh_cache,
+                part_tf=world_tf,
+            ):
+                bounds.append((entry.aabb, entry.collision_obj, entry))
             if bounds:
                 link_elem_bounds[name] = bounds
 
@@ -910,16 +1058,12 @@ def _find_collision_overlaps_fcl_for_poses(
                                 overlap_volume=volume,
                                 aabb_a=aabb_a,
                                 aabb_b=aabb_b,
-                                elem_a_name=getattr(item_a, "name", None),
-                                elem_b_name=getattr(item_b, "name", None),
-                                elem_a_origin=getattr(item_a, "origin", None),
-                                elem_b_origin=getattr(item_b, "origin", None),
-                                elem_a_geometry=type(getattr(item_a, "geometry", None)).__name__
-                                if getattr(item_a, "geometry", None) is not None
-                                else None,
-                                elem_b_geometry=type(getattr(item_b, "geometry", None)).__name__
-                                if getattr(item_b, "geometry", None) is not None
-                                else None,
+                                elem_a_name=item_a.name,
+                                elem_b_name=item_b.name,
+                                elem_a_origin=item_a.origin,
+                                elem_b_origin=item_b.origin,
+                                elem_a_geometry=item_a.geometry_name,
+                                elem_b_geometry=item_b.geometry_name,
                             )
                         )
     return overlaps
@@ -1147,7 +1291,6 @@ def _find_unsupported_parts_physical(
         ) from exc
 
     poses = generate_pose_samples(compiled_model, max_samples=max_pose_samples, seed=int(seed))
-    obj_cache: Dict[Path, AABB] = {}
     mesh_cache: Dict[tuple[Path, Optional[Vec3]], object] = {}
     findings: list[UnsupportedPartFinding] = []
 
@@ -1166,27 +1309,14 @@ def _find_unsupported_parts_physical(
             if not isinstance(name, str):
                 continue
             world_tf = tf.get(name, _identity4())
-            elements = list(getattr(link, "collisions", []) or [])
             bounds: list[tuple[AABB, object]] = []
-            for item in elements:
-                origin = getattr(item, "origin", Origin())
-                geometry = getattr(item, "geometry", None)
-                if geometry is None:
-                    continue
-                local_aabb = _geometry_local_aabb(
-                    geometry,
-                    asset_root=resolved_asset_root,
-                    _obj_cache=obj_cache,
-                )
-                elem_tf = _mat4_mul(world_tf, _origin_to_mat4(origin))
-                world_aabb = _transform_aabb(local_aabb, elem_tf)
-                collision_obj = _collision_object_from_geometry(
-                    geometry,
-                    elem_tf=elem_tf,
-                    asset_root=resolved_asset_root,
-                    mesh_cache=mesh_cache,
-                )
-                bounds.append((world_aabb, collision_obj))
+            for entry in _compiled_part_collision_entries(
+                link,
+                asset_root=resolved_asset_root,
+                mesh_cache=mesh_cache,
+                part_tf=world_tf,
+            ):
+                bounds.append((entry.aabb, entry.collision_obj))
             if bounds:
                 link_elem_bounds[name] = bounds
 
@@ -1308,12 +1438,11 @@ def find_joint_origin_distance_findings(
             continue
 
         parent_distance = min(
-            _collision_pair_metrics(parent_probe, collision_obj)[1]
-            for _item, collision_obj in parent_entries
+            _collision_pair_metrics(parent_probe, entry.collision_obj)[1]
+            for entry in parent_entries
         )
         child_distance = min(
-            _collision_pair_metrics(child_probe, collision_obj)[1]
-            for _item, collision_obj in child_entries
+            _collision_pair_metrics(child_probe, entry.collision_obj)[1] for entry in child_entries
         )
         if parent_distance > float(tol) or child_distance > float(tol):
             findings.append(
@@ -1359,28 +1488,36 @@ def find_part_geometry_connectivity_findings(
         if len(entries) <= 1:
             continue
 
-        visited = {0}
-        queue = [0]
-        while queue:
-            current = queue.pop()
-            for idx, (_item, candidate_obj) in enumerate(entries):
-                if idx in visited:
-                    continue
-                _candidate_item, current_obj = entries[current]
-                collided, distance = _collision_pair_metrics(current_obj, candidate_obj)
-                if collided or distance <= float(contact_tol):
-                    visited.add(idx)
-                    queue.append(idx)
+        remaining = set(range(len(entries)))
+        connected_groups: list[set[int]] = []
+        while remaining:
+            current_group = {next(iter(remaining))}
+            queue = list(current_group)
+            while queue:
+                current = queue.pop()
+                current_obj = entries[current].collision_obj
+                for idx, candidate in enumerate(entries):
+                    if idx in current_group:
+                        continue
+                    collided, distance = _collision_pair_metrics(
+                        current_obj, candidate.collision_obj
+                    )
+                    if collided or distance <= float(contact_tol):
+                        current_group.add(idx)
+                        queue.append(idx)
+            connected_groups.append(current_group)
+            remaining.difference_update(current_group)
 
-        if len(visited) == len(entries):
+        largest_group = max(connected_groups, key=lambda group: (len(group), -min(group)))
+        if len(largest_group) == len(entries):
             continue
 
         disconnected: list[str] = []
-        for idx, (item, _obj) in enumerate(entries):
-            if idx in visited:
+        for idx, entry in enumerate(entries):
+            if idx in largest_group:
                 continue
-            item_name = getattr(item, "name", None)
-            geometry_name = type(getattr(item, "geometry", None)).__name__
+            item_name = entry.name
+            geometry_name = entry.geometry_name
             if isinstance(item_name, str) and item_name:
                 disconnected.append(f"{item_name}:{geometry_name}")
             else:
@@ -1388,7 +1525,7 @@ def find_part_geometry_connectivity_findings(
         findings.append(
             PartGeometryConnectivityFinding(
                 part=part_name,
-                connected=len(visited),
+                connected=len(largest_group),
                 total=len(entries),
                 disconnected=tuple(disconnected),
                 contact_tol=float(contact_tol),

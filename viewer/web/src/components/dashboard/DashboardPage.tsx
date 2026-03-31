@@ -48,10 +48,10 @@ export function DashboardPage(): JSX.Element {
           ) : null}
 
           {stats && bootstrap?.supercategories && bootstrap.supercategories.length > 0 ? (
-            <SupercategoriesSection categoryStats={stats.category_stats} supercategories={bootstrap.supercategories} />
+            <SupercategoriesSection categoryStats={stats.category_stats} supercategories={bootstrap.supercategories} datasetEntries={bootstrap.dataset_entries} />
           ) : null}
 
-          {stats ? <CategoriesSection categoryStats={stats.category_stats} supercategories={bootstrap?.supercategories} /> : null}
+          {stats ? <CategoriesSection categoryStats={stats.category_stats} supercategories={bootstrap?.supercategories} datasetEntries={bootstrap?.dataset_entries} /> : null}
         </div>
       </div>
     </main>

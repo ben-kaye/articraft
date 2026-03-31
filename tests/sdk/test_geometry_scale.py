@@ -149,10 +149,10 @@ def test_scale_geometry_to_size_converts_sphere_to_mesh_when_anisotropic(
     )
 
 
-def test_scale_geometry_to_size_requires_filename_for_primitive_mesh_conversion() -> None:
+def test_scale_geometry_to_size_requires_mesh_name_for_primitive_mesh_conversion() -> None:
     with pytest.raises(
         sdk.ValidationError,
-        match="filename is required when resizing this primitive would convert it into Mesh",
+        match="mesh_name is required when resizing this primitive would convert it into Mesh",
     ):
         sdk.scale_geometry_to_size(
             sdk.Cylinder(radius=0.05, length=0.20),

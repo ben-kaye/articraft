@@ -31,7 +31,6 @@ ArticulatedObject(
     articulations: list[Articulation] = [],
     materials: list[Material] = [],
     meta: dict[str, object] = {},
-    assets: AssetContext | None = None,
 )
 ```
 
@@ -42,7 +41,9 @@ Important fields:
 - `articulations`: authored articulations.
 - `materials`: registered materials.
 - `meta`: optional model-level metadata.
-- `assets`: optional asset context for mesh-backed models.
+- Mesh assets are runtime-managed. Author mesh-backed visuals through helpers
+  such as `mesh_from_geometry(...)`, `mesh_from_input(...)`, and
+  `mesh_from_cadquery(...)`.
 
 ## Authoring Helpers
 
@@ -79,10 +80,74 @@ model.articulation(
 ```
 
 - `parent`, `child`: either part objects or part names.
-- `origin`: articulation origin. Defaults to `Origin()`.
-- `axis`: defaults to `(0.0, 0.0, 1.0)`.
+- `origin`: transform from the parent part frame into the articulation frame.
+  Defaults to `Origin()`.
+- `axis`: motion axis expressed in the articulation frame. Defaults to
+  `(0.0, 0.0, 1.0)`.
 - `motion_limits`: joint limits where required.
 - `motion_properties`: optional damping and friction.
+
+## Frame And Direction Conventions
+
+Articulations use a URDF-style joint frame:
+
+1. `origin` places the articulation frame relative to the parent part frame.
+2. `axis` is written in that articulation frame, not in world space.
+3. At `q=0`, the child part frame is coincident with the articulation frame.
+4. Positive `REVOLUTE` and `CONTINUOUS` motion follows the right-hand rule
+   around `axis`.
+5. Positive `PRISMATIC` motion translates the child along `+axis`.
+
+In practice, the usual mistake is choosing the correct hinge line but the wrong
+axis sign. If increasing the joint value makes the child close into the parent,
+negate `axis` instead of swapping `lower` and `upper`.
+
+### Example: Lid That Should Open Upward
+
+```python
+# Closed lid geometry extends along local +X from the hinge line.
+# Using -Y makes positive q lift the free edge toward +Z.
+model.articulation(
+    "body_to_lid",
+    ArticulationType.REVOLUTE,
+    parent=body,
+    child=lid,
+    origin=Origin(xyz=(-0.09, 0.0, 0.05)),
+    axis=(0.0, -1.0, 0.0),
+    motion_limits=MotionLimits(effort=5.0, velocity=3.0, lower=0.0, upper=1.2),
+)
+```
+
+### Example: Mirrored Lid With The Same "Positive Means Open" Convention
+
+```python
+# If the closed panel extends along local -X from the hinge line instead,
+# flip the axis sign so positive q still opens upward/outward.
+model.articulation(
+    "body_to_mirrored_lid",
+    ArticulationType.REVOLUTE,
+    parent=body,
+    child=mirrored_lid,
+    origin=Origin(xyz=(0.09, 0.0, 0.05)),
+    axis=(0.0, 1.0, 0.0),
+    motion_limits=MotionLimits(effort=5.0, velocity=3.0, lower=0.0, upper=1.2),
+)
+```
+
+### Example: Drawer That Should Extend Outward
+
+```python
+# Positive prismatic q moves the drawer out along +X.
+model.articulation(
+    "cabinet_to_drawer",
+    ArticulationType.PRISMATIC,
+    parent=cabinet,
+    child=drawer,
+    origin=Origin(xyz=(0.0, 0.0, 0.12)),
+    axis=(1.0, 0.0, 0.0),
+    motion_limits=MotionLimits(effort=40.0, velocity=0.25, lower=0.0, upper=0.28),
+)
+```
 
 ### `model.material(...)`
 
@@ -171,7 +236,9 @@ model.articulation(
     parent=base,
     child=arm,
     origin=Origin(xyz=(0.0, 0.0, 0.08)),
-    axis=(0.0, 1.0, 0.0),
+    # Arm geometry extends along local +X from the shoulder, so -Y makes
+    # positive q pitch the arm upward.
+    axis=(0.0, -1.0, 0.0),
     motion_limits=MotionLimits(effort=5.0, velocity=2.0, lower=-0.8, upper=0.8),
 )
 ```

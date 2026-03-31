@@ -60,16 +60,27 @@ PrimitiveGeometry = Union[Box, Cylinder, Sphere]
 
 @dataclass(frozen=True)
 class Mesh:
-    filename: Union[str, os.PathLike[str]]
+    filename: Union[str, os.PathLike[str], None] = None
+    name: Optional[str] = None
     scale: Optional[Vec3] = None
     source_geometry: Optional[PrimitiveGeometry] = None
     source_transform: Optional[Mat4] = None
+    materialized_path: Optional[str] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        filename = os.fspath(self.filename)
-        if not filename:
-            raise ValidationError("mesh.filename is required")
-        object.__setattr__(self, "filename", filename)
+        filename_value = self.filename
+        filename = os.fspath(filename_value) if filename_value is not None else ""
+        logical_name = None if self.name is None else str(self.name).strip()
+        if not filename and not logical_name:
+            raise ValidationError("mesh.filename or mesh.name is required")
+        if filename:
+            object.__setattr__(self, "filename", filename)
+        else:
+            object.__setattr__(self, "filename", None)
+        if logical_name is not None:
+            if not logical_name:
+                raise ValidationError("mesh.name must be non-empty when provided")
+            object.__setattr__(self, "name", logical_name)
         if self.scale is not None:
             object.__setattr__(self, "scale", _as_vec3(self.scale, name="mesh.scale"))
         if self.source_geometry is not None and not isinstance(
@@ -84,6 +95,8 @@ class Mesh:
                 "source_transform",
                 _as_mat4(self.source_transform, name="mesh.source_transform"),
             )
+        if self.materialized_path is not None:
+            object.__setattr__(self, "materialized_path", os.fspath(self.materialized_path))
 
 
 Geometry = Union[Box, Cylinder, Sphere, Mesh]

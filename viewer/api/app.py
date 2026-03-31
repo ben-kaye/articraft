@@ -37,6 +37,8 @@ from viewer.api.schemas import (
     PromoteRecordRequest,
     RecordRatingRequest,
     RecordRatingResponse,
+    RecordSecondaryRatingRequest,
+    RecordSecondaryRatingResponse,
     RecordSummaryResponse,
     RecordTextFileResponse,
     RepoStatsResponse,
@@ -440,6 +442,7 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         run_id: str | None = None,
         time: str | None = None,
         model: str | None = None,
+        author: list[str] | None = Query(default=None),
         category: list[str] | None = Query(default=None),
         cost_min: float | None = None,
         cost_max: float | None = None,
@@ -452,6 +455,7 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
             run_id=run_id,
             time_filter=time,
             model_filter=model,
+            author_filters=author,
             category_filters=category,
             cost_min=cost_min,
             cost_max=cost_max,
@@ -571,6 +575,30 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         return RecordRatingResponse(
             record_id=record_id,
             rating=payload.rating,
+            updated_at=updated.get("updated_at"),
+        )
+
+    @app.put(
+        "/api/records/{record_id}/secondary-rating",
+        response_model=RecordSecondaryRatingResponse,
+    )
+    async def update_record_secondary_rating(
+        record_id: str, payload: RecordSecondaryRatingRequest
+    ) -> RecordSecondaryRatingResponse:
+        if not record_id.startswith("rec_"):
+            raise HTTPException(status_code=400, detail="Invalid record ID format")
+
+        from storage.records import RecordStore
+        from storage.repo import StorageRepo
+
+        repo = StorageRepo(app.state.repo_root)
+        updated = RecordStore(repo).update_secondary_rating(record_id, payload.secondary_rating)
+        if not isinstance(updated, dict):
+            raise HTTPException(status_code=404, detail=f"Record not found: {record_id}")
+
+        return RecordSecondaryRatingResponse(
+            record_id=record_id,
+            secondary_rating=payload.secondary_rating,
             updated_at=updated.get("updated_at"),
         )
 

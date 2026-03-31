@@ -91,6 +91,9 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     # Phased workflow
     assert "PHASE 1" in instructions
     assert "Do NOT write all geometry in one giant edit" in instructions
+    assert "simple envelope geometry or minimal sketches/extrusions" in instructions
+    assert "Upgrade each region from envelope geometry to realistic geometry" in instructions
+    assert "keep its learned dimensions/joints/attachments" in instructions
 
     # Probe and testing guidance
     assert "inspection-only" in instructions
@@ -99,8 +102,10 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "SDK docs" in instructions
     assert "object-first" in instructions
     assert "find_floating_parts(...)" in instructions
-    assert "sample_poses(...)" in instructions
     assert "keep the scaffolded baseline check stack" in instructions
+    assert "Do not add blanket lower/upper pose sweeps" in instructions
+    assert "fail_if_parts_overlap_in_sampled_poses(...)" in instructions
+    assert "warn_if_articulation_overlaps(...)" in instructions
 
     # Cache key
     assert payload["prompt_cache_key"].startswith("ac1:")
@@ -317,8 +322,10 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     assert "lexical search over curated base SDK examples" in gemini_instructions
     assert "object-first" in gemini_instructions
     assert "find_floating_parts(...)" in gemini_instructions
-    assert "sample_poses(...)" in gemini_instructions
     assert "keep the scaffolded baseline check stack" in gemini_instructions
+    assert "Do not add blanket lower/upper pose sweeps" in gemini_instructions
+    assert "fail_if_parts_overlap_in_sampled_poses(...)" in gemini_instructions
+    assert "warn_if_articulation_overlaps(...)" in gemini_instructions
 
     assert "## sdk/_docs/common/70_probe_tooling.md" in gemini_docs_message
 

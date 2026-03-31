@@ -10,6 +10,7 @@ from typing import Iterable, List, Literal, Optional, Sequence, Tuple, Union
 import manifold3d as _m3d
 import numpy as np
 
+from .assets import get_active_asset_session
 from .types import Box, Cylinder, Mesh, Sphere
 
 Vec2 = Tuple[float, float]
@@ -3258,15 +3259,45 @@ def boolean_intersection(a: MeshGeometry, b: MeshGeometry) -> MeshGeometry:
 
 def mesh_from_geometry(
     geometry: MeshGeometry,
-    filename: Union[str, os.PathLike[str]],
+    name: Union[str, os.PathLike[str]],
 ) -> Mesh:
-    filename_s = os.fspath(filename)
-    geometry.save_obj(filename_s)
+    name_s = os.fspath(name)
+    if _looks_like_legacy_mesh_filename(name_s):
+        geometry.save_obj(name_s)
+        resolved_path = Path(name_s).resolve()
+        return Mesh(
+            filename=_export_friendly_mesh_filename(name_s),
+            name=resolved_path.stem,
+            source_geometry=_primitive_source_geometry(geometry),
+            source_transform=_primitive_source_transform(geometry),
+            materialized_path=resolved_path.as_posix(),
+        )
+
+    session = get_active_asset_session(create_if_missing=True)
+    if session is None:
+        raise RuntimeError("Failed to create a managed asset session")
+    info = session.register_mesh_text(name_s, geometry.to_obj())
     return Mesh(
-        filename=_export_friendly_mesh_filename(filename_s),
+        filename=info.ref,
+        name=info.logical_name,
         source_geometry=_primitive_source_geometry(geometry),
         source_transform=_primitive_source_transform(geometry),
+        materialized_path=info.path.as_posix(),
     )
+
+
+def _looks_like_legacy_mesh_filename(value: str) -> bool:
+    if not value:
+        return False
+    if value.startswith(("assets/meshes/", "meshes/")):
+        return True
+    try:
+        path = Path(value)
+    except Exception:
+        return False
+    if path.is_absolute():
+        return True
+    return len(path.parts) > 1
 
 
 def _export_friendly_mesh_filename(filename: str) -> str:

@@ -4,9 +4,14 @@ import math
 import statistics
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any
 
-from sdk._core.v0.geometry_qc import generate_pose_samples
+from sdk._core.v0.assets import resolve_mesh_path
+from sdk._core.v0.geometry_qc import (
+    find_part_geometry_connectivity_findings,
+    generate_pose_samples,
+)
 
 
 class ProbeLookupError(LookupError):
@@ -130,6 +135,7 @@ class ProbeSession:
                 "nearest_neighbors",
                 "find_clearance_risks",
                 "find_floating_parts",
+                "geometry_connectivity_report",
                 "layout_report",
                 "grid_report",
                 "symmetry_report",
@@ -755,6 +761,116 @@ class ProbeSession:
             "max_mirror_offset": float(max_offset),
         }
 
+    def geometry_connectivity_report(
+        self,
+        part_or_name: object,
+        *,
+        contact_tol: float = 1e-6,
+    ) -> dict[str, Any]:
+        part = self._resolve_part(part_or_name)
+        part_name = self.name(part)
+        asset_root_value = self.ctx._asset_root()
+        asset_root = None if asset_root_value is None else Path(asset_root_value)
+
+        source_items = list(getattr(part, "collisions", []) or [])
+        source_kind = "collisions"
+        if not source_items:
+            source_items = list(getattr(part, "visuals", []) or [])
+            source_kind = "visuals"
+
+        items: list[dict[str, Any]] = []
+        raw_total_components = 0
+        disconnected_items: list[str] = []
+
+        for index, item in enumerate(source_items):
+            geometry = getattr(item, "geometry", None)
+            geometry_kind = type(geometry).__name__
+            item_name = getattr(item, "name", None)
+            label = str(item_name) if isinstance(item_name, str) and item_name else f"#{index}"
+            entry: dict[str, Any] = {
+                "item": label,
+                "geometry_kind": geometry_kind,
+                "component_count": 0,
+            }
+            if geometry is None:
+                entry["error"] = "missing geometry"
+                items.append(entry)
+                continue
+
+            filename = getattr(geometry, "filename", None)
+            if filename is None:
+                entry["component_count"] = 1
+                raw_total_components += 1
+                items.append(entry)
+                continue
+
+            try:
+                import trimesh
+
+                mesh_path = resolve_mesh_path(filename, assets=asset_root)
+                mesh = trimesh.load(mesh_path, force="mesh")
+                components = list(mesh.split(only_watertight=False))
+                entry["mesh_path"] = mesh_path.as_posix()
+                entry["component_count"] = len(components)
+                entry["components"] = [
+                    {
+                        "index": component_index,
+                        "vertex_count": int(len(component.vertices)),
+                        "face_count": int(len(component.faces)),
+                        "aabb": {
+                            "min": [float(value) for value in component.bounds[0].tolist()],
+                            "max": [float(value) for value in component.bounds[1].tolist()],
+                        },
+                    }
+                    for component_index, component in enumerate(components)
+                ]
+            except Exception as exc:
+                entry["error"] = str(exc)
+
+            component_count = int(entry.get("component_count") or 0)
+            raw_total_components += component_count
+            if component_count > 1:
+                disconnected_items.append(label)
+            items.append(entry)
+
+        compiled_part = self.ctx._compiled_exact_part(part_name)
+        compiled_collisions = list(getattr(compiled_part, "collisions", []) or [])
+        compiled_collision_count = len(compiled_collisions)
+
+        findings = find_part_geometry_connectivity_findings(
+            self.object_model,
+            asset_root=asset_root,
+            contact_tol=float(contact_tol),
+        )
+        finding = next((item for item in findings if item.part == part_name), None)
+
+        qc_finding = None
+        if finding is not None:
+            qc_finding = {
+                "part": str(finding.part),
+                "connected": int(finding.connected),
+                "total": int(finding.total),
+                "disconnected": [str(value) for value in finding.disconnected],
+                "contact_tol": float(finding.contact_tol),
+            }
+
+        return {
+            "metric_kind": "geometry_connectivity_review",
+            "part": part_name,
+            "source_kind": source_kind,
+            "item_count": len(source_items),
+            "compiled_collision_count": compiled_collision_count,
+            "raw_total_components": raw_total_components,
+            "has_raw_disconnected_components": bool(disconnected_items),
+            "disconnected_items": disconnected_items,
+            "qc_detected_disconnected_islands": finding is not None,
+            "qc_finding": qc_finding,
+            "blind_spot_suspected": bool(disconnected_items)
+            and finding is None
+            and raw_total_components > compiled_collision_count,
+            "items": items,
+        }
+
     def build_namespace(self, *, emit: object) -> dict[str, Any]:
         return {
             "object_model": self.object_model,
@@ -789,6 +905,7 @@ class ProbeSession:
             "nearest_neighbors": self.nearest_neighbors,
             "find_clearance_risks": self.find_clearance_risks,
             "find_floating_parts": self.find_floating_parts,
+            "geometry_connectivity_report": self.geometry_connectivity_report,
             "catalog": self.catalog,
         }
 

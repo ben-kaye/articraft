@@ -35,6 +35,9 @@ Execution rules:
 Temporarily apply articulation positions.
 
 - Inputs: articulation names and numeric positions.
+- Revolute and continuous positions are radians; prismatic positions are
+  meters.
+- Positive values follow the joint convention encoded by `axis`.
 - Return: context manager for `with pose(...):`.
 
 ### `part(name: str) -> object`
@@ -166,6 +169,17 @@ Return likely collision or clearance issues.
 Return parts whose nearest-neighbor relationship suggests they may read as
 floating.
 
+### `geometry_connectivity_report(part_or_name, contact_tol: float = 1e-6) -> dict[str, object]`
+
+Return a part-level connectivity diagnosis that compares:
+
+- raw connected components inside mesh-backed visuals or collisions
+- compiled exact-collision entry count
+- the current SDK connectivity-QC finding, if any
+
+Use this when a part visibly contains floating islands but
+`warn_if_part_contains_disconnected_geometry_islands(...)` did not fire.
+
 ### `layout_report(items, axis: str = "x") -> dict[str, object]`
 
 Return repeated-spacing review along one axis.
@@ -208,6 +222,22 @@ Repeated layout review:
 ```python
 keys = [visual("keyboard", name) for name in ("key_1", "key_2", "key_3", "key_4")]
 emit(layout_report(keys, axis="x"))
+```
+
+Disconnected-island diagnosis for a suspicious mesh part:
+
+```python
+report = geometry_connectivity_report("left_frame")
+emit(
+    {
+        "part": report["part"],
+        "has_raw_disconnected_components": report["has_raw_disconnected_components"],
+        "disconnected_items": report["disconnected_items"],
+        "compiled_collision_count": report["compiled_collision_count"],
+        "qc_detected_disconnected_islands": report["qc_detected_disconnected_islands"],
+        "blind_spot_suspected": report["blind_spot_suspected"],
+    }
+)
 ```
 
 ## See Also

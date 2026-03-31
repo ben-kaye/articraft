@@ -294,12 +294,12 @@ cut_opening_on_face(
 ```python
 mesh_from_geometry(
     geometry: MeshGeometry,
-    filename: str | os.PathLike[str],
+    name: str,
 ) -> Mesh
 ```
 
-- Writes the mesh to OBJ.
-- Returns an `sdk.Mesh` descriptor pointing at that OBJ.
+- Materializes the mesh to an internal OBJ managed by the runtime.
+- Returns an `sdk.Mesh` descriptor pointing at the managed asset.
 - Use this when the final authored visual should be mesh-backed.
 
 ## Advice
@@ -313,14 +313,17 @@ mesh_from_geometry(
 
 - Prefer `section_loft(...)` over raw `LoftGeometry(...)` for new shell/exterior
   loft authoring.
-- Prefer the wire/tube helpers in `45_wires.md` over manual sweeps for rails,
-  loops, and frames.
+- Prefer the spline-first wire/tube guidance in `45_wires.md` over manual
+  sweeps for rails, loops, and frames. In practice, start with
+  `tube_from_spline_points(...)` or `sweep_profile_along_spline(...)` unless
+  the geometry is intentionally hard-cornered.
 
 ### Exporting mesh-backed visuals
 
 - Use procedural meshes to author visible shape.
 - Convert the final mesh to `sdk.Mesh` with `mesh_from_geometry(...)`.
-- Keep asset-root wiring consistent so tests and exports can resolve the OBJ.
+- Use stable logical names such as `"shell"` or `"rear_bracket"` rather than
+  paths.
 
 ## Examples
 
@@ -331,7 +334,7 @@ shell = ExtrudeGeometry(
     cap=True,
     center=True,
 )
-mesh = mesh_from_geometry(shell, "assets/meshes/shell.obj")
+mesh = mesh_from_geometry(shell, "shell")
 ```
 
 ```python

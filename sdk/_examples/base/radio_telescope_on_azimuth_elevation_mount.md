@@ -57,7 +57,6 @@ import math
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    AssetContext,
     Box,
     Cylinder,
     Inertial,
@@ -71,15 +70,13 @@ from sdk import (
     tube_from_spline_points,
 )
 
-ASSETS = AssetContext.from_script(__file__)
-
 
 def _save_mesh(name, geometry):
-    return mesh_from_geometry(geometry, ASSETS.mesh_path(name))
+    return mesh_from_geometry(geometry, name)
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="observatory_radio_telescope", assets=ASSETS)
+    model = ArticulatedObject(name="observatory_radio_telescope")
 
     concrete = model.material("concrete", rgba=(0.69, 0.70, 0.72, 1.0))
     white_paint = model.material("white_paint", rgba=(0.91, 0.93, 0.95, 1.0))

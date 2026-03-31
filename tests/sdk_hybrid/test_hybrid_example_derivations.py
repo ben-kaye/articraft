@@ -54,9 +54,9 @@ def test_derived_hybrid_example_executes_and_exports(tmp_path: Path, relative_pa
     if isinstance(result, cq.Assembly):
         exports = export_cadquery_components(result, f"{path.stem}.obj", assets=assets)
         assert exports
-        assert all(export.mesh_path.exists() for export in exports)
+        assert all(Path(str(export.mesh.materialized_path)).exists() for export in exports)
     else:
         export = export_cadquery_mesh(result, f"{path.stem}.obj", assets=assets)
-        assert export.mesh_path.exists()
+        assert Path(str(export.mesh.materialized_path)).exists()
 
     assert cadquery_local_aabb(result)

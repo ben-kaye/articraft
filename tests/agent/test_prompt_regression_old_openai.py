@@ -30,6 +30,9 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "PHASE 3" in text
         assert "PHASE 4" in text
         assert "Do NOT write all geometry in one giant edit" in text
+        assert "simple envelope geometry or minimal sketches/extrusions" in text
+        assert "Upgrade each region from envelope geometry to realistic geometry" in text
+        assert "keep its learned dimensions/joints/attachments" in text
 
         # Tool contract
         assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in text
@@ -39,7 +42,8 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
 
         # Probe and testing
         assert "find_floating_parts(...)" in text
-        assert "sample_poses(...)" in text
+        assert "Do not add blanket lower/upper pose sweeps" in text
+        assert "fail_if_parts_overlap_in_sampled_poses(...)" in text
         assert "object-first" in text
         assert "resolve `part(...)`, `joint(...)`, `visual(...)` locals once" in text
         assert "keep the scaffolded baseline check stack" in text

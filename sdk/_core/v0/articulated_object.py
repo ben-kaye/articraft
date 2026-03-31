@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Union
 
-from .assets import AssetContext, coerce_asset_context
+from .assets import AssetContext, AssetSession, coerce_asset_context, resolve_asset_context
 from .errors import ValidationError
 from .types import (
     Articulation,
@@ -72,7 +72,7 @@ class ArticulatedObject:
     )
 
     def __post_init__(self) -> None:
-        self.assets = coerce_asset_context(self.assets)
+        self.assets = resolve_asset_context(self.assets)
         for part in self.parts:
             part.assets = coerce_asset_context(getattr(part, "assets", None)) or self.assets
 
@@ -214,9 +214,9 @@ class ArticulatedObject:
 
     def set_assets(
         self,
-        assets: Optional[Union[AssetContext, str, Path]],
+        assets: Optional[Union[AssetContext, AssetSession, str, Path]],
     ) -> Optional[AssetContext]:
-        self.assets = coerce_asset_context(assets)
+        self.assets = resolve_asset_context(assets)
         for part in self.parts:
             part.assets = self.assets
         return self.assets
@@ -491,10 +491,10 @@ def _validate_geometry(
         if geometry.radius <= 0:
             raise ValidationError(f"{context} sphere radius must be positive")
     elif isinstance(geometry, Mesh):
-        if not geometry.filename:
-            raise ValidationError(f"{context} mesh filename is required")
+        if not geometry.filename and not geometry.name:
+            raise ValidationError(f"{context} mesh filename or name is required")
         if strict_mesh_paths:
-            filename = str(geometry.filename)
+            filename = str(geometry.filename or "")
             if os.path.isabs(filename):
                 raise ValidationError(
                     f"{context} mesh filename must be relative (got absolute path): {filename}"

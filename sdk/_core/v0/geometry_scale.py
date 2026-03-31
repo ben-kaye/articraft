@@ -24,6 +24,7 @@ def scale_geometry_to_size(
     *,
     mode: ScaleMode = "stretch",
     asset_root: AssetContextLike | None = None,
+    mesh_name: str | os.PathLike[str] | None = None,
     filename: str | os.PathLike[str] | None = None,
 ) -> Geometry:
     supported = _require_supported_geometry(geometry)
@@ -43,7 +44,7 @@ def scale_geometry_to_size(
             supported,
             current_dims=current_dims,
             final_dims=final_dims,
-            filename=filename,
+            mesh_name=mesh_name if mesh_name is not None else filename,
         )
 
     if isinstance(supported, Sphere):
@@ -56,7 +57,7 @@ def scale_geometry_to_size(
             supported,
             current_dims=current_dims,
             final_dims=final_dims,
-            filename=filename,
+            mesh_name=mesh_name if mesh_name is not None else filename,
         )
 
     return _resize_mesh_reference(
@@ -208,11 +209,11 @@ def _convert_primitive_to_mesh(
     *,
     current_dims: tuple[float, float, float],
     final_dims: tuple[float, float, float],
-    filename: str | os.PathLike[str] | None,
+    mesh_name: str | os.PathLike[str] | None,
 ) -> Mesh:
-    if filename is None:
+    if mesh_name is None:
         raise ValidationError(
-            "filename is required when resizing this primitive would convert it into Mesh geometry"
+            "mesh_name is required when resizing this primitive would convert it into Mesh geometry"
         )
 
     if isinstance(geometry, Cylinder):
@@ -224,7 +225,7 @@ def _convert_primitive_to_mesh(
         mesh_geometry = SphereGeometry(radius=float(geometry.radius))
 
     mesh_geometry.scale(*_scale_factors_for_dims(current_dims, final_dims))
-    return mesh_from_geometry(mesh_geometry, filename)
+    return mesh_from_geometry(mesh_geometry, mesh_name)
 
 
 def _approx_equal(a: float, b: float, *, tol: float = _FLOAT_TOL) -> bool:

@@ -21,6 +21,7 @@ from storage.models import (
     RunRecord,
     SourceRef,
 )
+from storage.record_authors import RecordAuthorSyncSummary, RecordRatedBySyncSummary
 from storage.records import RecordStore
 from storage.repo import StorageRepo
 from storage.runs import RunStore
@@ -555,6 +556,8 @@ def test_run_single_generates_dataset_record_and_creates_category(
                 "gpt-5.4",
                 "--thinking-level",
                 "high",
+                "--max-cost-usd",
+                "1.5",
                 "--sdk-package",
                 "sdk",
                 "--record-id",
@@ -569,6 +572,13 @@ def test_run_single_generates_dataset_record_and_creates_category(
     )
     assert record["collections"] == ["dataset"]
     assert record["category_slug"] == "internet_router"
+    provenance = json.loads(
+        (repo.layout.record_dir("rec_router_single") / "provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["prompting"]["scaffold_mode"] == "lite"
+    assert provenance["generation"]["max_cost_usd"] == 1.5
 
     dataset_entry = json.loads(
         repo.layout.record_dataset_entry_path("rec_router_single").read_text(encoding="utf-8")
@@ -590,6 +600,9 @@ def test_run_single_generates_dataset_record_and_creates_category(
     assert manifest == {
         "generated": [{"name": "ds_internet_router_0001", "record_id": "rec_router_single"}]
     }
+    run_dir = next(path for path in repo.layout.runs_root.iterdir() if path.is_dir())
+    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert run_metadata["settings_summary"]["max_cost_usd"] == 1.5
     assert repo.layout.search_index_path().exists()
     assert (CollectionStore(repo).load_workbench() or {}).get("entries", []) == []
 
@@ -699,6 +712,12 @@ def test_run_single_reuses_existing_category_and_allocates_next_dataset_id(
         repo.layout.record_dataset_entry_path("rec_router_single_2").read_text(encoding="utf-8")
     )
     assert dataset_entry["dataset_id"] == "ds_internet_router_0002"
+    provenance = json.loads(
+        (repo.layout.record_dir("rec_router_single_2") / "provenance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert provenance["prompting"]["scaffold_mode"] == "lite"
 
     category = json.loads(
         repo.layout.category_metadata_path("internet_router").read_text(encoding="utf-8")
@@ -714,6 +733,60 @@ def test_run_single_reuses_existing_category_and_allocates_next_dataset_id(
 
     captured = capsys.readouterr().out
     assert "dataset_id=ds_internet_router_0002" in captured
+
+
+def test_sync_authors_cli_reports_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+
+    monkeypatch.setattr(
+        "cli.dataset.sync_record_authors",
+        lambda repo: RecordAuthorSyncSummary(
+            scanned=3,
+            updated_record_ids=["rec_001", "rec_002"],
+            already_set_record_ids=["rec_003"],
+            missing_git_author_record_ids=["rec_004"],
+        ),
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert dataset_main(["--repo-root", str(tmp_path), "sync-authors"]) == 0
+
+    captured = output.getvalue()
+    assert "Synced record authors scanned=3 updated=2 already_set=1" in captured
+    assert "sample_updated_record_ids=rec_001, rec_002" in captured
+    assert "sample_missing_git_author_record_ids=rec_004" in captured
+
+
+def test_sync_rated_by_cli_reports_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+
+    monkeypatch.setattr(
+        "cli.dataset.sync_record_rated_by",
+        lambda repo: RecordRatedBySyncSummary(
+            scanned=3,
+            updated_record_ids=["rec_010", "rec_011"],
+            unchanged_record_ids=["rec_012"],
+            missing_git_author_record_ids=["rec_013"],
+        ),
+    )
+
+    output = io.StringIO()
+    with redirect_stdout(output):
+        assert dataset_main(["--repo-root", str(tmp_path), "sync-rated-by"]) == 0
+
+    captured = output.getvalue()
+    assert "Synced record rated_by scanned=3 updated=2 unchanged=1" in captured
+    assert "sample_updated_record_ids=rec_010, rec_011" in captured
+    assert "sample_missing_git_author_record_ids=rec_013" in captured
 
 
 def test_supercategory_cli_commands_cover_list_mutation_and_delete(tmp_path: Path) -> None:

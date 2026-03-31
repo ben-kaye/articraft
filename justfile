@@ -6,6 +6,7 @@ port := "8765"
 model := ""
 thinking := ""
 sdk := ""
+scaffold_mode := ""
 image := ""
 dataset_id := ""
 category := ""
@@ -18,6 +19,7 @@ row_concurrency := ""
 subprocess_concurrency := ""
 local_work_concurrency := ""
 design_audit := ""
+max_cost_usd := ""
 resume := ""
 resume_policy := ""
 allow_resume_spec_mismatch := ""
@@ -29,6 +31,7 @@ setup:
     uv run python scripts/bootstrap_env.py .
     uv sync --group dev
     uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+    uv run python scripts/git_hooks.py install-post-commit
     @if command -v npm >/dev/null 2>&1; then \
         npm --prefix viewer/web ci; \
         npm --prefix viewer/web run typecheck; \
@@ -43,6 +46,7 @@ setup:
 
 hooks-install:
     uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+    uv run python scripts/git_hooks.py install-post-commit
 
 format:
     uv run ruff format .
@@ -62,8 +66,10 @@ wb prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
+    max_cost_usd_value={{ quote(max_cost_usd) }}
     if [ -z "$model" ]; then
       model="gpt-5.4"
     fi
@@ -103,6 +109,9 @@ wb prompt:
       --thinking "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ "$design_audit" = "false" ]; then
       cmd+=(--no-design-audit)
     elif [ "$design_audit" = "true" ]; then
@@ -110,6 +119,9 @@ wb prompt:
     fi
     if [ -n "$image" ]; then
       cmd+=(--image "$image")
+    fi
+    if [ -n "$max_cost_usd_value" ]; then
+      cmd+=(--max-cost-usd "$max_cost_usd_value")
     fi
     exec "${cmd[@]}"
 
@@ -119,8 +131,10 @@ wb-init prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
+    max_cost_usd_value={{ quote(max_cost_usd) }}
     if [ -z "$model" ]; then
       model="gpt-5.4"
     fi
@@ -161,8 +175,14 @@ wb-init prompt:
       --thinking-level "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ -n "$image" ]; then
       cmd+=(--image "$image")
+    fi
+    if [ -n "$max_cost_usd_value" ]; then
+      cmd+=(--max-cost-usd "$max_cost_usd_value")
     fi
     if [ "$design_audit" = "false" ]; then
       cmd+=(--no-design-audit)
@@ -177,8 +197,10 @@ wb-category prompt:
     model={{ quote(model) }}
     thinking={{ quote(thinking) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     image={{ quote(image) }}
     design_audit={{ quote(design_audit) }}
+    max_cost_usd_value={{ quote(max_cost_usd) }}
     category={{ quote(category) }}
     dataset_id={{ quote(dataset_id) }}
     if [ -z "$category" ]; then
@@ -226,11 +248,17 @@ wb-category prompt:
       --thinking-level "$thinking"
       --sdk-package "$sdk_package"
     )
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
+    fi
     if [ -n "$dataset_id" ]; then
       cmd+=(--dataset-id "$dataset_id")
     fi
     if [ -n "$image" ]; then
       cmd+=(--image "$image")
+    fi
+    if [ -n "$max_cost_usd_value" ]; then
+      cmd+=(--max-cost-usd "$max_cost_usd_value")
     fi
     if [ "$design_audit" = "false" ]; then
       cmd+=(--no-design-audit)
@@ -374,6 +402,8 @@ dataset-batch spec_path="":
     row_concurrency_value={{ quote(row_concurrency) }}
     legacy_concurrency_value={{ quote(concurrency) }}
     design_audit_value={{ quote(design_audit) }}
+    max_cost_usd_value={{ quote(max_cost_usd) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     subprocess_concurrency_value={{ quote(subprocess_concurrency) }}
     legacy_local_work_value={{ quote(local_work_concurrency) }}
     resume_value={{ quote(resume) }}
@@ -393,6 +423,12 @@ dataset-batch spec_path="":
       subprocess_concurrency_value="$legacy_local_work_value"
     fi
     extra_args=(--row-concurrency "$row_concurrency_value")
+    if [ -n "$scaffold_mode_value" ]; then
+      extra_args+=(--scaffold-mode "$scaffold_mode_value")
+    fi
+    if [ -n "$max_cost_usd_value" ]; then
+      extra_args+=(--max-cost-usd "$max_cost_usd_value")
+    fi
     if [ -n "$subprocess_concurrency_value" ]; then
       extra_args+=(--subprocess-concurrency "$subprocess_concurrency_value")
     fi
@@ -428,7 +464,7 @@ batch-spec-new:
       exit 1
     fi
     mkdir -p "$(dirname "$spec_path")"
-    printf '%s\n' 'row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,sdk_package,label,design_audit' >"$spec_path"
+    printf '%s\n' 'row_id,category_slug,category_title,prompt,provider,model_id,thinking_level,max_turns,max_cost_usd,sdk_package,scaffold_mode,label,design_audit' >"$spec_path"
     echo "Created $spec_path"
 
 search-index:
@@ -440,7 +476,9 @@ rerun record:
     record={{ quote(record) }}
     model_override={{ quote(model) }}
     thinking_override={{ quote(thinking) }}
+    max_cost_usd_value={{ quote(max_cost_usd) }}
     sdk={{ quote(sdk) }}
+    scaffold_mode_value={{ quote(scaffold_mode) }}
     case "$sdk" in
       "")
         sdk_package=""
@@ -468,8 +506,14 @@ rerun record:
     if [ -n "$thinking_override" ]; then
       cmd+=(--thinking-level "$thinking_override")
     fi
+    if [ -n "$max_cost_usd_value" ]; then
+      cmd+=(--max-cost-usd "$max_cost_usd_value")
+    fi
     if [ -n "$sdk_package" ]; then
       cmd+=(--sdk-package "$sdk_package")
+    fi
+    if [ -n "$scaffold_mode_value" ]; then
+      cmd+=(--scaffold-mode "$scaffold_mode_value")
     fi
     exec "${cmd[@]}"
 

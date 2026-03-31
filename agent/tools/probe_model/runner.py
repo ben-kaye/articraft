@@ -12,6 +12,11 @@ from typing import Any
 
 from agent.compiler import load_model_globals
 from agent.tools.probe_model.helpers import ProbeLookupError, ProbeSession
+from sdk._core.v0.assets import (
+    activate_asset_session,
+    asset_session_for_script,
+    get_active_asset_session,
+)
 
 
 class _EmitContractError(RuntimeError):
@@ -49,16 +54,15 @@ def _payload(
     return output
 
 
-def _asset_root_from_globals(
-    globals_dict: dict[str, Any], *, sdk_package: str, file_path: Path
-) -> Path:
+def _asset_root_from_globals(globals_dict: dict[str, Any], *, file_path: Path) -> Path:
     assets = globals_dict.get("ASSETS")
     asset_root = getattr(assets, "asset_root", None)
     if asset_root is not None:
         return Path(asset_root).resolve()
-    sdk_module = importlib.import_module(sdk_package)
-    asset_context = getattr(sdk_module, "AssetContext").from_script(file_path)
-    return asset_context.asset_root
+    asset_session = get_active_asset_session()
+    if asset_session is not None:
+        return asset_session.asset_root
+    return file_path.parent.resolve()
 
 
 def main() -> int:
@@ -95,38 +99,38 @@ def main() -> int:
 
     stage = "load"
     try:
-        globals_dict = load_model_globals(file_path, sdk_package=sdk_package)
-        object_model = globals_dict.get("object_model")
-        if object_model is None:
-            raise ValueError("Loaded script did not define `object_model`")
-        sdk_module = importlib.import_module(sdk_package)
-        test_context_type = getattr(sdk_module, "TestContext")
-        asset_root = _asset_root_from_globals(
-            globals_dict,
-            sdk_package=sdk_package,
-            file_path=file_path,
-        )
-        ctx = test_context_type(object_model, asset_root=asset_root)
-        session = ProbeSession(object_model, ctx)
-        namespace = {
-            "__name__": "__probe_model__",
-            "__file__": str(file_path),
-        }
-        namespace.update(session.build_namespace(emit=emit))
-        stage = "exec"
-        compiled = compile(code, str(file_path.with_suffix(".probe.py")), "exec")
-        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            exec(compiled, namespace, namespace)
-        if emit_count == 0:
-            raise _EmitContractError("emit(value) was not called")
-        json.dumps(emitted_value)
-        payload = _payload(
-            ok=True,
-            result=emitted_value,
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-            stdout=stdout_buffer.getvalue(),
-            stderr=stderr_buffer.getvalue(),
-        )
+        with activate_asset_session(asset_session_for_script(file_path)):
+            globals_dict = load_model_globals(file_path, sdk_package=sdk_package)
+            object_model = globals_dict.get("object_model")
+            if object_model is None:
+                raise ValueError("Loaded script did not define `object_model`")
+            sdk_module = importlib.import_module(sdk_package)
+            test_context_type = getattr(sdk_module, "TestContext")
+            asset_root = _asset_root_from_globals(
+                globals_dict,
+                file_path=file_path,
+            )
+            ctx = test_context_type(object_model, asset_root=asset_root)
+            session = ProbeSession(object_model, ctx)
+            namespace = {
+                "__name__": "__probe_model__",
+                "__file__": str(file_path),
+            }
+            namespace.update(session.build_namespace(emit=emit))
+            stage = "exec"
+            compiled = compile(code, str(file_path.with_suffix(".probe.py")), "exec")
+            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                exec(compiled, namespace, namespace)
+            if emit_count == 0:
+                raise _EmitContractError("emit(value) was not called")
+            json.dumps(emitted_value)
+            payload = _payload(
+                ok=True,
+                result=emitted_value,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                stdout=stdout_buffer.getvalue(),
+                stderr=stderr_buffer.getvalue(),
+            )
     except ProbeLookupError as exc:
         payload = _payload(
             ok=False,

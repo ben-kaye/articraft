@@ -469,6 +469,19 @@ class TestContext:
         if text:
             self._warnings.append(str(text))
 
+    @staticmethod
+    def _overlap_name_aliases(name: Optional[str]) -> set[str]:
+        if not isinstance(name, str):
+            return set()
+        cleaned = name.strip()
+        if not cleaned:
+            return set()
+        aliases = {cleaned}
+        prefix, sep, suffix = cleaned.rpartition("__component_")
+        if sep and suffix.isdigit() and prefix:
+            aliases.add(prefix)
+        return aliases
+
     def _overlap_is_allowed(self, overlap: GeometryOverlap) -> bool:
         key = _pair_key(overlap.link_a, overlap.link_b)
         for allowed_key, elem_a, elem_b, _reason in self._allow_elems:
@@ -476,8 +489,11 @@ class TestContext:
                 continue
             if elem_a is None and elem_b is None:
                 return True
-            names = (overlap.elem_a_name, overlap.elem_b_name)
-            if (elem_a in names) and (elem_b in names):
+            aliases_a = self._overlap_name_aliases(overlap.elem_a_name)
+            aliases_b = self._overlap_name_aliases(overlap.elem_b_name)
+            if (elem_a in aliases_a and elem_b in aliases_b) or (
+                elem_a in aliases_b and elem_b in aliases_a
+            ):
                 return True
         return False
 
@@ -1022,13 +1038,12 @@ class TestContext:
         except Exception as exc:
             return self._record("check_model_valid", False, f"{type(exc).__name__}: {exc}")
 
-    def check_mesh_files_exist(self) -> bool:
+    def check_mesh_assets_ready(self) -> bool:
         links = getattr(self.model, "parts", None)
         if not isinstance(links, list):
             return self._record(
-                "check_mesh_files_exist", False, "model.parts missing or not a list"
+                "check_mesh_assets_ready", False, "model.parts missing or not a list"
             )
-        root = self._asset_root()
         missing: List[str] = []
         for link in links:
             for field_name in ("visuals",):
@@ -1040,21 +1055,32 @@ class TestContext:
                     filename = getattr(geom, "filename", None)
                     if filename is None:
                         continue
-                    filename = str(filename)
-                    if not filename:
+                    filename_text = str(filename)
+                    if not filename_text:
                         continue
-                    p = Path(filename)
-                    if not p.is_absolute():
-                        p = (root / p).resolve()
-                    if not p.exists():
-                        missing.append(str(p))
+                    try:
+                        resolved = resolve_mesh_path(
+                            filename_text,
+                            assets=self.asset_root or getattr(self.model, "assets", None),
+                        )
+                    except Exception:
+                        resolved = None
+                    if resolved is None or not resolved.exists():
+                        missing.append(str(filename_text if resolved is None else resolved))
         if missing:
             preview = "\n".join(missing[:12])
             more = "" if len(missing) <= 12 else f"\n... ({len(missing) - 12} more)"
             return self._record(
-                "check_mesh_files_exist", False, f"Missing mesh files:\n{preview}{more}"
+                "check_mesh_assets_ready", False, f"Missing mesh assets:\n{preview}{more}"
             )
-        return self._record("check_mesh_files_exist", True)
+        return self._record("check_mesh_assets_ready", True)
+
+    def check_mesh_files_exist(self) -> bool:
+        self._warn_deprecated_helper(
+            "check_mesh_files_exist()",
+            "check_mesh_assets_ready()",
+        )
+        return self.check_mesh_assets_ready()
 
     def _check_articulation_origin_far_from_geometry_impl(
         self,
@@ -1388,6 +1414,7 @@ class TestContext:
         overlap_volume_tol: Optional[float] = None,
         ignore_adjacent: bool = False,
         ignore_fixed: bool = True,
+        name: Optional[str] = None,
     ) -> bool:
         return self._check_overlaps_impl(
             max_pose_samples=max_pose_samples,
@@ -1395,7 +1422,7 @@ class TestContext:
             overlap_volume_tol=overlap_volume_tol,
             ignore_adjacent=ignore_adjacent,
             ignore_fixed=ignore_fixed,
-            check_name=None,
+            check_name=name,
             warn_only=False,
         )
 

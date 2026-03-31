@@ -13,6 +13,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ from agent.compiler import (
 from agent.compiler import (
     compile_urdf_report_maybe_timeout as _compile_urdf_report_maybe_timeout,
 )
+from agent.cost import max_cost_usd_from_env, parse_max_cost_usd
 from agent.defaults import DEFAULT_MAX_TURNS
 from agent.harness import ArticraftAgent, build_openai_prompt_cache_settings
 from agent.models import CompileReport as AgentCompileReport
@@ -55,6 +57,7 @@ from agent.tools import (
 from agent.tools import (
     resolve_image_path as _resolve_image_path,
 )
+from sdk._profiles import DEFAULT_SCAFFOLD_MODE, LEGACY_SCAFFOLD_MODE, normalize_scaffold_mode
 from storage.collections import CollectionStore
 from storage.dataset_workflow import (
     parse_canonical_dataset_sequence,
@@ -94,26 +97,39 @@ logger.setLevel(logging.INFO)
 SDK_DOCS_MODE_FULL = "full"
 
 MAX_SINGLE_RUN_SLUG_LEN = 120
-_DRAFT_MODEL_TEMPLATE = """from __future__ import annotations
+_DRAFT_MOTION_LIMIT_EXAMPLE_BLOCK = """    # if hinge_limits is not None and hinge_limits.lower is not None and hinge_limits.upper is not None:
+    #     with ctx.pose({lid_hinge: hinge_limits.lower}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
+    #     with ctx.pose({lid_hinge: hinge_limits.upper}):
+    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
+    #         ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
+"""
+
+
+def _draft_model_template(*, sdk_package: str, scaffold_mode: str) -> str:
+    normalized_scaffold_mode = normalize_scaffold_mode(scaffold_mode)
+    strict_motion_limit_block = (
+        _DRAFT_MOTION_LIMIT_EXAMPLE_BLOCK if normalized_scaffold_mode == "strict" else ""
+    )
+    return f"""from __future__ import annotations
 
 # Draft scaffold created by `articraft-workbench init-record`.
 # The target prompt for this record is stored in prompt.txt.
 # Extend this scaffold with a valid Articraft model implementation.
 
-from sdk import AssetContext, ArticulatedObject, TestContext, TestReport
-
-ASSETS = AssetContext.from_script(__file__)
+from {sdk_package} import ArticulatedObject, TestContext, TestReport
 
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="draft_model", assets=ASSETS)
+    model = ArticulatedObject(name="draft_model")
     return model
 
 
 def run_tests() -> TestReport:
-    ctx = TestContext(object_model, asset_root=ASSETS.asset_root)
+    ctx = TestContext(object_model)
     ctx.check_model_valid()
-    ctx.check_mesh_files_exist()
+    ctx.check_mesh_assets_ready()
 
     # Preferred default QC stack:
     # 1) blocking grounded-component floating check for disconnected part groups
@@ -137,10 +153,9 @@ def run_tests() -> TestReport:
     # - hero features are present and legible
     # - mounted parts are connected/seated, not floating
     # - important parts are in the right place
-    # - key poses stay believable
     # - each new visible form or mechanism has a matching assertion
     # Resolve exact Part / Articulation / named Visual objects once here, then
-    # pass those objects into ctx.expect_*, ctx.allow_*, and ctx.pose({joint: value}).
+    # pass those objects into ctx.expect_*, ctx.allow_*, and ctx.pose({{joint: value}}).
     # For ctx.expect_* helpers, keep the first body/link arguments as Part objects.
     # Named Visuals belong only in elem_a/elem_b/positive_elem/negative_elem/inner_elem/outer_elem.
     # Prefer this object-first pattern over raw string test calls or global REFS bags.
@@ -150,20 +165,18 @@ def run_tests() -> TestReport:
     # lid_hinge = object_model.get_articulation("lid_hinge")
     # hinge_leaf = lid.get_visual("hinge_leaf")
     # body_leaf = body.get_visual("body_leaf")
-    # hinge_limits = lid_hinge.motion_limits
     # ctx.expect_overlap(lid, body, axes="xy", min_overlap=0.05)
     # ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)
     # ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)
-    # if hinge_limits is not None and hinge_limits.lower is not None and hinge_limits.upper is not None:
-    #     with ctx.pose({lid_hinge: hinge_limits.lower}):
-    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
-    #         ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
-    #     with ctx.pose({lid_hinge: hinge_limits.upper}):
-    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
-    #         ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
+    # Keep pose-specific checks lean.
+    # Do not add blanket lower/upper pose sweeps or
+    # `ctx.fail_if_parts_overlap_in_sampled_poses(...)` by default.
+{strict_motion_limit_block}\
     # If the object has a mounted subassembly, prefer exact `expect_contact(...)`,
     # `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` checks on
     # named local features over the broad rest-pose overlap backstop.
+    # Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is
+    # genuinely uncertain or mechanically important.
     # Add prompt-specific exact visual checks below; optional warning heuristics are not enough.
     return ctx.report()
 
@@ -388,18 +401,22 @@ def _single_run_settings_summary(
     max_turns: int,
     system_prompt_path: str,
     sdk_package: str,
+    scaffold_mode: str,
     sdk_docs_mode: str,
     openai_transport: str,
     openai_reasoning_summary: str | None,
     post_success_design_audit: bool,
+    max_cost_usd: float | None,
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "provider": provider,
         "model_id": model_id,
         "thinking_level": thinking_level,
         "max_turns": max_turns,
+        "max_cost_usd": max_cost_usd,
         "system_prompt_path": system_prompt_path,
         "sdk_package": sdk_package,
+        "scaffold_mode": scaffold_mode,
         "sdk_docs_mode": sdk_docs_mode,
         "post_success_design_audit": post_success_design_audit,
     }
@@ -407,6 +424,12 @@ def _single_run_settings_summary(
         summary["openai_transport"] = openai_transport
         summary["openai_reasoning_summary"] = openai_reasoning_summary
     return summary
+
+
+def _normalize_or_legacy_scaffold_mode(scaffold_mode: str | None) -> str:
+    if scaffold_mode is None:
+        return LEGACY_SCAFFOLD_MODE
+    return normalize_scaffold_mode(scaffold_mode)
 
 
 def _thinking_level_from_run_parameters(
@@ -515,6 +538,70 @@ def _replace_tree_from_source(source: Path, destination: Path) -> None:
         shutil.copytree(source, destination)
 
 
+def _normalize_materialization_asset_ref(filename: str) -> tuple[str, Path] | None:
+    raw = str(filename or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+
+    if raw.startswith("assets/meshes/"):
+        relative = Path(*path.parts[2:])
+        return ("meshes", relative) if relative.parts else None
+    if raw.startswith("meshes/"):
+        relative = Path(*path.parts[1:])
+        return ("meshes", relative) if relative.parts else None
+    if raw.startswith("assets/glb/"):
+        relative = Path(*path.parts[2:])
+        return ("glb", relative) if relative.parts else None
+    if raw.startswith("glb/"):
+        relative = Path(*path.parts[1:])
+        return ("glb", relative) if relative.parts else None
+    return None
+
+
+def _referenced_materialization_assets(urdf_xml: str) -> dict[str, set[Path]]:
+    try:
+        root = ET.fromstring(urdf_xml)
+    except ET.ParseError as exc:
+        raise ValueError(f"Failed to parse persisted URDF for asset collection: {exc}") from exc
+
+    referenced: dict[str, set[Path]] = {"meshes": set(), "glb": set()}
+    for mesh_el in root.findall(".//mesh"):
+        filename = mesh_el.attrib.get("filename")
+        if not isinstance(filename, str):
+            continue
+        normalized = _normalize_materialization_asset_ref(filename)
+        if normalized is None:
+            continue
+        group, relative_path = normalized
+        referenced[group].add(relative_path)
+    return referenced
+
+
+def _replace_selected_files_from_source(
+    source_root: Path,
+    destination_root: Path,
+    relative_paths: set[Path],
+) -> None:
+    if destination_root.exists():
+        shutil.rmtree(destination_root)
+    if not relative_paths:
+        return
+    if not source_root.exists():
+        raise FileNotFoundError(f"Referenced asset source root is missing: {source_root}")
+
+    destination_root.parent.mkdir(parents=True, exist_ok=True)
+    for relative_path in sorted(relative_paths, key=lambda path: path.as_posix()):
+        source = source_root / relative_path
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError(f"Referenced asset is missing: {source}")
+        destination = destination_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
 def _remove_tree_if_exists(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -543,6 +630,13 @@ def _optional_bool(value: Any) -> bool | None:
     if text in {"0", "false", "f", "no", "n", "off"}:
         return False
     return None
+
+
+def _optional_max_cost_usd(value: Any, *, label: str) -> float | None:
+    try:
+        return parse_max_cost_usd(value, label=label)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _normalize_prompt_kind(value: Any) -> str:
@@ -646,9 +740,11 @@ def create_workbench_draft_record(
     max_turns: int = DEFAULT_MAX_TURNS,
     system_prompt_path: str = "designer_system_prompt.txt",
     sdk_package: str = "sdk",
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE,
     sdk_docs_mode: str = "full",
     openai_reasoning_summary: str | None = "auto",
     post_success_design_audit: bool = True,
+    max_cost_usd: float | None = None,
     label: str | None = None,
     tags: Optional[list[str]] = None,
     record_id: str | None = None,
@@ -680,6 +776,7 @@ def create_workbench_draft_record(
         openai_transport=openai_transport,
         openai_reasoning_summary=openai_reasoning_summary,
     )
+    normalized_scaffold_mode = normalize_scaffold_mode(scaffold_mode)
     loaded_system_prompt_path = resolve_system_prompt_path(
         system_prompt_path,
         provider=provider,
@@ -690,7 +787,13 @@ def create_workbench_draft_record(
 
     record_store.ensure_record_dirs(context.record_id)
     storage_repo.write_text(context.record_prompt_path, normalized_prompt)
-    storage_repo.write_text(context.record_model_path, _DRAFT_MODEL_TEMPLATE)
+    storage_repo.write_text(
+        context.record_model_path,
+        _draft_model_template(
+            sdk_package=sdk_package,
+            scaffold_mode=normalized_scaffold_mode,
+        ),
+    )
     if image_path is not None:
         record_store.copy_input_image(context.record_id, image_path)
 
@@ -707,12 +810,14 @@ def create_workbench_draft_record(
             openai_transport=openai_transport if provider == "openai" else None,
             openai_reasoning_summary=openai_reasoning_summary if provider == "openai" else None,
             max_turns=max_turns,
+            max_cost_usd=max_cost_usd,
         ),
         prompting=PromptingSettings(
             system_prompt_file=loaded_system_prompt_path.name,
             system_prompt_sha256=system_prompt_sha,
             sdk_docs_mode=sdk_docs_mode,
             post_success_design_audit=post_success_design_audit,
+            scaffold_mode=normalized_scaffold_mode,
         ),
         sdk=SdkSettings(
             sdk_package=sdk_package,
@@ -793,9 +898,11 @@ def _write_success_record(
     max_turns: int,
     system_prompt_path: Path,
     sdk_package: str,
+    scaffold_mode: str,
     sdk_docs_mode: str,
     openai_reasoning_summary: str | None,
     post_success_design_audit: bool,
+    max_cost_usd: float | None,
     final_code: str,
     urdf_xml: str,
     compile_warnings: list[str],
@@ -830,6 +937,7 @@ def _write_success_record(
             warnings=persisted_warnings,
         )
     record_store.ensure_record_dirs(context.record_id)
+    referenced_assets = _referenced_materialization_assets(persisted_urdf_xml)
     storage_repo.write_text(context.record_prompt_path, prompt_text)
     storage_repo.write_text(context.record_model_path, final_code)
     storage_repo.write_text(context.record_urdf_path, persisted_urdf_xml)
@@ -853,13 +961,15 @@ def _write_success_record(
     canonicalize_record_trace_dir(storage_repo, context.record_id)
     if context.trace_dir.exists():
         shutil.rmtree(context.trace_dir)
-    _replace_tree_from_source(
+    _replace_selected_files_from_source(
         context.staging_dir / "assets" / "meshes",
         storage_repo.layout.record_materialization_asset_meshes_dir(context.record_id),
+        referenced_assets["meshes"],
     )
-    _replace_tree_from_source(
+    _replace_selected_files_from_source(
         context.staging_dir / "assets" / "glb",
         storage_repo.layout.record_materialization_asset_glb_dir(context.record_id),
+        referenced_assets["glb"],
     )
     _replace_tree_from_source(
         context.staging_dir / "assets" / "viewer",
@@ -896,12 +1006,14 @@ def _write_success_record(
             openai_transport=openai_transport if provider == "openai" else None,
             openai_reasoning_summary=openai_reasoning_summary if provider == "openai" else None,
             max_turns=max_turns,
+            max_cost_usd=max_cost_usd,
         ),
         prompting=PromptingSettings(
             system_prompt_file=system_prompt_path.name,
             system_prompt_sha256=system_prompt_sha,
             sdk_docs_mode=sdk_docs_mode,
             post_success_design_audit=post_success_design_audit,
+            scaffold_mode=scaffold_mode,
         ),
         sdk=SdkSettings(
             sdk_package=sdk_package,
@@ -933,6 +1045,9 @@ def _write_success_record(
         ),
         updated_at=_utc_now(),
         rating=(existing_record.get("rating") if isinstance(existing_record, dict) else None),
+        secondary_rating=(
+            existing_record.get("secondary_rating") if isinstance(existing_record, dict) else None
+        ),
         kind=(
             _first_string(existing_record.get("kind"), "generated_model")
             if isinstance(existing_record, dict)
@@ -971,6 +1086,19 @@ def _write_success_record(
             _normalize_collection_names(existing_record.get("collections"), collection)
             if isinstance(existing_record, dict)
             else [collection]
+        ),
+        author=_optional_string(existing_record.get("author"))
+        if isinstance(existing_record, dict)
+        else None,
+        rated_by=(
+            _optional_string(existing_record.get("rated_by"))
+            if isinstance(existing_record, dict)
+            else None
+        ),
+        secondary_rated_by=(
+            _optional_string(existing_record.get("secondary_rated_by"))
+            if isinstance(existing_record, dict)
+            else None
         ),
     )
     record_store.write_record(record)
@@ -1107,9 +1235,11 @@ async def run_from_input(
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     sdk_package: str = "sdk",
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE,
     sdk_docs_mode: str = "full",
     openai_reasoning_summary: Optional[str] = "auto",
     post_success_design_audit: bool = True,
+    max_cost_usd: float | None = None,
     label: str | None = None,
     tags: Optional[list[str]] = None,
     collection: str = "workbench",
@@ -1135,9 +1265,11 @@ async def run_from_input(
         display_enabled=display_enabled,
         on_turn_start=on_turn_start,
         sdk_package=sdk_package,
+        scaffold_mode=scaffold_mode,
         sdk_docs_mode=sdk_docs_mode,
         openai_reasoning_summary=openai_reasoning_summary,
         post_success_design_audit=post_success_design_audit,
+        max_cost_usd=max_cost_usd,
         label=label,
         tags=tags,
         collection=collection,
@@ -1172,9 +1304,11 @@ async def _execute_single_run(
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     sdk_package: str = "sdk",
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE,
     sdk_docs_mode: str = "full",
     openai_reasoning_summary: Optional[str] = "auto",
     post_success_design_audit: bool = True,
+    max_cost_usd: float | None = None,
     label: str | None = None,
     tags: Optional[list[str]] = None,
     collection: str = "workbench",
@@ -1197,6 +1331,7 @@ async def _execute_single_run(
     prompt_index: int | None = None,
     runtime_limits: BatchRuntimeLimits | None = None,
 ) -> RunExecutionOutcome:
+    scaffold_mode = normalize_scaffold_mode(scaffold_mode)
     resolved_context = context or await asyncio.to_thread(
         _build_single_run_context,
         repo_root=resolved_repo_root,
@@ -1258,10 +1393,12 @@ async def _execute_single_run(
                         max_turns=max_turns,
                         system_prompt_path=system_prompt_path,
                         sdk_package=sdk_package,
+                        scaffold_mode=scaffold_mode,
                         sdk_docs_mode=sdk_docs_mode,
                         openai_transport=openai_transport,
                         openai_reasoning_summary=openai_reasoning_summary,
                         post_success_design_audit=post_success_design_audit,
+                        max_cost_usd=max_cost_usd,
                     ),
                 ),
             )
@@ -1305,10 +1442,12 @@ async def _execute_single_run(
                     max_turns=max_turns,
                     system_prompt_path=system_prompt_path,
                     sdk_package=sdk_package,
+                    scaffold_mode=scaffold_mode,
                     sdk_docs_mode=sdk_docs_mode,
                     openai_transport=openai_transport,
                     openai_reasoning_summary=openai_reasoning_summary,
                     post_success_design_audit=post_success_design_audit,
+                    max_cost_usd=max_cost_usd,
                 ),
             ),
         )
@@ -1337,9 +1476,11 @@ async def _execute_single_run(
             on_turn_start=on_turn_start,
             checkpoint_urdf_path=resolved_context.checkpoint_urdf_path,
             sdk_package=sdk_package,
+            scaffold_mode=scaffold_mode,
             sdk_docs_mode=sdk_docs_mode,
             openai_reasoning_summary=openai_reasoning_summary,
             post_success_design_audit=post_success_design_audit,
+            max_cost_usd=max_cost_usd,
             runtime_limits=runtime_limits,
         ) as agent:
             logger.info("Using system prompt: %s", agent.loaded_system_prompt_path)
@@ -1449,9 +1590,11 @@ async def _execute_single_run(
             max_turns=max_turns,
             system_prompt_path=loaded_system_prompt_path,
             sdk_package=sdk_package,
+            scaffold_mode=scaffold_mode,
             sdk_docs_mode=sdk_docs_mode,
             openai_reasoning_summary=openai_reasoning_summary,
             post_success_design_audit=post_success_design_audit,
+            max_cost_usd=max_cost_usd,
             final_code=final_code,
             urdf_xml=urdf_xml,
             compile_warnings=compile_warnings,
@@ -1537,10 +1680,12 @@ async def _execute_single_run(
                     max_turns=max_turns,
                     system_prompt_path=system_prompt_path,
                     sdk_package=sdk_package,
+                    scaffold_mode=scaffold_mode,
                     sdk_docs_mode=sdk_docs_mode,
                     openai_transport=openai_transport,
                     openai_reasoning_summary=openai_reasoning_summary,
                     post_success_design_audit=post_success_design_audit,
+                    max_cost_usd=max_cost_usd,
                 ),
             ),
         )
@@ -1581,9 +1726,11 @@ async def _run_from_input_impl(
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     sdk_package: str = "sdk",
+    scaffold_mode: str = DEFAULT_SCAFFOLD_MODE,
     sdk_docs_mode: str = "full",
     openai_reasoning_summary: Optional[str] = "auto",
     post_success_design_audit: bool = True,
+    max_cost_usd: float | None = None,
     label: str | None = None,
     tags: Optional[list[str]] = None,
     collection: str = "workbench",
@@ -1594,6 +1741,7 @@ async def _run_from_input_impl(
     persist_run_metadata: bool = True,
     persist_run_result: bool = True,
 ) -> RunExecutionOutcome:
+    scaffold_mode = normalize_scaffold_mode(scaffold_mode)
     resolved_repo_root = repo_root.resolve()
     storage_repo = StorageRepo(resolved_repo_root)
     await asyncio.to_thread(storage_repo.ensure_layout)
@@ -1647,9 +1795,11 @@ async def _run_from_input_impl(
         display_enabled=display_enabled,
         on_turn_start=on_turn_start,
         sdk_package=sdk_package,
+        scaffold_mode=scaffold_mode,
         sdk_docs_mode=sdk_docs_mode,
         openai_reasoning_summary=openai_reasoning_summary,
         post_success_design_audit=post_success_design_audit,
+        max_cost_usd=max_cost_usd,
         label=label,
         tags=tags,
         collection=collection,
@@ -1670,7 +1820,9 @@ async def rerun_record_in_place(
     model_id: str | None = None,
     thinking_level: str | None = None,
     sdk_package: str | None = None,
+    scaffold_mode: str | None = None,
     post_success_design_audit: bool | None = None,
+    max_cost_usd: float | None = None,
     display_enabled: Optional[bool] = None,
 ) -> int:
     resolved_repo_root = repo_root.resolve()
@@ -1739,6 +1891,10 @@ async def rerun_record_in_place(
         if sdk_package is not None
         else _first_string(sdk.get("sdk_package"), existing_record.get("sdk_package"))
     )
+    stored_scaffold_mode = _optional_string(prompting.get("scaffold_mode"))
+    scaffold_mode = _normalize_or_legacy_scaffold_mode(
+        scaffold_mode if scaffold_mode is not None else stored_scaffold_mode
+    )
     stored_post_success_design_audit = _optional_bool(prompting.get("post_success_design_audit"))
     post_success_design_audit = (
         bool(post_success_design_audit)
@@ -1749,9 +1905,24 @@ async def rerun_record_in_place(
             else True
         )
     )
+    try:
+        stored_max_cost_usd = _optional_max_cost_usd(
+            generation.get("max_cost_usd"),
+            label=f"generation.max_cost_usd for {record_id}",
+        )
+        env_max_cost_usd = max_cost_usd_from_env()
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
     model_id = _optional_string(model_id) or stored_model_id
     thinking_level = _optional_string(thinking_level) or stored_thinking_level
     provider = _infer_provider_from_model_id(model_id) or provider
+    if max_cost_usd is not None:
+        resolved_max_cost_usd = max_cost_usd
+    elif stored_max_cost_usd is not None:
+        resolved_max_cost_usd = stored_max_cost_usd
+    else:
+        resolved_max_cost_usd = env_max_cost_usd
 
     try:
         image_path = _resolve_input_image_for_record(
@@ -1811,9 +1982,11 @@ async def rerun_record_in_place(
         system_prompt_path=system_prompt_path,
         display_enabled=display_enabled,
         sdk_package=sdk_package,
+        scaffold_mode=scaffold_mode,
         sdk_docs_mode=sdk_docs_mode,
         openai_reasoning_summary=openai_reasoning_summary,
         post_success_design_audit=post_success_design_audit,
+        max_cost_usd=resolved_max_cost_usd,
         label=(
             _optional_string(workbench_entry.get("label"))
             if isinstance(workbench_entry, dict)
@@ -1930,6 +2103,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help="Optional per-run USD budget. Stops after the first response that pushes cumulative spend above this threshold.",
+    )
+    parser.add_argument(
         "--system-prompt",
         default="designer_system_prompt.txt",
         help=(
@@ -1964,6 +2143,12 @@ def main(argv: list[str] | None = None) -> int:
         help="SDK package to use for prompt selection, scaffolding, and compilation.",
     )
     parser.add_argument(
+        "--scaffold-mode",
+        default=DEFAULT_SCAFFOLD_MODE,
+        choices=["lite", "strict"],
+        help="Scaffold variant to seed for new runs.",
+    )
+    parser.add_argument(
         "--design-audit",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1980,6 +2165,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         sdk_package = normalize_sdk_package(args.sdk_package)
+        scaffold_mode = normalize_scaffold_mode(args.scaffold_mode)
+        max_cost_usd = (
+            parse_max_cost_usd(args.max_cost_usd, label="--max-cost-usd")
+            if args.max_cost_usd is not None
+            else max_cost_usd_from_env()
+        )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -2067,9 +2258,11 @@ def main(argv: list[str] | None = None) -> int:
             max_turns=args.max_turns,
             system_prompt_path=args.system_prompt,
             sdk_package=sdk_package,
+            scaffold_mode=scaffold_mode,
             sdk_docs_mode=SDK_DOCS_MODE_FULL,
             openai_reasoning_summary=openai_reasoning_summary,
             post_success_design_audit=args.design_audit,
+            max_cost_usd=max_cost_usd,
             label=args.label,
             tags=list(args.tag or []),
             collection=args.collection,

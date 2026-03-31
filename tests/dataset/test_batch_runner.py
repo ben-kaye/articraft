@@ -21,7 +21,9 @@ def _make_row() -> batch_runner.BatchRowSpec:
         model_id="gpt-5.4",
         thinking_level="high",
         max_turns=12,
+        max_cost_usd=None,
         sdk_package="sdk",
+        scaffold_mode="lite",
         post_success_design_audit=True,
         label=None,
     )
@@ -50,7 +52,9 @@ def _make_config(tmp_path: Path) -> batch_runner.BatchRunConfig:
         concurrency=1,
         local_work_concurrency=1,
         system_prompt_path="designer_system_prompt.txt",
+        scaffold_mode="lite",
         sdk_docs_mode="full",
+        max_cost_usd=None,
         resume=False,
         resume_policy="failed_or_pending",
         keep_awake=False,
@@ -102,7 +106,9 @@ def test_resume_signature_and_mismatch_field() -> None:
         "model_id": "gpt-5.4",
         "thinking_level": "high",
         "max_turns": 12,
+        "max_cost_usd": None,
         "sdk_package": "sdk",
+        "scaffold_mode": "lite",
         "post_success_design_audit": True,
     }
 
@@ -113,13 +119,19 @@ def test_resume_signature_and_mismatch_field() -> None:
         "gpt-5.4",
         "high",
         12,
+        None,
         "sdk",
+        "lite",
         True,
     )
     assert batch_runner._resume_signature_mismatch_field(existing, row) is None
 
     existing["model_id"] = "gpt-5.3"
     assert batch_runner._resume_signature_mismatch_field(existing, row) == "model_id"
+
+    existing["model_id"] = "gpt-5.4"
+    existing["max_cost_usd"] = 1.25
+    assert batch_runner._resume_signature_mismatch_field(existing, row) == "max_cost_usd"
 
 
 def test_resume_signature_mismatch_field_preserves_false_bool_normalization() -> None:
@@ -131,7 +143,9 @@ def test_resume_signature_mismatch_field_preserves_false_bool_normalization() ->
         "model_id": "gpt-5.4",
         "thinking_level": "high",
         "max_turns": 12,
+        "max_cost_usd": None,
         "sdk_package": "sdk",
+        "scaffold_mode": "lite",
         "post_success_design_audit": False,
     }
 
@@ -226,6 +240,7 @@ def test_write_row_state_serializes_attempts(tmp_path: Path) -> None:
         model_id="gpt-5.4",
         thinking_level="high",
         max_turns=12,
+        max_cost_usd=None,
         sdk_package="sdk",
         post_success_design_audit=True,
         success=False,

@@ -3,7 +3,9 @@
 ## Purpose
 
 Use this stack for thin curved parts such as handles, loops, whisk cages, fan
-guards, baskets, and tubular frames.
+guards, baskets, and tubular frames. Start with the spline helpers for almost
+all continuously bent parts. Reach for `wire_from_points(...)` only when the
+straight runs and corners are intentionally part of the design.
 
 ## Import
 
@@ -21,10 +23,10 @@ from sdk import (
 
 | Shape intent | Helper |
 | --- | --- |
-| Smooth circular tube through sparse points | `tube_from_spline_points(...)` |
-| Smooth custom-profile sweep through sparse points | `sweep_profile_along_spline(...)` |
-| Explicit piecewise-linear bent tube or wire | `wire_from_points(...)` |
-| Readable manual path authoring | `WirePath` |
+| Default for smooth circular rails, handles, loops, and frames | `tube_from_spline_points(...)` |
+| Default for smooth non-circular rails and trim | `sweep_profile_along_spline(...)` |
+| Readable manual path authoring for smooth arcs and bezier-like runs | `WirePath` plus a spline/sweep helper |
+| Intentional hard-corner wire geometry only | `wire_from_points(...)` |
 
 ## API Reference
 
@@ -91,6 +93,8 @@ wire_from_points(
 ```
 
 - Builds one continuous tube from an explicit polyline path.
+- Treat this as a hard-corner polyline helper, not the default smooth-tube
+  helper.
 - `corner_mode`: `"fillet"`, `"miter"`, or `"bevel"`.
 - `corner_radius`: bend radius for filleted or beveled corners.
 - `closed_path`: closes the centerline loop.
@@ -114,31 +118,45 @@ wp.to_points() -> list[tuple[float, float, float]]
 ```
 
 Use `WirePath` when readability matters more than fitting a spline from an
-existing point set.
+existing point set. In most cases, finish with `wp.to_points()` and feed the
+result into `tube_from_spline_points(...)` or `sweep_profile_along_spline(...)`
+rather than `wire_from_points(...)`.
 
 ## Advice
 
-### Choosing spline vs polyline
+### Default decision order
 
-- Use `tube_from_spline_points(...)` when the real part should read as one
-  continuously bent tube or wire.
-- Use `wire_from_points(...)` when the corners themselves are part of the
+- If the part should read as one continuously bent tube or wire, start with
+  `tube_from_spline_points(...)`.
+- If the part should read as one continuously bent rail but the section is not
+  circular, use `sweep_profile_along_spline(...)`.
+- Use `WirePath` when the path is easier to author procedurally than to specify
+  as a finished point list, then pass `wp.to_points()` into a spline/sweep
+  helper.
+- Use `wire_from_points(...)` only when the corners themselves are part of the
   design, such as elbows, basket corners, or welded rectangular guards.
 
-### Tuning smoothness vs control
+### Avoiding macaroni artifacts
 
-- Increase `samples_per_segment` first when a spline result looks coarse.
+- A common failure mode is sparse points plus `wire_from_points(...)` plus
+  `corner_mode="fillet"` and `corner_radius` used to fake a smooth organic
+  bend.
+- That pattern often produces macaroni-like artifacts because the input is
+  still an explicit polyline with corner treatment, not a truly smooth
+  centerline.
+- If you are reaching for `corner_radius` to make a sparse polyline look
+  organic, you are probably using the wrong helper.
+- In that situation, move to `tube_from_spline_points(...)` or
+  `sweep_profile_along_spline(...)` and increase `samples_per_segment` first.
+
+### Tuning smoothness
+
+- Increase `samples_per_segment` first when a spline-based result looks coarse.
 - Increase `radial_segments` when the tube still looks visibly faceted.
-- Use `corner_mode="miter"` when the centerline is already smooth.
-- Use `corner_mode="fillet"` when the input path is sparse and intentionally
-  piecewise-linear.
-
-### When to use `WirePath`
-
-- Use `WirePath` when the path is easier to author procedurally than to specify
-  as a finished point list.
-- Finish with `wp.to_points()`, then pass those points into the preferred sweep
-  helper.
+- Use `corner_mode="miter"` only when the centerline is already smooth or when
+  you need explicit hard elbows.
+- Use `corner_mode="fillet"` only for intentionally piecewise-linear shapes
+  where softened corners are still visibly part of the silhouette.
 
 ## Examples
 
@@ -175,7 +193,32 @@ trim = sweep_profile_along_spline(
 )
 ```
 
-### Explicit bent wire
+### Readable smooth path with `WirePath`
+
+```python
+wp = (
+    WirePath((-0.03, 0.00, 0.00))
+    .bezier_to(
+        (-0.02, 0.02, 0.01),
+        (0.02, 0.02, 0.01),
+        (0.03, 0.00, 0.00),
+        samples=18,
+    )
+)
+
+handle = tube_from_spline_points(
+    wp.to_points(),
+    radius=0.002,
+    samples_per_segment=6,
+    radial_segments=20,
+    cap_ends=True,
+)
+```
+
+Use this pattern when arcs or bezier-like runs are easier to author
+procedurally but the final part should still read as one continuous bend.
+
+### Intentional hard-corner wire
 
 ```python
 loop = wire_from_points(
@@ -191,6 +234,9 @@ loop = wire_from_points(
     corner_radius=0.006,
 )
 ```
+
+This is a good fit because the part is intentionally boxy: the straight runs
+and elbow locations are part of the silhouette.
 
 ## See Also
 

@@ -34,6 +34,10 @@ The modeling patterns worth copying are:
 - `place_on_surface(...)` for mounting controls onto the actual shell geometry rather than an approximate AABB face.
 - mixed articulation types in one appliance: revolute head tilt and lock lever, continuous hub spin, and prismatic speed control travel.
 
+For the tilt-head joint, the head shell extends forward along local `+X` from
+the rear pivot, so `axis=(0, -1, 0)` is chosen specifically so positive joint
+values raise the head instead of pitching it down into the bowl.
+
 ```python
 from __future__ import annotations
 
@@ -44,7 +48,6 @@ import math
 from sdk import (
     ArticulatedObject,
     ArticulationType,
-    AssetContext,
     Box,
     Cylinder,
     CylinderGeometry,
@@ -53,8 +56,6 @@ from sdk import (
     LatheGeometry,
     MotionLimits,
     Origin,
-    TestContext,
-    TestReport,
     mesh_from_geometry,
     place_on_surface,
     rounded_rect_profile,
@@ -62,11 +63,9 @@ from sdk import (
     tube_from_spline_points,
 )
 
-ASSETS = AssetContext.from_script(__file__)
-
 
 def build_object_model() -> ArticulatedObject:
-    model = ArticulatedObject(name="artisan_mixer", assets=ASSETS)
+    model = ArticulatedObject(name="artisan_mixer")
 
     body_metal = model.material("body_metal", rgba=(0.7, 0.1, 0.1, 1.0))
     bowl_metal = model.material("bowl_metal", rgba=(0.9, 0.9, 0.9, 1.0))
@@ -76,7 +75,7 @@ def build_object_model() -> ArticulatedObject:
 
     bp_profile = rounded_rect_profile(0.35, 0.22, 0.05)
     bp_geom = ExtrudeGeometry(bp_profile, 0.04)
-    bp_mesh = mesh_from_geometry(bp_geom, ASSETS.mesh_path("base_plate.obj"))
+    bp_mesh = mesh_from_geometry(bp_geom, "base_plate")
     base_unit.visual(
         bp_mesh,
         origin=Origin(xyz=(0.075, 0.0, 0.02)),
@@ -88,7 +87,7 @@ def build_object_model() -> ArticulatedObject:
     neck_s1 = [(x, y, 0.18) for x, y in rounded_rect_profile(0.08, 0.1, 0.03)]
     neck_s2 = [(x, y, 0.35) for x, y in rounded_rect_profile(0.06, 0.08, 0.025)]
     neck_geom = section_loft([neck_s0, neck_s1, neck_s2])
-    neck_mesh = mesh_from_geometry(neck_geom, ASSETS.mesh_path("neck.obj"))
+    neck_mesh = mesh_from_geometry(neck_geom, "neck")
     base_unit.visual(
         neck_mesh,
         origin=Origin(xyz=(-0.06, 0.0, 0.04)),
@@ -101,7 +100,7 @@ def build_object_model() -> ArticulatedObject:
     outer_prof = [(0.02, 0.0), (0.06, 0.01), (0.1, 0.06), (0.1, 0.15), (0.105, 0.16)]
     inner_prof = [(0.0, 0.005), (0.055, 0.015), (0.095, 0.06), (0.095, 0.155)]
     bowl_geom = LatheGeometry.from_shell_profiles(outer_prof, inner_prof, segments=48)
-    bowl_mesh = mesh_from_geometry(bowl_geom, ASSETS.mesh_path("bowl.obj"))
+    bowl_mesh = mesh_from_geometry(bowl_geom, "bowl")
     bowl.visual(bowl_mesh, material=bowl_metal, name="bowl_shell")
     bowl.inertial = Inertial.from_geometry(Cylinder(radius=0.1, length=0.16), mass=0.8)
 
@@ -122,7 +121,7 @@ def build_object_model() -> ArticulatedObject:
     head_s1 = yz_section(0.14, 0.16, 0.05, 0.15)
     head_s2 = yz_section(0.1, 0.12, 0.04, 0.35)
     head_geom = section_loft([head_s0, head_s1, head_s2])
-    head_mesh = mesh_from_geometry(head_geom, ASSETS.mesh_path("head.obj"))
+    head_mesh = mesh_from_geometry(head_geom, "head")
     head.visual(head_mesh, material=body_metal, name="head_shell")
     head.inertial = Inertial.from_geometry(
         Box((0.35, 0.16, 0.16)),
@@ -186,6 +185,8 @@ def build_object_model() -> ArticulatedObject:
         parent=base_unit,
         child=head,
         origin=Origin(xyz=(-0.06, 0.0, 0.39)),
+        # Closed head geometry extends along +X from the rear pivot.
+        # -Y makes positive q tilt the head upward.
         axis=(0.0, -1.0, 0.0),
         motion_limits=MotionLimits(
             effort=15.0,
@@ -204,7 +205,6 @@ def build_object_model() -> ArticulatedObject:
             tilt_lock,
             base_unit,
             point_hint=(-0.055, 0.055, 0.255),
-            asset_root=ASSETS,
             prefer_collisions=False,
             child_prefer_collisions=False,
         ),
@@ -221,7 +221,6 @@ def build_object_model() -> ArticulatedObject:
             speed_control,
             head,
             point_hint=(0.145, 0.075, 0.005),
-            asset_root=ASSETS,
             prefer_collisions=False,
             child_prefer_collisions=False,
         ),
@@ -274,7 +273,7 @@ def build_object_model() -> ArticulatedObject:
         final_whisk_geom.merge(w_geom)
     final_whisk_geom.merge(whisk_wires[0])
 
-    whisk_mesh = mesh_from_geometry(final_whisk_geom, ASSETS.mesh_path("whisk.obj"))
+    whisk_mesh = mesh_from_geometry(final_whisk_geom, "whisk")
     whisk.visual(whisk_mesh, material=bowl_metal, name="whisk_shell")
     whisk.inertial = Inertial.from_geometry(Cylinder(radius=0.05, length=0.16), mass=0.2)
 
@@ -287,68 +286,6 @@ def build_object_model() -> ArticulatedObject:
     )
 
     return model
-
-
-def run_tests() -> TestReport:
-    ctx = TestContext(object_model, asset_root=ASSETS.asset_root)
-    ctx.check_model_valid()
-    ctx.check_mesh_files_exist()
-
-    base_unit = object_model.get_part("base_unit")
-    bowl = object_model.get_part("bowl")
-    head = object_model.get_part("head")
-    hub = object_model.get_part("hub")
-    whisk = object_model.get_part("whisk")
-    tilt_lock = object_model.get_part("tilt_lock")
-    speed_control = object_model.get_part("speed_control")
-
-    neck_to_head = object_model.get_articulation("neck_to_head")
-    base_to_tilt_lock = object_model.get_articulation("base_to_tilt_lock")
-    head_to_speed_control = object_model.get_articulation("head_to_speed_control")
-
-    ctx.fail_if_isolated_parts()
-    ctx.warn_if_part_contains_disconnected_geometry_islands()
-
-    ctx.allow_overlap(base_unit, head, reason="Hinge interpenetration")
-    ctx.allow_overlap(bowl, whisk, reason="Whisk inside bowl")
-    ctx.allow_overlap(head, hub, reason="Hub seated in head")
-    ctx.allow_overlap(
-        base_unit,
-        tilt_lock,
-        reason="Tilt lock pivot sits in a shallow neck-side recess.",
-    )
-    ctx.fail_if_parts_overlap_in_current_pose()
-
-    ctx.expect_contact(bowl, base_unit)
-    ctx.expect_contact(head, base_unit)
-    ctx.expect_contact(hub, head)
-    ctx.expect_contact(whisk, hub)
-    ctx.expect_contact(tilt_lock, base_unit)
-    ctx.expect_contact(speed_control, head)
-
-    ctx.expect_within(bowl, base_unit, axes="xy")
-    ctx.expect_overlap(whisk, bowl, axes="xy", min_overlap=0.01)
-
-    speed_rest = ctx.part_world_position(speed_control)
-    assert speed_rest is not None
-    with ctx.pose({head_to_speed_control: 0.012}):
-        speed_high = ctx.part_world_position(speed_control)
-        assert speed_high is not None
-        assert speed_high[2] > speed_rest[2] + 0.01
-        ctx.expect_contact(speed_control, head)
-
-    tilt_rest_aabb = ctx.part_world_aabb(tilt_lock)
-    assert tilt_rest_aabb is not None
-    with ctx.pose({base_to_tilt_lock: 0.30}):
-        tilt_open_aabb = ctx.part_world_aabb(tilt_lock)
-        assert tilt_open_aabb is not None
-        assert tilt_open_aabb[0][0] < tilt_rest_aabb[0][0] - 0.003
-        ctx.expect_contact(tilt_lock, base_unit)
-
-    with ctx.pose({neck_to_head: math.radians(60)}):
-        ctx.expect_gap(whisk, bowl, axis="z", min_gap=0.05)
-
-    return ctx.report()
 
 
 object_model = build_object_model()

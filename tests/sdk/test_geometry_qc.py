@@ -6,8 +6,78 @@ from pathlib import Path
 
 import pytest
 
-from sdk import ArticulatedObject, Box, Mesh, Origin
+from sdk import ArticulatedObject, ArticulationType, Box, Mesh, Origin
 from sdk._core.v0 import geometry_qc
+
+
+def _write_disconnected_boxes_obj(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    centers = ((0.0, 0.0, 0.0), (0.45, 0.0, 0.0))
+    vertices: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+    cube_faces = (
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 4, 5),
+        (0, 5, 1),
+        (1, 5, 6),
+        (1, 6, 2),
+        (2, 6, 7),
+        (2, 7, 3),
+        (3, 7, 4),
+        (3, 4, 0),
+    )
+    for center_x, center_y, center_z in centers:
+        base_index = len(vertices) + 1
+        vertices.extend(
+            [
+                (center_x - 0.05, center_y - 0.05, center_z - 0.05),
+                (center_x + 0.05, center_y - 0.05, center_z - 0.05),
+                (center_x + 0.05, center_y + 0.05, center_z - 0.05),
+                (center_x - 0.05, center_y + 0.05, center_z - 0.05),
+                (center_x - 0.05, center_y - 0.05, center_z + 0.05),
+                (center_x + 0.05, center_y - 0.05, center_z + 0.05),
+                (center_x + 0.05, center_y + 0.05, center_z + 0.05),
+                (center_x - 0.05, center_y + 0.05, center_z + 0.05),
+            ]
+        )
+        faces.extend(tuple(base_index + idx for idx in face) for face in cube_faces)
+    lines = [f"v {x} {y} {z}" for x, y, z in vertices]
+    lines.extend(f"f {a} {b} {c}" for a, b, c in faces)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_single_box_obj(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vertices = [
+        (-0.05, -0.05, -0.05),
+        (0.05, -0.05, -0.05),
+        (0.05, 0.05, -0.05),
+        (-0.05, 0.05, -0.05),
+        (-0.05, -0.05, 0.05),
+        (0.05, -0.05, 0.05),
+        (0.05, 0.05, 0.05),
+        (-0.05, 0.05, 0.05),
+    ]
+    faces = (
+        (1, 2, 3),
+        (1, 3, 4),
+        (5, 7, 6),
+        (5, 8, 7),
+        (1, 5, 6),
+        (1, 6, 2),
+        (2, 6, 7),
+        (2, 7, 3),
+        (3, 7, 8),
+        (3, 8, 4),
+        (4, 8, 5),
+        (4, 5, 1),
+    )
+    lines = [f"v {x} {y} {z}" for x, y, z in vertices]
+    lines.extend(f"f {a} {b} {c}" for a, b, c in faces)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _build_disjoint_collision_model() -> ArticulatedObject:
@@ -181,3 +251,76 @@ def test_collision_object_from_geometry_supports_scaled_meshes(
 
     assert isinstance(collision_object, FakeCollisionObject)
     assert applied_scales == [(2.0, 3.0, 4.0)]
+
+
+def test_find_part_geometry_connectivity_findings_splits_mesh_components(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "assets" / "meshes" / "frame.obj"
+    _write_disconnected_boxes_obj(mesh_path)
+
+    model = ArticulatedObject(name="mesh_connectivity")
+    frame = model.part("frame")
+    frame.visual(Mesh(filename=mesh_path.as_posix()), origin=Origin(), name="frame_body")
+
+    findings = geometry_qc.find_part_geometry_connectivity_findings(model)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.part == "frame"
+    assert finding.connected == 1
+    assert finding.total == 2
+    assert finding.disconnected == ("frame_body__component_002:Mesh",)
+
+
+def test_find_geometry_overlaps_reports_mesh_component_name(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "assets" / "meshes" / "frame.obj"
+    _write_disconnected_boxes_obj(mesh_path)
+
+    model = ArticulatedObject(name="mesh_overlap")
+    frame = model.part("frame")
+    frame.visual(Mesh(filename=mesh_path.as_posix()), origin=Origin(), name="frame_body")
+
+    blocker = model.part("blocker")
+    blocker.visual(
+        Box((0.12, 0.12, 0.12)),
+        origin=Origin(xyz=(0.45, 0.0, 0.0)),
+        name="blocker_box",
+    )
+
+    overlaps = geometry_qc.find_geometry_overlaps(
+        model,
+        max_pose_samples=1,
+        overlap_tol=0.001,
+        overlap_volume_tol=0.0,
+    )
+
+    assert len(overlaps) == 1
+    overlap = overlaps[0]
+    assert overlap.link_a == "blocker"
+    assert overlap.link_b == "frame"
+    assert overlap.elem_a_name == "blocker_box"
+    assert overlap.elem_b_name == "frame_body__component_002"
+
+
+def test_find_unsupported_parts_keeps_single_mesh_behavior(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "assets" / "meshes" / "child.obj"
+    _write_single_box_obj(mesh_path)
+
+    model = ArticulatedObject(name="single_mesh_isolated_part")
+    base = model.part("base")
+    base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))
+
+    child = model.part("child")
+    child.visual(Mesh(filename=mesh_path.as_posix()), origin=Origin(), name="child_mesh")
+
+    model.articulation(
+        "base_to_child",
+        ArticulationType.FIXED,
+        parent=base,
+        child=child,
+        origin=Origin(xyz=(0.7, 0.0, 0.0)),
+    )
+
+    findings = geometry_qc.find_unsupported_parts(model, max_pose_samples=1)
+
+    assert len(findings) == 1
+    assert findings[0].part == "child"

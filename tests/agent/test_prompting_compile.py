@@ -40,6 +40,10 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
     assert "PHASE 4" in text
     assert "Do NOT write all geometry in one giant edit" in text
     assert "one part or subassembly at a time" in text
+    assert "simple envelope geometry or minimal sketches/extrusions" in text
+    assert "lock overall dimensions, attachment relationships, major clearances" in text
+    assert "Upgrade each region from envelope geometry to realistic geometry" in text
+    assert "keep its learned dimensions/joints/attachments" in text
 
     # Core tool references
     assert "probe_model" in text
@@ -48,7 +52,6 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
 
     # Probe helpers
     assert "find_floating_parts(...)" in text
-    assert "sample_poses(...)" in text
     assert "`summary(...)`, `dims(...)`, `projection(...)`" in text
 
     # Object-first pattern
@@ -62,6 +65,9 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
     assert "expect_within" in text
     assert "keep the scaffolded baseline check stack" in text
     assert "warn_if_*" in text
+    assert "Do not add blanket lower/upper pose sweeps" in text
+    assert "fail_if_parts_overlap_in_sampled_poses(...)" in text
+    assert "warn_if_articulation_overlaps(...)" in text
     assert "real 3D interpenetration" in text
     assert "projected footprint check" in text
 
