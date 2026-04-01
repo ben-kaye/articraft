@@ -766,6 +766,17 @@ def render_compile_signals(
     warnings = [signal for signal in bundle.signals if signal.severity == "warning"]
     notes = [signal for signal in bundle.signals if signal.severity == "note"]
 
+    if not failures and not warnings and not notes:
+        return "\n".join(
+            [
+                "<compile_signals>",
+                "<summary>",
+                bundle.summary,
+                "</summary>",
+                "</compile_signals>",
+            ]
+        )
+
     summary = bundle.summary
     if repeated and failures:
         summary += "\nThis failure matches the previous compile attempt."

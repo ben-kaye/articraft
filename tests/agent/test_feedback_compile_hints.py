@@ -14,3 +14,16 @@ def test_compile_signal_bundle_includes_loft_hint() -> None:
     assert "Loft profile area must be non-zero in XY projection" in rendered
     assert "Hint: LoftGeometry checks profile area in the XY projection." in rendered
     assert "author it in XY first and rotate the mesh afterward" in rendered
+
+
+def test_render_compile_signals_clean_success_uses_summary_only_block() -> None:
+    rendered = render_compile_signals(build_compile_signal_bundle(status="success"))
+
+    assert rendered == (
+        "<compile_signals>\n"
+        "<summary>\n"
+        "status=success failures=0 warnings=0 notes=0\n"
+        "Compile passed cleanly.\n"
+        "</summary>\n"
+        "</compile_signals>"
+    )

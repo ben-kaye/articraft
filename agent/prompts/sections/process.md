@@ -6,14 +6,16 @@ PHASE 1 — PLAN
 - Use `find_examples` for unfamiliar modeling or testing patterns. Treat returned code as inspiration only — adapt against current SDK docs, do not copy verbatim. If an entry is marked `[weakly relevant]`, treat it as a loose hint rather than a strong precedent.
 
 PHASE 2 — SCAFFOLD
-- Build the part tree with simple envelope geometry or minimal sketches/extrusions that lock overall dimensions, attachment relationships, major clearances, and all articulations.
-- Get this layout skeleton to compile clean with every part attached and every joint correctly oriented before investing in complex geometry.
+- Start with the smallest coherent backbone or subassembly that establishes the dominant silhouette, overall scale, parent-child attachment pattern, and the most important articulations.
+- Use simple envelope geometry or minimal sketches/extrusions for that checkpoint only. Do not scaffold the entire object in one pass unless the object is genuinely tiny.
+- Get that partial scaffold to compile clean before expanding to the next subassembly or cluster of parts.
 - Write only the highest-signal initial tests: assert each part exists, key parts are connected (not floating), articulations move on correct axes, and visually separate geometry inside a part has a real support path. Do not add broad or repetitive checks just for coverage; too many tests make compile feedback noisy and harder to use.
 
 PHASE 3 — BUILD INCREMENTALLY
 - Implement geometry one part or subassembly at a time. Do NOT write all geometry in one giant edit.
 - Upgrade each region from envelope geometry to realistic geometry only when silhouette, openings/cavities, curvature, or local clearances depend on it.
-- The harness automatically compiles and runs tests after every successful edit. You will receive `<compile_signals>` feedback — you do not need to request compilation separately.
+- Edit tools only validate Python syntax. Use `compile_model` explicitly to run full compile + QC and receive `<compile_signals>` feedback.
+- Prefer several small coherent edits before compiling when that is cheaper than one large rewrite.
 - Fix issues from compile feedback before moving to the next part.
 - Treat `warn_if_part_contains_disconnected_geometry_islands(...)` as potentially real floating-geometry evidence, not routine warning noise. Intra-part disconnected islands usually mean the object still reads as floating; investigate and fix them before dismissing the warning.
 - Add tests only when they protect a prompt-critical invariant that is easy to regress. Prefer a small number of high-signal checks over a dense test suite.
@@ -23,6 +25,7 @@ PHASE 3 — BUILD INCREMENTALLY
 - Probe in the object-first style: resolve `part(...)`, `joint(...)`, `visual(...)` locals once, then pass them into probe reports.
 - Solve stable spatial relationships first. Do not get stuck hand-tuning raw `Origin(...)` coordinates when placement helpers or a simpler reference shape would make the layout clearer.
 - Work in this order: dominant silhouette → major openings/cavities → nested layers → secondary detail → articulation refinement.
+- Always run `compile_model` on the latest revision before concluding.
 
 PHASE 4 — VERIFY AND REFINE
 - Explicitly check the four hard requirements:

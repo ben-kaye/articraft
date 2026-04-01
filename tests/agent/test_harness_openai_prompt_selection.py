@@ -78,10 +78,14 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "<modeling>" in instructions
 
     # Tool contract
-    assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in instructions
+    assert (
+        "Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`"
+        in instructions
+    )
     assert "FREEFORM tool" in instructions
     assert "write_code" not in instructions
     assert "Do not provide `file_path`" in instructions
+    assert "Use `compile_model` explicitly to run full compile + QC" in instructions
 
     # Three hard requirements
     assert "NO FLOATING PARTS" in instructions
@@ -158,10 +162,11 @@ def test_openai_hybrid_payload_preview_includes_find_examples_tool() -> None:
     )
 
     tool_names = {tool["name"] for tool in payload["tools"]}
+    assert "compile_model" in tool_names
     assert "probe_model" in tool_names
     assert "find_examples" in tool_names
     assert (
-        "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`"
         in payload["instructions"]
     )
     assert "lexical search over curated hybrid/CadQuery examples" in payload["instructions"]
@@ -302,11 +307,12 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
 
     # Tool contract
     assert (
-        "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_instructions
     )
     assert 'old_string=""' in gemini_instructions
     assert "write_code" not in gemini_instructions
+    assert "Use `compile_model` explicitly to run full compile + QC" in gemini_instructions
 
     # Three hard requirements
     assert "NO FLOATING PARTS" in gemini_instructions
@@ -342,10 +348,11 @@ def test_gemini_hybrid_payload_preview_includes_find_examples_tool() -> None:
 
     declarations = payload["config"]["tools"][0]["function_declarations"]
     tool_names = {tool["name"] for tool in declarations}
+    assert "compile_model" in tool_names
     assert "probe_model" in tool_names
     assert "find_examples" in tool_names
     assert (
-        "Use ONLY `read_code`, `edit_code`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in payload["config"]["system_instruction"]
     )
     assert (

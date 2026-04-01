@@ -104,6 +104,15 @@ type FindExamplesResultMatch = {
   content: string;
 };
 
+type ParsedCompileModelResult = {
+  status: "success" | "error" | "unknown";
+  summary: string | null;
+  failures: string[];
+  warnings: string[];
+  notes: string[];
+  error: string | null;
+};
+
 function parseFindExamplesResult(raw: string): FindExamplesResultMatch[] | null {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -127,6 +136,50 @@ function parseFindExamplesResult(raw: string): FindExamplesResultMatch[] | null 
       .filter((item): item is FindExamplesResultMatch => item !== null);
 
     return matches.length > 0 ? matches : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractTaggedBlock(text: string, tag: string): string | null {
+  const startToken = `<${tag}>`;
+  const endToken = `</${tag}>`;
+  const start = text.indexOf(startToken);
+  if (start < 0) return null;
+  const contentStart = start + startToken.length;
+  const end = text.indexOf(endToken, contentStart);
+  if (end < 0) return null;
+  return text.slice(contentStart, end).trim();
+}
+
+function extractSignalBullets(section: string | null): string[] {
+  if (!section) return [];
+  return section
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean);
+}
+
+function parseCompileModelResult(raw: string): ParsedCompileModelResult | null {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const result = typeof parsed.result === "string" ? parsed.result : null;
+    const compilation = asRecord(parsed.compilation);
+    const status =
+      compilation?.status === "success" || compilation?.status === "error"
+        ? compilation.status
+        : "unknown";
+
+    return {
+      status,
+      summary: result ? extractTaggedBlock(result, "summary") : null,
+      failures: result ? extractSignalBullets(extractTaggedBlock(result, "failures")) : [],
+      warnings: result ? extractSignalBullets(extractTaggedBlock(result, "warnings")) : [],
+      notes: result ? extractSignalBullets(extractTaggedBlock(result, "notes")) : [],
+      error: typeof compilation?.error === "string" ? compilation.error : null,
+    };
   } catch {
     return null;
   }
@@ -621,6 +674,86 @@ function AssistantEvent({ event }: { event: EnrichedTraceMessage }): JSX.Element
 
 function ToolEvent({ event }: { event: EnrichedTraceMessage }): JSX.Element {
   const raw = fullMessageText(event.content);
+
+  if (event.name === "compile_model" && raw) {
+    const parsed = parseCompileModelResult(raw);
+    if (parsed) {
+      const statusVariant =
+        parsed.status === "success"
+          ? "success"
+          : parsed.status === "error"
+            ? "destructive"
+            : "secondary";
+
+      return (
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] text-[var(--text-tertiary)]">
+              <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
+                {event.name}
+              </code>{" "}
+              result
+            </p>
+            <Badge variant={statusVariant}>
+              {parsed.status === "success"
+                ? "compile passed"
+                : parsed.status === "error"
+                  ? "compile failed"
+                  : "compile"}
+            </Badge>
+            {parsed.failures.length > 0 ? (
+              <Badge variant="destructive">{parsed.failures.length} failures</Badge>
+            ) : null}
+            {parsed.warnings.length > 0 ? (
+              <Badge variant="secondary">{parsed.warnings.length} warnings</Badge>
+            ) : null}
+            {parsed.notes.length > 0 ? (
+              <Badge variant="secondary">{parsed.notes.length} notes</Badge>
+            ) : null}
+          </div>
+          {parsed.summary ? (
+            <PlainBlock text={parsed.summary} maxHeight="max-h-32" />
+          ) : null}
+          {parsed.failures.length > 0 ? (
+            <div className="space-y-1">
+              <p className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--destructive)]">
+                Failures
+              </p>
+              <PlainBlock
+                text={parsed.failures.map((item) => `- ${item}`).join("\n")}
+                maxHeight="max-h-48"
+              />
+            </div>
+          ) : null}
+          {parsed.warnings.length > 0 ? (
+            <div className="space-y-1">
+              <p className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--warning)]">
+                Warnings
+              </p>
+              <PlainBlock
+                text={parsed.warnings.map((item) => `- ${item}`).join("\n")}
+                maxHeight="max-h-48"
+              />
+            </div>
+          ) : null}
+          {parsed.notes.length > 0 ? (
+            <div className="space-y-1">
+              <p className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--text-tertiary)]">
+                Notes
+              </p>
+              <PlainBlock
+                text={parsed.notes.map((item) => `- ${item}`).join("\n")}
+                maxHeight="max-h-48"
+              />
+            </div>
+          ) : null}
+          {!parsed.summary && parsed.error ? (
+            <PlainBlock text={parsed.error} maxHeight="max-h-32" />
+          ) : null}
+        </div>
+      );
+    }
+  }
 
   if (event.name === "find_examples" && raw) {
     const matches = parseFindExamplesResult(raw);

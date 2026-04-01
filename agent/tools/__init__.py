@@ -14,6 +14,7 @@ from agent.tools.base import (
     ToolSchema,
     make_tool_schema,
 )
+from agent.tools.compile_model import CompileModelTool
 from agent.tools.edit_code import EditCodeTool
 from agent.tools.find_examples import FindExamplesTool
 from agent.tools.probe_model import ProbeModelTool
@@ -51,12 +52,14 @@ def build_tool_registry(
         tools: list[BaseDeclarativeTool] = [
             ReadFileTool(),
             ApplyPatchFreeformTool(),
+            CompileModelTool(),
             ProbeModelTool(sdk_package=package, runtime_limits=runtime_limits),
         ]
     else:
         tools = [
             ReadCodeTool(),
             EditCodeTool(),
+            CompileModelTool(),
             ProbeModelTool(sdk_package=package, runtime_limits=runtime_limits),
         ]
     tools.append(FindExamplesTool(sdk_package=package))
@@ -144,6 +147,7 @@ __all__ = [
     "make_tool_schema",
     "ApplyPatchFreeformTool",
     "ApplyPatchTool",
+    "CompileModelTool",
     "EditCodeTool",
     "FindExamplesTool",
     "ProbeModelTool",
