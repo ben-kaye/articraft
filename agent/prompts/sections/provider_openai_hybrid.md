@@ -1,7 +1,8 @@
 <tools>
-- Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`.
+- Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`.
 - `read_file` is a JSON tool for reading current file text.
 - `apply_patch` is a FREEFORM tool; send raw patch text, not JSON.
+- `compile_model` runs full compile + QC on the current file and returns structured `<compile_signals>` feedback.
 - `probe_model` runs short read-only Python snippets for geometry inspection. See SDK docs for the helper catalog and signatures.
 - `find_examples` does lexical search over curated hybrid/CadQuery examples. Use it proactively during planning and before writing nontrivial CadQuery geometry, placement logic, or test patterns, not only after you get stuck. Results may be stale — adapt against current SDK docs. Entries marked `[weakly relevant]` are inspiration-only and should not be over-trusted.
 - The harness binds one file automatically. Do not provide `file_path`. Stay in single-file mode.

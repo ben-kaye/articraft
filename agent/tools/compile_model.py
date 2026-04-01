@@ -1,0 +1,52 @@
+"""
+CompileModel tool - Advertise explicit compile/QC to the model.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+from agent.tools.base import BaseDeclarativeTool, BaseToolInvocation, ToolResult, make_tool_schema
+
+
+class CompileModelParams(BaseModel):
+    """Parameters for compile_model tool."""
+
+    file_path: str | None = None
+
+
+class CompileModelInvocation(BaseToolInvocation[CompileModelParams, str]):
+    """Invocation placeholder for compile_model.
+
+    The harness intercepts this tool and runs the actual compile/QC flow so it
+    can update compile freshness state and persist checkpoints.
+    """
+
+    def get_description(self) -> str:
+        return f"Compile current model file {self.params.file_path}"
+
+    async def execute(self) -> ToolResult:
+        return ToolResult(error="compile_model must be handled by the harness")
+
+
+class CompileModelTool(BaseDeclarativeTool):
+    """Declarative tool schema for explicit compile/QC."""
+
+    def __init__(self) -> None:
+        schema = make_tool_schema(
+            name="compile_model",
+            description=(
+                "Run full model compile and QC on the current bound file.\n\n"
+                "Use this after one or more edits when you want full compile/test feedback.\n"
+                "The tool returns the same structured `<compile_signals>` block used by the harness "
+                "for clean success, warnings, or failures.\n\n"
+                "This tool takes no parameters; the harness supplies the current file automatically."
+            ),
+            parameters={},
+            required=[],
+        )
+        super().__init__("compile_model", schema)
+
+    async def build(self, params: dict) -> CompileModelInvocation:
+        validated = CompileModelParams(**params)
+        return CompileModelInvocation(validated)

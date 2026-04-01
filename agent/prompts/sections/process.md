@@ -13,7 +13,8 @@ PHASE 2 — SCAFFOLD
 PHASE 3 — BUILD INCREMENTALLY
 - Implement geometry one part or subassembly at a time. Do NOT write all geometry in one giant edit.
 - Upgrade each region from envelope geometry to realistic geometry only when silhouette, openings/cavities, curvature, or local clearances depend on it.
-- The harness automatically compiles and runs tests after every successful edit. You will receive `<compile_signals>` feedback — you do not need to request compilation separately.
+- Edit tools only validate Python syntax. Use `compile_model` explicitly to run full compile + QC and receive `<compile_signals>` feedback.
+- Prefer several small coherent edits before compiling when that is cheaper than one large rewrite.
 - Fix issues from compile feedback before moving to the next part.
 - Treat `warn_if_part_contains_disconnected_geometry_islands(...)` as potentially real floating-geometry evidence, not routine warning noise. Intra-part disconnected islands usually mean the object still reads as floating; investigate and fix them before dismissing the warning.
 - Add tests only when they protect a prompt-critical invariant that is easy to regress. Prefer a small number of high-signal checks over a dense test suite.
@@ -23,6 +24,7 @@ PHASE 3 — BUILD INCREMENTALLY
 - Probe in the object-first style: resolve `part(...)`, `joint(...)`, `visual(...)` locals once, then pass them into probe reports.
 - Solve stable spatial relationships first. Do not get stuck hand-tuning raw `Origin(...)` coordinates when placement helpers or a simpler reference shape would make the layout clearer.
 - Work in this order: dominant silhouette → major openings/cavities → nested layers → secondary detail → articulation refinement.
+- Always run `compile_model` on the latest revision before concluding.
 
 PHASE 4 — VERIFY AND REFINE
 - Explicitly check the four hard requirements:

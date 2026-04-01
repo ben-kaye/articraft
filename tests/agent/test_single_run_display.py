@@ -109,3 +109,82 @@ def test_add_tool_call_marks_weakly_relevant_find_example_titles() -> None:
 
     output = buffer.getvalue()
     assert "- PiTray Clip [weakly relevant]" in output
+
+
+def test_add_tool_call_renders_compile_model_as_compile_event() -> None:
+    display, buffer = _make_display()
+
+    display.add_tool_call(
+        tool_name="compile_model",
+        args={},
+        success=True,
+        duration=0.25,
+        result=(
+            "<compile_signals>\n"
+            "<summary>\n"
+            "status=success failures=0 warnings=0 notes=0\n"
+            "Compile passed cleanly.\n"
+            "</summary>\n"
+            "</compile_signals>"
+        ),
+        compilation={"status": "success", "error": None},
+    )
+
+    output = buffer.getvalue()
+    assert "compile ✓" in output
+    assert "tool    compile_model" not in output
+
+
+def test_add_tool_call_renders_compile_model_warning_details() -> None:
+    display, buffer = _make_display()
+
+    display.add_tool_call(
+        tool_name="compile_model",
+        args={},
+        success=True,
+        duration=0.25,
+        result=(
+            "<compile_signals>\n"
+            "<summary>\n"
+            "status=success failures=0 warnings=1 notes=0\n"
+            "Compile passed with warnings.\n"
+            "</summary>\n\n"
+            "<warnings>\n"
+            "- [geometry_overlap] Geometry overlap check reported overlaps.\n"
+            "</warnings>\n"
+            "</compile_signals>"
+        ),
+        compilation={"status": "success", "error": None},
+    )
+
+    output = buffer.getvalue()
+    assert "compile ✓" in output
+    assert "[geometry_overlap] Geometry overlap check reported overlaps." in output
+
+
+def test_add_tool_call_renders_compile_model_failure_details() -> None:
+    display, buffer = _make_display()
+
+    display.add_tool_call(
+        tool_name="compile_model",
+        args={},
+        success=True,
+        duration=0.25,
+        result=(
+            "<compile_signals>\n"
+            "<summary>\n"
+            "status=failure failures=1 warnings=0 notes=0\n"
+            "Primary issue: compile execution failed.\n"
+            "</summary>\n\n"
+            "<failures>\n"
+            "- [compile_runtime] ValueError: bad loft\n"
+            "</failures>\n"
+            "</compile_signals>"
+        ),
+        compilation={"status": "error", "error": "Primary issue: compile execution failed."},
+    )
+
+    output = buffer.getvalue()
+    assert "compile ✗" in output
+    assert "Primary issue: compile execution failed." in output
+    assert "[compile_runtime] ValueError: bad loft" in output

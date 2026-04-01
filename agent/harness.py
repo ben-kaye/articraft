@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 CONSOLE = Console()
 _FIND_EXAMPLES_SKIPPED_CONTENT = "{Skipped: full content already returned earlier in this run.}"
+_MUTATING_TOOL_NAMES = frozenset({"apply_patch", "edit_code", "write_code"})
 
 
 def _minimal_scaffold_text(
@@ -215,6 +216,10 @@ class ArticraftAgent:
             Path(checkpoint_urdf_path).resolve() if checkpoint_urdf_path else None
         )
         self._last_checkpoint_urdf_sig: Optional[str] = None
+        self._current_edit_revision = 0
+        self._last_successful_compile_revision: int | None = None
+        self._last_successful_compile_report: CompileReport | None = None
+        self._compile_attempt_count = 0
         self.trace_writer: Optional[TraceWriter] = (
             TraceWriter(Path(trace_dir)) if trace_dir else None
         )
@@ -300,6 +305,58 @@ class ArticraftAgent:
             "utf-8"
         )
         return hashlib.sha1(sig_src).hexdigest()
+
+    def _reset_run_compile_state(self) -> None:
+        self._current_edit_revision = 0
+        self._last_successful_compile_revision = None
+        self._last_successful_compile_report = None
+        self._compile_attempt_count = 0
+        self._last_compile_failure_sig = None
+        self._consecutive_compile_failure_count = 0
+        self._post_success_design_audit_sent = False
+
+    def _latest_code_is_fresh(self) -> bool:
+        return (
+            self._last_successful_compile_report is not None
+            and self._last_successful_compile_revision == self._current_edit_revision
+        )
+
+    def _mark_code_mutated(self, tool_name: str) -> None:
+        if tool_name not in _MUTATING_TOOL_NAMES:
+            return
+        self._current_edit_revision += 1
+        self._post_success_design_audit_sent = False
+
+    def _append_compile_required_reminder(self, conversation: list[dict]) -> None:
+        msg = {
+            "role": "user",
+            "content": (
+                "<compile_required>\n"
+                "The latest code has changed since the last successful compile.\n"
+                "Run `compile_model` before concluding.\n"
+                "</compile_required>"
+            ),
+        }
+        conversation.append(msg)
+        if self.trace_writer:
+            self.trace_writer.write_message(msg)
+
+    def _render_compile_tool_output(self, bundle: CompileSignalBundle) -> str:
+        failures = [signal for signal in bundle.signals if signal.severity == "failure"]
+        if failures:
+            sig = self._compile_signal_signature(bundle)
+            repeated = sig == self._last_compile_failure_sig
+            self._last_compile_failure_sig = sig
+            self._consecutive_compile_failure_count += 1
+            return render_compile_signals(
+                bundle,
+                repeated=repeated,
+                failure_streak=self._consecutive_compile_failure_count,
+            )
+
+        self._last_compile_failure_sig = None
+        self._consecutive_compile_failure_count = 0
+        return render_compile_signals(bundle)
 
     def _maybe_inject_compile_signals(
         self,
@@ -430,6 +487,45 @@ class ArticraftAgent:
             return False
         await self._persist_compile_success_checkpoint_async(compiled_urdf_xml)
         return True
+
+    async def _execute_compile_model(self, *, tool_call_id: str) -> ToolResult:
+        cached_report = self._last_successful_compile_report
+        if self._latest_code_is_fresh() and cached_report is not None:
+            return ToolResult(
+                output=self._render_compile_tool_output(cached_report.signal_bundle),
+                compilation={"status": "success", "error": None},
+                tool_call_id=tool_call_id,
+            )
+
+        self._compile_attempt_count += 1
+
+        try:
+            report = await self._compile_urdf_report_async()
+            await self._persist_compile_success_checkpoint_async(report.urdf_xml)
+            self._last_successful_compile_report = report
+            self._last_successful_compile_revision = self._current_edit_revision
+            return ToolResult(
+                output=self._render_compile_tool_output(report.signal_bundle),
+                compilation={"status": "success", "error": None},
+                tool_call_id=tool_call_id,
+            )
+        except TimeoutError as exc:
+            bundle = compile_signal_bundle_from_exception(exc)
+            _log_compile_signals(bundle)
+            return ToolResult(
+                output=self._render_compile_tool_output(bundle),
+                compilation={"status": "error", "error": bundle.summary},
+                tool_call_id=tool_call_id,
+            )
+        except Exception as exc:
+            await self._persist_compile_failure_checkpoint_async(exc)
+            bundle = compile_signal_bundle_from_exception(exc)
+            _log_compile_signals(bundle)
+            return ToolResult(
+                output=self._render_compile_tool_output(bundle),
+                compilation={"status": "error", "error": bundle.summary},
+                tool_call_id=tool_call_id,
+            )
 
     def _build_system_prompt(self, prompt_path: str) -> tuple[Path, str]:
         return load_system_prompt_text(
@@ -675,6 +771,21 @@ class ArticraftAgent:
                 tool_message["thought_signature"] = thought_signature
             return result, tool_message
 
+        if func_name == "compile_model":
+            result = await self._execute_compile_model(tool_call_id=tool_id)
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "name": func_name,
+                "tool_type": call_type if call_type == "custom" else "function",
+                "content": json.dumps(
+                    {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
+                ),
+            }
+            if thought_signature:
+                tool_message["thought_signature"] = thought_signature
+            return result, tool_message
+
         func_args.pop("file_path", None)
         func_args["file_path"] = self.file_path
 
@@ -747,6 +858,8 @@ class ArticraftAgent:
                 result.tool_call_id = tool_id
                 if result.is_success() and func_name == "find_examples":
                     result.output = self._compress_find_examples_output(result.output)
+                if result.is_success():
+                    self._mark_code_mutated(func_name)
         except Exception as exc:
             from pydantic import ValidationError
 
@@ -809,6 +922,7 @@ class ArticraftAgent:
         initial_conversation: Optional[list[dict]] = None,
     ) -> AgentResult:
         self._ensure_code_file()
+        self._reset_run_compile_state()
         self.display.start()
         conversation = initial_conversation or []
         self._seed_find_examples_cache_from_conversation(conversation)
@@ -832,10 +946,6 @@ class ArticraftAgent:
         completed_turns = 0
         llm_calls = 0
         tool_call_count = 0
-        compile_attempt_count = 0
-        had_successful_compile = False
-        last_successful_urdf_xml: Optional[str] = None
-        last_compile_warnings: list[str] = []
 
         while completed_turns < self.max_turns:
             turn = completed_turns + 1
@@ -870,10 +980,14 @@ class ArticraftAgent:
                     reason=TerminateReason.ERROR,
                     message=f"LLM error: {str(exc)}",
                     conversation=conversation,
-                    compile_warnings=list(last_compile_warnings),
+                    compile_warnings=(
+                        list(self._last_successful_compile_report.warnings)
+                        if self._last_successful_compile_report
+                        else []
+                    ),
                     turn_count=completed_turns,
                     tool_call_count=tool_call_count,
-                    compile_attempt_count=compile_attempt_count,
+                    compile_attempt_count=self._compile_attempt_count,
                 )
             finally:
                 self.display.stop_llm_wait()
@@ -916,10 +1030,14 @@ class ArticraftAgent:
                             f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
                         ),
                         conversation=conversation,
-                        compile_warnings=list(last_compile_warnings),
+                        compile_warnings=(
+                            list(self._last_successful_compile_report.warnings)
+                            if self._last_successful_compile_report
+                            else []
+                        ),
                         turn_count=completed_turns + 1,
                         tool_call_count=tool_call_count,
-                        compile_attempt_count=compile_attempt_count,
+                        compile_attempt_count=self._compile_attempt_count,
                         usage=usage_totals or None,
                     )
 
@@ -934,8 +1052,13 @@ class ArticraftAgent:
 
             is_empty_response = not has_assistant_payload and not tool_calls and not text.strip()
             if is_empty_response:
-                if had_successful_compile and isinstance(last_successful_urdf_xml, str):
-                    logger.info("Empty response after successful compile; terminating run.")
+                if self._latest_code_is_fresh():
+                    if self._maybe_inject_post_success_design_audit(conversation):
+                        self.display.current_turn = completed_turns
+                        self.display.end_turn(success=True)
+                        continue
+
+                    logger.info("Empty response after fresh compile; terminating run.")
                     final_code = None
                     try:
                         import aiofiles
@@ -949,24 +1072,22 @@ class ArticraftAgent:
 
                     self.display.current_turn = completed_turns
                     self.display.end_turn(success=True)
+                    report = self._last_successful_compile_report
                     return AgentResult(
                         success=True,
                         reason=TerminateReason.CODE_VALID,
                         message="Compile succeeded and model returned no further actions",
                         conversation=conversation,
                         final_code=final_code,
-                        urdf_xml=last_successful_urdf_xml,
-                        compile_warnings=list(last_compile_warnings),
+                        urdf_xml=report.urdf_xml if report else None,
+                        compile_warnings=list(report.warnings) if report else [],
                         turn_count=completed_turns,
                         tool_call_count=tool_call_count,
-                        compile_attempt_count=compile_attempt_count,
+                        compile_attempt_count=self._compile_attempt_count,
                         usage=usage_totals or None,
                     )
 
-                logger.warning(
-                    "Skipping no-op model response (empty assistant + no tool calls); "
-                    "not counting toward max turns."
-                )
+                self._append_compile_required_reminder(conversation)
                 self.display.current_turn = completed_turns
                 self.display.end_turn(success=True)
                 continue
@@ -985,62 +1106,11 @@ class ArticraftAgent:
 
             should_stop, reason, msg = self._should_terminate(text, tool_calls, turn)
             if should_stop:
-                try:
-                    compile_attempt_count += 1
-                    compile_start = time.monotonic()
-                    logger.info("Running URDF compile checks...")
-                    report = await self._compile_urdf_report_async()
-                    logger.info(
-                        "URDF compile passed in %.2fs",
-                        time.monotonic() - compile_start,
-                    )
-                    last_compile_warnings = list(report.warnings)
-                    await self._persist_compile_success_checkpoint_async(report.urdf_xml)
-                    had_successful_compile = True
-                    self._consecutive_compile_failure_count = 0
-                    last_successful_urdf_xml = report.urdf_xml
-                    compile_duration = time.monotonic() - compile_start
-                    self.display.add_compile_result(
-                        success=True,
-                        duration=compile_duration,
-                        warnings=report.warnings,
-                    )
-                    injected = self._maybe_inject_compile_signals(
-                        conversation,
-                        bundle=report.signal_bundle,
-                    )
-                    if injected:
-                        continue
-                    if self._maybe_inject_post_success_design_audit(conversation):
-                        continue
-                except TimeoutError as exc:
-                    bundle = compile_signal_bundle_from_exception(exc)
-                    _log_compile_signals(bundle)
-                    compile_duration = time.monotonic() - compile_start
-                    retry_message = self._append_compile_failure_signals(
-                        conversation,
-                        bundle=bundle,
-                    )
-                    self.display.add_compile_result(
-                        success=False,
-                        duration=compile_duration,
-                        error=retry_message,
-                    )
+                if not self._latest_code_is_fresh():
+                    self._append_compile_required_reminder(conversation)
                     continue
-                except Exception as exc:
-                    await self._persist_compile_failure_checkpoint_async(exc)
-                    bundle = compile_signal_bundle_from_exception(exc)
-                    _log_compile_signals(bundle)
-                    compile_duration = time.monotonic() - compile_start
-                    retry_message = self._append_compile_failure_signals(
-                        conversation,
-                        bundle=bundle,
-                    )
-                    self.display.add_compile_result(
-                        success=False,
-                        duration=compile_duration,
-                        error=retry_message,
-                    )
+
+                if self._maybe_inject_post_success_design_audit(conversation):
                     continue
 
                 final_code = None
@@ -1055,17 +1125,18 @@ class ArticraftAgent:
                 self._persist_cost_tracking()
 
                 self.display.end_turn(success=True)
+                report = self._last_successful_compile_report
                 return AgentResult(
                     success=True,
                     reason=TerminateReason.CODE_VALID,
                     message=msg,
                     conversation=conversation,
                     final_code=final_code,
-                    urdf_xml=report.urdf_xml,
-                    compile_warnings=list(last_compile_warnings),
+                    urdf_xml=report.urdf_xml if report else None,
+                    compile_warnings=list(report.warnings) if report else [],
                     turn_count=completed_turns,
                     tool_call_count=tool_call_count,
-                    compile_attempt_count=compile_attempt_count,
+                    compile_attempt_count=self._compile_attempt_count,
                     usage=usage_totals or None,
                 )
 
@@ -1107,58 +1178,6 @@ class ArticraftAgent:
             )
 
             if self._is_code_valid(turn_tool_results):
-                try:
-                    compile_attempt_count += 1
-                    compile_start = time.monotonic()
-                    logger.info("Running URDF compile checks...")
-                    report = await self._compile_urdf_report_async()
-                    compile_duration = time.monotonic() - compile_start
-                    logger.info("URDF compile passed in %.2fs", compile_duration)
-                    last_compile_warnings = list(report.warnings)
-                    await self._persist_compile_success_checkpoint_async(report.urdf_xml)
-                    had_successful_compile = True
-                    self._consecutive_compile_failure_count = 0
-                    last_successful_urdf_xml = report.urdf_xml
-                    self.display.add_compile_result(
-                        success=True,
-                        duration=compile_duration,
-                        warnings=report.warnings,
-                    )
-                    injected = self._maybe_inject_compile_signals(
-                        conversation,
-                        bundle=report.signal_bundle,
-                    )
-                    if not injected:
-                        self._maybe_inject_post_success_design_audit(conversation)
-                except TimeoutError as exc:
-                    bundle = compile_signal_bundle_from_exception(exc)
-                    _log_compile_signals(bundle)
-                    compile_duration = time.monotonic() - compile_start
-                    retry_message = self._append_compile_failure_signals(
-                        conversation,
-                        bundle=bundle,
-                    )
-                    self.display.add_compile_result(
-                        success=False,
-                        duration=compile_duration,
-                        error=retry_message,
-                    )
-                except Exception as exc:
-                    await self._persist_compile_failure_checkpoint_async(exc)
-                    bundle = compile_signal_bundle_from_exception(exc)
-                    _log_compile_signals(bundle)
-                    compile_duration = time.monotonic() - compile_start
-                    retry_message = self._append_compile_failure_signals(
-                        conversation,
-                        bundle=bundle,
-                    )
-                    self.display.add_compile_result(
-                        success=False,
-                        duration=compile_duration,
-                        error=retry_message,
-                    )
-
-            if self._is_code_valid(turn_tool_results):
                 logger.info("Code validation passed")
 
             self.display.end_turn(success=True)
@@ -1174,16 +1193,26 @@ class ArticraftAgent:
 
         self._persist_cost_tracking()
 
+        max_turn_message = "Agent hit max turns limit"
+        if not self._latest_code_is_fresh():
+            max_turn_message = (
+                "Agent hit max turns limit before `compile_model` succeeded on the latest revision"
+            )
+
         return AgentResult(
             success=False,
             reason=TerminateReason.MAX_TURNS,
-            message="Agent hit max turns limit",
+            message=max_turn_message,
             conversation=conversation,
             final_code=final_code,
-            compile_warnings=list(last_compile_warnings),
+            compile_warnings=(
+                list(self._last_successful_compile_report.warnings)
+                if self._last_successful_compile_report
+                else []
+            ),
             turn_count=completed_turns,
             tool_call_count=tool_call_count,
-            compile_attempt_count=compile_attempt_count,
+            compile_attempt_count=self._compile_attempt_count,
             usage=usage_totals or None,
         )
 

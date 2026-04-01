@@ -85,6 +85,53 @@ class SingleRunDisplay:
                 titles.append(label)
         return titles
 
+    def _extract_tagged_block(self, text: str, tag: str) -> str | None:
+        start_token = f"<{tag}>"
+        end_token = f"</{tag}>"
+        start = text.find(start_token)
+        if start < 0:
+            return None
+        start += len(start_token)
+        end = text.find(end_token, start)
+        if end < 0:
+            return None
+        return text[start:end].strip()
+
+    def _parse_compile_output(
+        self,
+        result: Any,
+        compilation: Optional[dict[str, Any]],
+    ) -> tuple[bool, str | None, list[str]]:
+        compile_ok = compilation is not None and compilation.get("status") == "success"
+        if not isinstance(result, str):
+            return compile_ok, None if compile_ok else str(result), []
+
+        summary = self._extract_tagged_block(result, "summary")
+        failures = self._extract_tagged_block(result, "failures")
+        warnings = self._extract_tagged_block(result, "warnings")
+
+        warning_lines = [
+            line[2:].strip()
+            for line in (warnings or "").splitlines()
+            if line.strip().startswith("- ")
+        ]
+        failure_lines = [
+            line[2:].strip()
+            for line in (failures or "").splitlines()
+            if line.strip().startswith("- ")
+        ]
+
+        if compile_ok:
+            return True, None, warning_lines
+
+        error_lines: list[str] = []
+        if summary:
+            error_lines.append(summary)
+        elif compilation and compilation.get("error"):
+            error_lines.append(str(compilation["error"]))
+        error_lines.extend(failure_lines[:3])
+        return False, "\n".join(error_lines).strip() or None, warning_lines
+
     def _supports_live_timer(self) -> bool:
         stream = getattr(self.console, "file", None)
         if stream is None:
@@ -238,6 +285,19 @@ class SingleRunDisplay:
         error: Optional[str] = None,
     ):
         if not self.enabled:
+            return
+
+        if tool_name == "compile_model":
+            compile_success, compile_error, compile_warnings = self._parse_compile_output(
+                result,
+                compilation,
+            )
+            self.add_compile_result(
+                success=compile_success,
+                duration=duration,
+                error=compile_error,
+                warnings=compile_warnings,
+            )
             return
 
         line = Text()

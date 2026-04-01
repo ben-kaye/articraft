@@ -35,10 +35,14 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "keep its learned dimensions/joints/attachments" in text
 
         # Tool contract
-        assert "Use ONLY `read_file`, `apply_patch`, `probe_model`, and `find_examples`" in text
+        assert (
+            "Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`"
+            in text
+        )
         assert "FREEFORM tool" in text
         assert "inspection-only" in text
         assert "lexical search over curated base SDK examples" in text
+        assert "Use `compile_model` explicitly to run full compile + QC" in text
 
         # Probe and testing
         assert "find_floating_parts(...)" in text
