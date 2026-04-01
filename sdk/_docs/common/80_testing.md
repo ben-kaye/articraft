@@ -150,6 +150,91 @@ part in that group.
 Records an intentional coplanar-surface relationship for
 `warn_if_coplanar_surfaces(...)`.
 
+### Nested Sliders And Telescoping Fits
+
+`fail_if_parts_overlap_in_current_pose()` treats real 3D interpenetration as a
+failure unless you explicitly allow it.
+
+Use this decision rule for nested prismatic fits:
+
+- if the outer member is modeled as a true hollow or clearanced sleeve, prove
+  the fit with `expect_within(...)`, `expect_gap(...)`, and retained-insertion
+  checks; do not use `allow_overlap(...)`
+- if the outer member is a simplified solid proxy and the authored mechanism is
+  still intended to represent one member sliding inside another, scoped
+  `allow_overlap(...)` calls are acceptable, but only for the specific named
+  elements that stand in for the sleeve/member fit
+
+For telescoping poles, rails, and sleeves, the usual exact-check pattern is:
+
+- `expect_within(...)` on the non-motion axes to prove centering
+- `expect_overlap(..., axes="<slide axis>")` at rest and at max extension to
+  prove retained insertion
+- a `with ctx.pose(...)` check showing the child actually moves in the intended
+  direction
+
+`expect_overlap(...)` is a projected overlap check, not a collision waiver. It
+proves retained length along an axis; it does not suppress
+`fail_if_parts_overlap_in_current_pose()`.
+
+```python
+ctx.allow_overlap(
+    outer_stage,
+    inner_stage,
+    elem_a="outer_sleeve",
+    elem_b="inner_member",
+    reason="The inner member is intentionally represented as sliding inside the sleeve proxy.",
+)
+ctx.fail_if_parts_overlap_in_current_pose()
+
+ctx.expect_within(
+    inner_stage,
+    outer_stage,
+    axes="xy",
+    inner_elem="inner_member",
+    outer_elem="outer_sleeve",
+    margin=0.002,
+    name="inner member stays centered in the sleeve",
+)
+ctx.expect_overlap(
+    inner_stage,
+    outer_stage,
+    axes="z",
+    elem_a="inner_member",
+    elem_b="outer_sleeve",
+    min_overlap=0.080,
+    name="collapsed stage remains inserted in the sleeve",
+)
+
+rest_pos = ctx.part_world_position(inner_stage)
+with ctx.pose({slide_joint: slide_upper}):
+    ctx.expect_within(
+        inner_stage,
+        outer_stage,
+        axes="xy",
+        inner_elem="inner_member",
+        outer_elem="outer_sleeve",
+        margin=0.002,
+        name="extended stage stays centered in the sleeve",
+    )
+    ctx.expect_overlap(
+        inner_stage,
+        outer_stage,
+        axes="z",
+        elem_a="inner_member",
+        elem_b="outer_sleeve",
+        min_overlap=0.030,
+        name="extended stage retains insertion in the sleeve",
+    )
+    extended_pos = ctx.part_world_position(inner_stage)
+
+ctx.check(
+    "stage extends upward",
+    rest_pos is not None and extended_pos is not None and extended_pos[2] > rest_pos[2] + 0.02,
+    details=f"rest={rest_pos}, extended={extended_pos}",
+)
+```
+
 ## Pose and World-Space Queries
 
 ### `pose(joint_positions: dict[object, float] | None = None, **kwargs: float) -> Iterator[None]`
@@ -355,3 +440,8 @@ axes.
 
 - `margin`: allowed slack outside the outer bounds.
 - `inner_elem`, `outer_elem`: optional named element scope.
+
+For nested sliders, use `expect_within(...)` on the non-motion axes and pair it
+with `expect_overlap(...)` or `expect_gap(...)` on the slide axis. Do not use
+`expect_within(...)` by itself as proof that the moving member still remains
+inserted at full extension.

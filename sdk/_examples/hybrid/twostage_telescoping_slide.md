@@ -13,6 +13,10 @@ tags:
 
 The 5-star slide record is a good pattern for nested linear stages because it keeps each rail as a separate part with its own travel limits.
 
+For any nested linear stage, the moving member should still remain inserted at
+full travel. Size each moving rail for the extended pose, then set the travel
+limit so the stage stops before it fully exits its sleeve.
+
 ```python
 from sdk_hybrid import ArticulatedObject, ArticulationType, MotionLimits, Origin
 
@@ -43,4 +47,56 @@ def build_object_model() -> ArticulatedObject:
     model.articulation("middle_to_inner", ArticulationType.PRISMATIC, parent=middle_rail, child=inner_rail, origin=Origin(xyz=(INNER_INSERT, 0.0, INNER_STAGE_Z)), axis=(1.0, 0.0, 0.0), motion_limits=MotionLimits(lower=0.0, upper=INNER_TRAVEL, effort=90.0, velocity=0.45))
 
     return model
+```
+
+A matching retained-insertion test pattern looks like this:
+
+```python
+from sdk_hybrid import TestContext, TestReport
+
+
+def run_tests() -> TestReport:
+    ctx = TestContext(object_model)
+    outer_rail = object_model.get_part("outer_rail")
+    middle_rail = object_model.get_part("middle_rail")
+    outer_to_middle = object_model.get_articulation("outer_to_middle")
+
+    ctx.expect_within(
+        middle_rail,
+        outer_rail,
+        axes="yz",
+        name="middle rail stays centered in outer rail",
+    )
+    ctx.expect_overlap(
+        middle_rail,
+        outer_rail,
+        axes="x",
+        min_overlap=0.12,
+        name="collapsed middle rail remains inserted in outer rail",
+    )
+
+    rest_pos = ctx.part_world_position(middle_rail)
+    with ctx.pose({outer_to_middle: OUTER_TRAVEL}):
+        ctx.expect_within(
+            middle_rail,
+            outer_rail,
+            axes="yz",
+            name="extended middle rail stays centered in outer rail",
+        )
+        ctx.expect_overlap(
+            middle_rail,
+            outer_rail,
+            axes="x",
+            min_overlap=0.03,
+            name="extended middle rail still retains insertion in outer rail",
+        )
+        extended_pos = ctx.part_world_position(middle_rail)
+
+    ctx.check(
+        "middle rail extends along +X",
+        rest_pos is not None and extended_pos is not None and extended_pos[0] > rest_pos[0] + 0.02,
+        details=f"rest={rest_pos}, extended={extended_pos}",
+    )
+
+    return ctx.report()
 ```

@@ -149,6 +149,54 @@ model.articulation(
 )
 ```
 
+### Retained Insertion For Prismatic And Nested Stages
+
+For sleeves, telescoping poles, nested rails, and similar slide-in-slide
+assemblies, size the moving member for the fully extended pose, not just the
+collapsed silhouette. If one part slides out of another, model the sliding
+member with enough hidden length that it still remains engaged at the joint
+upper limit.
+
+Use this heuristic:
+
+`sliding member length >= visible exposed length at max extension + minimum retained insertion`
+
+In practice:
+
+- put the prismatic `origin` at the sleeve entry, socket lip, or other nominal
+  seating plane rather than at an arbitrary part center
+- choose `motion_limits.upper` as the usable travel after preserving retained
+  insertion, not the full member length
+- let the child geometry extend past the joint frame in the hidden direction if
+  that is what the real mechanism requires
+
+```python
+# The inner mast extends below the visible seat so it stays engaged at max travel.
+outer_sleeve = model.part("outer_sleeve")
+inner_mast = model.part("inner_mast")
+
+outer_sleeve.visual(
+    Cylinder(radius=0.022, length=0.240),
+    origin=Origin(xyz=(0.0, 0.0, 0.120)),
+)
+inner_mast.visual(
+    Cylinder(radius=0.016, length=0.620),
+    origin=Origin(xyz=(0.0, 0.0, 0.110)),
+)
+
+model.articulation(
+    "sleeve_to_mast",
+    ArticulationType.PRISMATIC,
+    parent=outer_sleeve,
+    child=inner_mast,
+    # Place the joint at the sleeve entry / seating plane.
+    origin=Origin(xyz=(0.0, 0.0, 0.240)),
+    axis=(0.0, 0.0, 1.0),
+    # Upper travel stops before the inner mast fully exits the sleeve.
+    motion_limits=MotionLimits(lower=0.0, upper=0.260, effort=80.0, velocity=0.20),
+)
+```
+
 ### `model.material(...)`
 
 ```python
