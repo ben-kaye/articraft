@@ -130,6 +130,7 @@ def main() -> int:
             namespace = {
                 "__name__": "__probe_model__",
                 "__file__": str(file_path),
+                "Origin": getattr(sdk_module, "Origin"),
             }
             namespace.update(session.build_namespace(emit=emit))
             stage = "exec"

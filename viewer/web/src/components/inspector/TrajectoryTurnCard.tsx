@@ -420,6 +420,104 @@ function parseProbeModelResult(
   }
 }
 
+/** Parse read_code JSON result, return the code string. */
+function parseReadCodeResult(raw: string): string | null {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return typeof parsed.result === "string" ? parsed.result : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse edit_code tool call arguments to extract old_string / new_string / replace_all. */
+function parseEditCodeArgs(
+  raw: string,
+): { old_string: string; new_string: string; replace_all?: boolean } | null {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const old_string = typeof parsed.old_string === "string" ? parsed.old_string : null;
+    const new_string = typeof parsed.new_string === "string" ? parsed.new_string : null;
+    if (old_string == null || new_string == null) return null;
+    const replace_all =
+      typeof parsed.replace_all === "boolean" ? parsed.replace_all : undefined;
+    return { old_string, new_string, replace_all };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse edit_code tool result into message + compilation info. */
+function parseEditCodeResult(
+  raw: string,
+): { message: string; status: "success" | "error" | "unknown"; error: string | null } | null {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const message = typeof parsed.result === "string" ? parsed.result : null;
+    if (!message) return null;
+    const compilation = asRecord(parsed.compilation);
+    const status =
+      compilation?.status === "success" || compilation?.status === "error"
+        ? compilation.status
+        : "unknown";
+    const error = typeof compilation?.error === "string" ? compilation.error : null;
+    return { message, status, error };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse write_code tool call arguments to extract the code. */
+function parseWriteCodeArgs(raw: string): string | null {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return typeof parsed.code === "string" ? parsed.code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Diff-style view for edit_code old_string → new_string. */
+function EditCodeDiffBlock({
+  old_string,
+  new_string,
+  replace_all,
+}: {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}): JSX.Element {
+  const oldLines = old_string.split("\n");
+  const newLines = new_string.split("\n");
+  return (
+    <div className="max-h-80 min-w-0 overflow-auto rounded-md bg-[var(--surface-2)]">
+      {replace_all ? (
+        <div className="px-3 pt-1.5">
+          <Badge variant="secondary">replace all</Badge>
+        </div>
+      ) : null}
+      <pre className="py-1.5 font-mono text-[10px] leading-relaxed">
+        {oldLines.map((line, i) => (
+          <div
+            key={`old-${i}`}
+            className="whitespace-pre-wrap break-words px-3 text-[#cf222e] bg-[#ffebe9]"
+          >
+            {`-${line}`}
+          </div>
+        ))}
+        {newLines.map((line, i) => (
+          <div
+            key={`new-${i}`}
+            className="whitespace-pre-wrap break-words px-3 text-[#1a7f37] bg-[#dafbe1]"
+          >
+            {`+${line}`}
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+}
+
 function ToolCallBlock({ call }: { call: EnrichedToolCall }): JSX.Element {
   const name = toolCallName(call);
   const rawArgs = toolCallArguments(call);
@@ -442,6 +540,44 @@ function ToolCallBlock({ call }: { call: EnrichedToolCall }): JSX.Element {
         )}
       </div>
     );
+  }
+
+  // edit_code: show old/new as a diff view
+  if (name === "edit_code" && rawArgs) {
+    const editArgs = parseEditCodeArgs(rawArgs);
+    if (editArgs) {
+      return (
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] text-[var(--text-primary)]">
+            <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 font-mono text-[10px]">
+              {name}
+            </code>
+          </p>
+          <EditCodeDiffBlock
+            old_string={editArgs.old_string}
+            new_string={editArgs.new_string}
+            replace_all={editArgs.replace_all}
+          />
+        </div>
+      );
+    }
+  }
+
+  // write_code: show code with Python highlighting
+  if (name === "write_code" && rawArgs) {
+    const writeCode = parseWriteCodeArgs(rawArgs);
+    if (writeCode) {
+      return (
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] text-[var(--text-primary)]">
+            <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 font-mono text-[10px]">
+              {name}
+            </code>
+          </p>
+          <CodeBlock code={writeCode} language="python" maxHeight="max-h-80" />
+        </div>
+      );
+    }
   }
 
   const prettyArgs = !isPatch && rawArgs ? tryPrettyJson(rawArgs) : null;
@@ -577,6 +713,56 @@ function ToolEvent({ event }: { event: EnrichedTraceMessage }): JSX.Element {
             maxHeight="max-h-80"
             startingLineNumber={parsed.startLine}
           />
+        </div>
+      );
+    }
+  }
+
+  // read_code results: extract code and highlight as Python
+  if (event.name === "read_code" && raw) {
+    const parsed = parseReadCodeResult(raw);
+    if (parsed) {
+      return (
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-[11px] text-[var(--text-tertiary)]">
+            <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
+              {event.name}
+            </code>{" "}
+            result
+          </p>
+          <CodeBlock code={parsed} language="python" maxHeight="max-h-80" />
+        </div>
+      );
+    }
+  }
+
+  // edit_code results: show compilation status badge + error
+  if ((event.name === "edit_code" || event.name === "write_code") && raw) {
+    const parsed = parseEditCodeResult(raw);
+    if (parsed) {
+      const statusVariant =
+        parsed.status === "success"
+          ? "success"
+          : parsed.status === "error"
+            ? "destructive"
+            : "secondary";
+      return (
+        <div className="min-w-0 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] text-[var(--text-tertiary)]">
+              <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
+                {event.name}
+              </code>{" "}
+              result
+            </p>
+            {parsed.status !== "unknown" ? (
+              <Badge variant={statusVariant}>
+                {parsed.status === "success" ? "compiled" : "compile error"}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="text-[11px] text-[var(--text-secondary)]">{parsed.message}</p>
+          {parsed.error ? <PlainBlock text={parsed.error} maxHeight="max-h-48" /> : null}
         </div>
       );
     }
