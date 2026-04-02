@@ -65,7 +65,7 @@ from .shell_partition import (
     ShellPartitionSpec,
     partition_shell,
 )
-from .testing import TestContext, TestFailure, TestReport
+from .testing import AllowedOverlap, TestContext, TestFailure, TestReport
 from .types import (
     Articulation,
     ArticulationType,
@@ -133,6 +133,7 @@ __all__ = [
     "rounded_rect_profile",
     "superellipse_profile",
     "ArticulatedObject",
+    "AllowedOverlap",
     "TestContext",
     "TestFailure",
     "TestReport",

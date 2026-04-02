@@ -64,11 +64,8 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
     assert "expect_gap" in text
     assert "expect_overlap" in text
     assert "expect_within" in text
-    assert "keep the scaffolded baseline check stack" in text
-    assert "warn_if_*" in text
-    assert "Do not add blanket lower/upper pose sweeps" in text
-    assert "fail_if_parts_overlap_in_sampled_poses(...)" in text
-    assert "warn_if_articulation_overlaps(...)" in text
+    assert "exactly one root part" in text
+    assert "Use `run_tests()` for prompt-specific exact checks" in text
     assert "real 3D interpenetration" in text
     assert "projected footprint check" in text
 
@@ -107,6 +104,7 @@ def test_prompt_outputs_are_current() -> None:
     assert "[weakly relevant]" in openai_text
     assert "Author visual geometry only; do not author collision geometry in `sdk`." in openai_text
     assert "Use `compile_model` explicitly to run full compile + QC" in openai_text
+    assert "`compile_model` automatically checks model validity" in openai_text
 
     openai_hybrid_text = compiled_by_name["designer_system_prompt_openai_hybrid.txt"]
     _assert_shared_contract(openai_hybrid_text, budget=120)
@@ -122,6 +120,7 @@ def test_prompt_outputs_are_current() -> None:
         "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"
         in openai_hybrid_text
     )
+    assert "`compile_model` automatically checks model validity" in openai_hybrid_text
 
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
     _assert_shared_contract(gemini_text, budget=110)

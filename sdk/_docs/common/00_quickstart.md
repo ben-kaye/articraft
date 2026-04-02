@@ -18,6 +18,11 @@ Every generated script should define:
 The harness compiles `object_model`, derives exact collisions from visuals, runs
 tests, and exports the result. Do not emit URDF XML directly.
 
+`compile_model` also owns the baseline sanity/QC pass. It automatically checks
+model validity, exactly one root part, mesh assets, floating disconnected part
+groups, disconnected geometry islands inside a part, and current-pose real 3D
+overlaps.
+
 ## Recommended Imports
 
 ```python
@@ -106,8 +111,6 @@ def run_tests() -> TestReport:
     lid = object_model.get_part("lid")
     hinge = object_model.get_articulation("base_to_lid")
 
-    ctx.check_model_valid()
-
     with ctx.pose({hinge: 0.0}):
         ctx.expect_gap(lid, base, axis="z", max_gap=0.001, max_penetration=0.0)
         ctx.expect_overlap(lid, base, axes="xy", min_overlap=0.05)
@@ -130,8 +133,8 @@ makes positive angles open upward.
 3. Add inertials when needed with `Inertial.from_geometry(...)`.
 4. Add motion with `model.articulation(...)`.
 5. Add prompt-specific `expect_*` assertions in `run_tests()`.
-6. Pull the default QC scaffold from `80_testing.md` when starting a new test
-   block.
+6. Use `allow_overlap(...)` and `allow_isolated_part(...)` only when the
+   intended mechanism genuinely requires those exceptions.
 
 ## See Also
 

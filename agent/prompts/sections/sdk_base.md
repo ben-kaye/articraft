@@ -21,16 +21,16 @@ GEOMETRY
   outward but the current choice moves into the parent instead.
 
 TESTING
-- Use `sdk.TestContext`, keep the scaffolded baseline check stack, return `ctx.report()`.
-- Prefer `TestContext(object_model)` and `ctx.check_mesh_assets_ready()`; do not pass asset roots in new code.
+- Use `sdk.TestContext`, return `ctx.report()`, and let `compile_model` own the baseline sanity/QC pass.
+- `compile_model` automatically checks model validity, exactly one root part, mesh assets, floating disconnected part groups, disconnected geometry islands inside a part, and current-pose real 3D overlaps.
+- Prefer `TestContext(object_model)`; do not pass asset roots in new code.
 - Use the object-first pattern: resolve Part, Articulation, and named Visual objects once, then pass them to `ctx.expect_*` and `ctx.allow_*` helpers. See SDK docs for exact signatures.
-- Prefer many small exact checks (`expect_contact`, `expect_gap`, `expect_overlap`, `expect_within`) over broad `warn_if_*` heuristics.
+- Use `run_tests()` for prompt-specific exact checks, targeted pose checks, and explicit allowances only.
 - `fail_if_parts_overlap_*` and `ctx.allow_overlap(...)` mean real 3D interpenetration; `expect_overlap(...)` is a separate projected footprint check. If parts are nested but should remain clear, use `expect_within(...)`, `expect_gap(...)`, `expect_contact(...)`, and/or `expect_overlap(...)` instead of `allow_overlap(...)`.
 - Every part must be tested for: presence, connection to neighbors, correct placement, and no unsupported disconnected sub-geometry when the visuals make that ambiguous.
-- If a part has multiple visual regions, prefer exact contact/support checks for the critical mounts and treat `warn_if_part_contains_disconnected_geometry_islands(...)` as evidence to resolve, not routine warning noise.
-- Do not add blanket lower/upper pose sweeps or `fail_if_parts_overlap_in_sampled_poses(...)` by default. Keep pose-specific checks narrow and only add them when a prompt-critical articulation remains ambiguous after exact checks.
-- Add `warn_if_articulation_overlaps(...)` only when joint clearance is genuinely uncertain or mechanically important. Escalate to blocking sampled sweeps only after exact checks uncover a specific unresolved risk.
-- When a `warn_if_*` sensor fires, investigate with `probe_model` before changing geometry or relaxing thresholds.
+- If a part has multiple visual regions, prefer exact contact/support checks for the critical mounts instead of broad heuristics.
+- Do not add blanket lower/upper pose sweeps by default. Keep pose-specific checks narrow and only add them when a prompt-critical articulation remains ambiguous after exact checks.
+- If an automated compile warning suggests floating-looking or disconnected geometry, investigate with `probe_model` before changing geometry or relaxing assumptions.
 - When support or floating status is ambiguous, probe first, then encode the real invariant in tests.
 - See SDK docs for deprecated helpers and current recommendations.
 </modeling>

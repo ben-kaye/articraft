@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from sdk import (
+    AllowedOverlap,
     ArticulatedObject,
     ArticulationType,
     Box,
@@ -957,6 +958,16 @@ def test_allow_overlap_accepts_part_and_visual_objects() -> None:
     assert report.allowances == (
         "allow_overlap('base', 'child'): bearing sleeve nests around the hinge pin",
         "allow_overlap('base', 'child', elem_a='base_box', elem_b='child_box'): explicit element allowance",
+    )
+    assert report.allowed_overlaps == (
+        AllowedOverlap("base", "child", "bearing sleeve nests around the hinge pin"),
+        AllowedOverlap(
+            "base",
+            "child",
+            "explicit element allowance",
+            elem_a="base_box",
+            elem_b="child_box",
+        ),
     )
 
 

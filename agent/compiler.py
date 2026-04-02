@@ -50,6 +50,19 @@ _GEOMETRY_QC_MARKERS = (
 _HYBRID_BASE_SDK_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+sdk\s+import\b|import\s+sdk\b)", re.MULTILINE
 )
+_AUTOMATED_BASELINE_WARNING_CHECK_NAME = (
+    "warn_if_part_contains_disconnected_geometry_islands(tol=1e-06)"
+)
+_AUTOMATED_BASELINE_DEFAULT_CHECK_NAMES = frozenset(
+    {
+        "check_model_valid",
+        "check_single_root_part",
+        "check_mesh_assets_ready",
+        "fail_if_isolated_parts()",
+        _AUTOMATED_BASELINE_WARNING_CHECK_NAME,
+        "fail_if_parts_overlap_in_current_pose()",
+    }
+)
 
 
 def _validate_hybrid_script_imports(script_path: Path) -> None:
@@ -245,10 +258,22 @@ def _compile_urdf_report_impl(
     if run_checks:
         try:
             if target_key == "full":
-                test_report = _run_required_tests(
+                authored_report = _run_required_tests(
                     globals_dict,
                     sdk_package=sdk_package,
                 )
+                baseline_report = _run_compiler_owned_baseline_tests(
+                    globals_dict,
+                    script_path=script_path,
+                    sdk_package=sdk_package,
+                    authored_report=authored_report,
+                )
+                test_report = _merge_test_reports(
+                    authored_report,
+                    baseline_report,
+                    sdk_package=sdk_package,
+                )
+                _raise_for_failed_test_report(test_report)
         except Exception as exc:
             urdf_xml = _extract_urdf_xml(
                 globals_dict,
@@ -939,20 +964,278 @@ def _run_required_tests(
             f"run_tests() must return {sdk_package}.TestReport (got {type(report).__name__})"
         )
 
-    if not bool(getattr(report, "passed", False)):
-        failures = getattr(report, "failures", ())
-        lines = ["URDF tests failed:"]
-        for failure in list(failures)[:10]:
-            name = getattr(failure, "name", "unknown")
-            details = getattr(failure, "details", "")
-            lines.append(f"- {name}: {details}")
-        if len(list(failures)) > 10:
-            lines.append(f"... ({len(list(failures)) - 10} more)")
-        exc = ValueError("\n".join(lines))
-        setattr(exc, "test_report", report)
-        raise exc
-
     return report
+
+
+def _report_warning_check_name(text: object) -> str | None:
+    warning_text = str(text).strip()
+    if not warning_text:
+        return None
+    check_name, has_separator, _detail = warning_text.partition(":")
+    if not has_separator:
+        return None
+    return check_name.strip() or None
+
+
+def _build_test_report(
+    report_type: type,
+    *,
+    checks: tuple[str, ...],
+    failures: tuple[object, ...],
+    warnings: tuple[str, ...],
+    allowances: tuple[str, ...],
+    allowed_isolated_parts: tuple[str, ...],
+    allowed_overlaps: tuple[object, ...],
+) -> object:
+    return report_type(
+        passed=not failures,
+        checks_run=len(checks),
+        checks=checks,
+        failures=failures,
+        warnings=warnings,
+        allowances=allowances,
+        allowed_isolated_parts=allowed_isolated_parts,
+        allowed_overlaps=allowed_overlaps,
+    )
+
+
+def _filter_duplicate_automated_baseline_results(
+    authored_report: object, baseline_report: object
+) -> object:
+    authored_check_names = {
+        str(name)
+        for name in getattr(authored_report, "checks", ())
+        if str(name) in _AUTOMATED_BASELINE_DEFAULT_CHECK_NAMES
+    }
+    if not authored_check_names:
+        return baseline_report
+
+    baseline_checks = tuple(
+        str(name)
+        for name in getattr(baseline_report, "checks", ())
+        if str(name) not in authored_check_names
+    )
+    baseline_failures = tuple(
+        failure
+        for failure in getattr(baseline_report, "failures", ())
+        if str(getattr(failure, "name", "")) not in authored_check_names
+    )
+    baseline_warnings = tuple(
+        str(warning)
+        for warning in getattr(baseline_report, "warnings", ())
+        if _report_warning_check_name(warning) not in authored_check_names
+    )
+
+    return _build_test_report(
+        type(baseline_report),
+        checks=baseline_checks,
+        failures=baseline_failures,
+        warnings=baseline_warnings,
+        allowances=tuple(str(item) for item in getattr(baseline_report, "allowances", ())),
+        allowed_isolated_parts=tuple(
+            str(item) for item in getattr(baseline_report, "allowed_isolated_parts", ())
+        ),
+        allowed_overlaps=tuple(getattr(baseline_report, "allowed_overlaps", ())),
+    )
+
+
+def _merge_test_reports(
+    authored_report: object, baseline_report: object, *, sdk_package: str
+) -> object:
+    filtered_baseline_report = _filter_duplicate_automated_baseline_results(
+        authored_report,
+        baseline_report,
+    )
+
+    try:
+        test_report_type = getattr(_import_sdk_module(sdk_package), "TestReport")
+    except Exception as exc:  # pragma: no cover
+        raise ValueError(f"Failed to import {sdk_package}.TestReport: {exc}") from exc
+
+    check_names: list[str] = []
+    seen_checks: set[str] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for check_name in getattr(report, "checks", ()):
+            normalized = str(check_name)
+            if normalized in seen_checks:
+                continue
+            seen_checks.add(normalized)
+            check_names.append(normalized)
+
+    failures: list[object] = []
+    seen_failures: set[tuple[str, str]] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for failure in getattr(report, "failures", ()):
+            key = (str(getattr(failure, "name", "")), str(getattr(failure, "details", "")))
+            if key in seen_failures:
+                continue
+            seen_failures.add(key)
+            failures.append(failure)
+
+    warnings: list[str] = []
+    seen_warnings: set[str] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for warning in getattr(report, "warnings", ()):
+            text = str(warning)
+            if text in seen_warnings:
+                continue
+            seen_warnings.add(text)
+            warnings.append(text)
+
+    allowances: list[str] = []
+    seen_allowances: set[str] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for allowance in getattr(report, "allowances", ()):
+            text = str(allowance)
+            if text in seen_allowances:
+                continue
+            seen_allowances.add(text)
+            allowances.append(text)
+
+    allowed_isolated_parts: list[str] = []
+    seen_isolated_parts: set[str] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for part_name in getattr(report, "allowed_isolated_parts", ()):
+            normalized = str(part_name)
+            if normalized in seen_isolated_parts:
+                continue
+            seen_isolated_parts.add(normalized)
+            allowed_isolated_parts.append(normalized)
+
+    allowed_overlaps: list[object] = []
+    seen_overlaps: set[tuple[str, str, str | None, str | None, str]] = set()
+    for report in (authored_report, filtered_baseline_report):
+        for overlap in getattr(report, "allowed_overlaps", ()):
+            key = (
+                str(getattr(overlap, "link_a", "")),
+                str(getattr(overlap, "link_b", "")),
+                (
+                    None
+                    if getattr(overlap, "elem_a", None) is None
+                    else str(getattr(overlap, "elem_a"))
+                ),
+                (
+                    None
+                    if getattr(overlap, "elem_b", None) is None
+                    else str(getattr(overlap, "elem_b"))
+                ),
+                str(getattr(overlap, "reason", "")),
+            )
+            if key in seen_overlaps:
+                continue
+            seen_overlaps.add(key)
+            allowed_overlaps.append(overlap)
+
+    return _build_test_report(
+        test_report_type,
+        checks=tuple(check_names),
+        failures=tuple(failures),
+        warnings=tuple(warnings),
+        allowances=tuple(allowances),
+        allowed_isolated_parts=tuple(allowed_isolated_parts),
+        allowed_overlaps=tuple(allowed_overlaps),
+    )
+
+
+def _check_model_has_single_root_part(ctx: object) -> bool:
+    root_parts = getattr(ctx.model, "root_parts", None)
+    if not callable(root_parts):
+        return bool(ctx.check("check_single_root_part", False, "model has no .root_parts()"))
+
+    try:
+        roots = root_parts()
+    except Exception as exc:
+        return bool(ctx.check("check_single_root_part", False, f"{type(exc).__name__}: {exc}"))
+
+    root_names = tuple(
+        str(getattr(part, "name", "")).strip()
+        for part in roots
+        if str(getattr(part, "name", "")).strip()
+    )
+    if len(root_names) != 1:
+        return bool(
+            ctx.check(
+                "check_single_root_part",
+                False,
+                f"Expected exactly one root part, found {len(root_names)}: {list(root_names)!r}",
+            )
+        )
+    return bool(ctx.check("check_single_root_part", True))
+
+
+def _apply_authored_allowances_to_baseline_context(ctx: object, authored_report: object) -> None:
+    for part_name in getattr(authored_report, "allowed_isolated_parts", ()):
+        ctx.allow_isolated_part(
+            str(part_name),
+            reason="carried over from authored run_tests() allowance",
+        )
+
+    for overlap in getattr(authored_report, "allowed_overlaps", ()):
+        ctx.allow_overlap(
+            str(getattr(overlap, "link_a", "")),
+            str(getattr(overlap, "link_b", "")),
+            reason=str(getattr(overlap, "reason", "")),
+            elem_a=(
+                None
+                if getattr(overlap, "elem_a", None) is None
+                else str(getattr(overlap, "elem_a"))
+            ),
+            elem_b=(
+                None
+                if getattr(overlap, "elem_b", None) is None
+                else str(getattr(overlap, "elem_b"))
+            ),
+        )
+
+
+def _run_compiler_owned_baseline_tests(
+    globals_dict: dict,
+    *,
+    script_path: Path,
+    sdk_package: str,
+    authored_report: object,
+) -> object:
+    object_model = globals_dict.get("object_model")
+    if object_model is None:
+        raise ValueError("Generated script must define top-level `object_model`")
+
+    sdk_module = _import_sdk_module(sdk_package)
+    test_context_type = getattr(sdk_module, "TestContext")
+    ctx = test_context_type(object_model, asset_root=script_path.parent)
+    _apply_authored_allowances_to_baseline_context(ctx, authored_report)
+    ctx.check_model_valid()
+    _check_model_has_single_root_part(ctx)
+    ctx.check_mesh_assets_ready()
+    ctx.fail_if_isolated_parts()
+    ctx.warn_if_part_contains_disconnected_geometry_islands()
+    ctx.fail_if_parts_overlap_in_current_pose()
+    baseline_report = ctx.report()
+    return _build_test_report(
+        type(baseline_report),
+        checks=tuple(str(name) for name in getattr(baseline_report, "checks", ())),
+        failures=tuple(getattr(baseline_report, "failures", ())),
+        warnings=tuple(str(item) for item in getattr(baseline_report, "warnings", ())),
+        allowances=(),
+        allowed_isolated_parts=(),
+        allowed_overlaps=(),
+    )
+
+
+def _raise_for_failed_test_report(report: object) -> None:
+    if bool(getattr(report, "passed", False)):
+        return
+
+    failures = getattr(report, "failures", ())
+    lines = ["URDF tests failed:"]
+    for failure in list(failures)[:10]:
+        name = getattr(failure, "name", "unknown")
+        details = getattr(failure, "details", "")
+        lines.append(f"- {name}: {details}")
+    if len(list(failures)) > 10:
+        lines.append(f"... ({len(list(failures)) - 10} more)")
+    exc = ValueError("\n".join(lines))
+    setattr(exc, "test_report", report)
+    raise exc
 
 
 def update_manifest(outputs_root: Path) -> None:

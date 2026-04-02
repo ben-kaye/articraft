@@ -41,3 +41,6 @@ Recent commits use short, imperative subjects such as `Move prompt compiler unde
 
 ## Configuration Tips
 Provider code loads environment variables from `.env`. Set `OPENAI_API_KEYS` (preferred) or `OPENAI_API_KEY` for OpenAI flows and `GEMINI_API_KEYS` for Gemini flows before running the agent runtime. Dataset batch specs live under `data/batch_specs/`; each row sets its own `provider`, `model_id`, `thinking_level`, `max_turns`, and `sdk_package`, while `concurrency` is supplied at invocation time.
+
+## Agent Docs Contract
+The SDK docs under `sdk/_docs/` are part of the agent authoring contract in this repository. Keep them aligned with the intended agent behavior and baseline compile/tooling policy; do not document agent-facing workflows there that the harness is supposed to own automatically.

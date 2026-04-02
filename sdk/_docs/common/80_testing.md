@@ -3,7 +3,7 @@
 Import from top-level `sdk`:
 
 ```python
-from sdk import TestContext, TestFailure, TestReport
+from sdk import AllowedOverlap, TestContext, TestFailure, TestReport
 ```
 
 `TestContext` is the SDK test harness for authored models. It records blocking
@@ -21,6 +21,20 @@ TestFailure(name: str, details: str)
 - `name`: recorded check name.
 - `details`: failure detail string stored in the report.
 
+### `AllowedOverlap`
+
+```python
+AllowedOverlap(
+    link_a: str,
+    link_b: str,
+    reason: str,
+    elem_a: str | None = None,
+    elem_b: str | None = None,
+)
+```
+
+- Structured overlap allowance recorded by `allow_overlap(...)`.
+
 ### `TestReport`
 
 ```python
@@ -32,6 +46,7 @@ TestReport(
     warnings: tuple[str, ...] = (),
     allowances: tuple[str, ...] = (),
     allowed_isolated_parts: tuple[str, ...] = (),
+    allowed_overlaps: tuple[AllowedOverlap, ...] = (),
 )
 ```
 
@@ -42,6 +57,7 @@ TestReport(
 - `warnings`: warning messages and failed warning-tier checks.
 - `allowances`: human-readable entries recorded by `allow_*`.
 - `allowed_isolated_parts`: names of parts explicitly allowed by `allow_isolated_part(...)`.
+- `allowed_overlaps`: structured overlap allowances recorded by `allow_overlap(...)`.
 
 ## Construction
 
@@ -58,29 +74,20 @@ Generated models should end `run_tests()` with:
 return ctx.report()
 ```
 
-## Recommended Baseline
+`compile_model` automatically runs the baseline sanity/QC pass:
 
-Use this as the default scaffold for new tests:
+- model validity
+- exactly one root part
+- mesh asset readiness
+- floating disconnected-part-group detection
+- disconnected geometry-island detection within a part
+- current-pose real 3D overlap detection
 
-```python
-ctx.check_model_valid()
-ctx.check_mesh_assets_ready()
-ctx.fail_if_isolated_parts()
-ctx.warn_if_part_contains_disconnected_geometry_islands()
-ctx.fail_if_parts_overlap_in_current_pose()
-```
-
-Then add prompt-specific exact assertions such as `expect_gap(...)`,
+Use `run_tests()` for prompt-specific exact assertions such as `expect_gap(...)`,
 `expect_overlap(...)`, `expect_contact(...)`, and `expect_within(...)`.
 
-Keep pose-specific checks lean. Do not add blanket lower/upper pose sweeps or
-sampled-pose overlap checks by default. Add pose-specific assertions only when a
-prompt-critical articulation remains ambiguous after exact rest-pose checks.
-
-`ctx.fail_if_isolated_parts()` and `find_unsupported_parts()` use
-grounded-component semantics: they group parts by actual physical contact and
-flag any floating connected component that has no rooted body part. This catches
-detached groups such as `lid + top_vent`, not only singleton orphan parts.
+Keep pose-specific checks lean. Add articulated-pose assertions only when a
+prompt-critical mechanism remains ambiguous after exact rest-pose checks.
 
 ## Parameter Conventions
 
@@ -139,8 +146,8 @@ footprint or cavity.
 
 ### `allow_isolated_part(part, *, reason) -> None`
 
-Records that a named part is allowed to remain isolated in
-`fail_if_isolated_parts(...)`.
+Records that a named part is allowed to remain isolated in the compiler-owned
+floating/disconnected-part-group pass.
 
 If the intentional floating assembly is a multi-part group, allow each authored
 part in that group.
@@ -152,8 +159,8 @@ Records an intentional coplanar-surface relationship for
 
 ### Nested Sliders And Telescoping Fits
 
-`fail_if_parts_overlap_in_current_pose()` treats real 3D interpenetration as a
-failure unless you explicitly allow it.
+The compiler-owned overlap pass treats real 3D interpenetration as a failure
+unless you explicitly allow it.
 
 Use this decision rule for nested prismatic fits:
 
@@ -174,8 +181,8 @@ For telescoping poles, rails, and sleeves, the usual exact-check pattern is:
   direction
 
 `expect_overlap(...)` is a projected overlap check, not a collision waiver. It
-proves retained length along an axis; it does not suppress
-`fail_if_parts_overlap_in_current_pose()`.
+proves retained length along an axis; it does not suppress the compiler-owned
+overlap pass.
 
 ```python
 ctx.allow_overlap(
@@ -185,7 +192,6 @@ ctx.allow_overlap(
     elem_b="inner_member",
     reason="The inner member is intentionally represented as sliding inside the sleeve proxy.",
 )
-ctx.fail_if_parts_overlap_in_current_pose()
 
 ctx.expect_within(
     inner_stage,
@@ -281,19 +287,10 @@ Alias for `part_world_aabb(...)`.
 
 Returns the world-space AABB of one named visual element on a part.
 
-## Structural and QC Checks
+## Structural Checks
 
 All methods in this section record a named check and return `True` on pass,
 `False` on fail.
-
-### `check_model_valid() -> bool`
-
-Runs `model.validate(strict=True)`.
-
-### `check_mesh_assets_ready() -> bool`
-
-Verifies that every referenced mesh asset has been materialized and is
-available to the runtime.
 
 ### `fail_if_articulation_origin_far_from_geometry(*, tol=0.015, reason=None, name=None) -> bool`
 
@@ -308,68 +305,6 @@ is absolute rather than scale-aware.
 ### `warn_if_articulation_origin_far_from_geometry(*, tol=0.015, reason=None, name=None) -> bool`
 
 Warning-tier version of the same check.
-
-Available, but no longer recommended as a blanket default for new generated
-tests.
-
-### `fail_if_part_contains_disconnected_geometry_islands(*, tol=1e-6, name=None) -> bool`
-
-Fails when one part contains disconnected geometry islands.
-
-- `tol`: non-negative contact tolerance used when deciding connectivity.
-
-### `warn_if_part_contains_disconnected_geometry_islands(*, tol=1e-6, name=None) -> bool`
-
-Warning-tier version of the same connectivity check. This is the recommended
-default.
-
-### `fail_if_isolated_parts(*, max_pose_samples=1, contact_tol=None, name=None) -> bool`
-
-Fails when a support-connected component is unsupported or floating in the
-checked pose set.
-
-This catches disconnected floating groups such as `lid + top_vent`, not only
-singleton parts.
-
-- `max_pose_samples`: number of sampled poses to inspect. `1` means only the
-  current pose.
-- `contact_tol`: non-negative support/contact tolerance.
-
-### `fail_if_parts_overlap_in_current_pose(*, overlap_tol=None, overlap_volume_tol=None, name=None) -> bool`
-
-Fails when distinct parts overlap in the current pose.
-
-- `overlap_tol`: per-axis overlap tolerance.
-- `overlap_volume_tol`: minimum overlap volume tolerance.
-
-This is the recommended default overlap gate.
-
-### `fail_if_parts_overlap_in_sampled_poses(*, max_pose_samples=128, overlap_tol=None, overlap_volume_tol=None, ignore_adjacent=False, ignore_fixed=True, name=None) -> bool`
-
-Fails on sampled-pose overlaps across the full model.
-
-- `ignore_adjacent`: ignore directly articulated parent/child pairs.
-- `ignore_fixed`: ignore `FIXED` articulation pairs.
-- `name`: optional override for the recorded check name.
-
-Use when a broader pose sweep is required than the rest-pose default.
-
-### `fail_if_articulation_overlaps(*, max_pose_samples=128, overlap_tol=None, overlap_volume_tol=None, name=None) -> bool`
-
-Fails on sampled overlaps only for `REVOLUTE`, `PRISMATIC`, and `CONTINUOUS`
-parent/child articulation pairs.
-
-### `warn_if_articulation_overlaps(*, max_pose_samples=128, overlap_tol=None, overlap_volume_tol=None, name=None) -> bool`
-
-Warning-tier articulation overlap sweep. Use when articulation clearance is
-important but not a blocking requirement.
-
-### `warn_if_overlaps(*, max_pose_samples=128, overlap_tol=None, overlap_volume_tol=None, ignore_adjacent=False, ignore_fixed=True, name=None) -> bool`
-
-Warning-tier sampled overlap sweep across the model.
-
-Available, but no longer recommended as a blanket scaffold default for new
-tests.
 
 ### `warn_if_coplanar_surfaces(*, max_pose_samples=32, plane_tol=0.001, min_overlap=0.02, min_overlap_ratio=0.35, ignore_adjacent=True, ignore_fixed=True, name=None) -> bool`
 

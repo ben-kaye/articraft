@@ -23,7 +23,7 @@ from .placement import (
     wrap_mesh_onto_surface,
     wrap_profile_onto_surface,
 )
-from .testing import TestContext, TestFailure, TestReport
+from .testing import AllowedOverlap, TestContext, TestFailure, TestReport
 from .types import (
     Articulation,
     ArticulationType,
@@ -85,6 +85,7 @@ __all__ = [
     "tessellate_cadquery",
     "mesh_from_cadquery",
     "ArticulatedObject",
+    "AllowedOverlap",
     "TestContext",
     "TestFailure",
     "TestReport",

@@ -35,7 +35,7 @@ def _write_isolated_part_model_script(
         "base = object_model.part('base')",
         *base_visuals,
         "support = object_model.part('support')",
-        "support.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+        "support.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.15)))",
         "antenna = object_model.part('antenna')",
         "antenna.visual(Box((0.04, 0.04, 0.2)), origin=Origin(xyz=(0.0, 0.0, 0.1)))",
         "object_model.articulation(",
@@ -69,6 +69,69 @@ def _write_isolated_part_model_script(
         ]
     )
     script_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_overlap_allowance_model_script(script_path: Path) -> None:
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, ArticulationType, Box, Origin, TestContext",
+                "",
+                "object_model = ArticulatedObject(name='overlap_allowance')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "child = object_model.part('child')",
+                "child.visual(Box((0.08, 0.08, 0.08)), origin=Origin(xyz=(0.0, 0.0, 0.04)))",
+                "object_model.articulation(",
+                "    'base_to_child',",
+                "    ArticulationType.FIXED,",
+                "    parent=base,",
+                "    child=child,",
+                "    origin=Origin(xyz=(0.0, 0.0, 0.02)),",
+                ")",
+                "",
+                "def run_tests():",
+                "    ctx = TestContext(object_model)",
+                "    ctx.allow_overlap('base', 'child', reason='bearing sleeve nests into the mount')",
+                "    return ctx.report()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_multiple_root_model_script(script_path: Path) -> None:
+    script_path.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "from sdk import ArticulatedObject, ArticulationType, Box, Origin, TestContext",
+                "",
+                "object_model = ArticulatedObject(name='multiple_roots')",
+                "base = object_model.part('base')",
+                "base.visual(Box((0.1, 0.1, 0.1)), origin=Origin(xyz=(0.0, 0.0, 0.05)))",
+                "child = object_model.part('child')",
+                "child.visual(Box((0.05, 0.05, 0.05)), origin=Origin(xyz=(0.0, 0.0, 0.125)))",
+                "object_model.articulation(",
+                "    'base_to_child',",
+                "    ArticulationType.FIXED,",
+                "    parent=base,",
+                "    child=child,",
+                "    origin=Origin(xyz=(0.0, 0.0, 0.1)),",
+                ")",
+                "extra = object_model.part('extra')",
+                "extra.visual(Box((0.05, 0.05, 0.05)), origin=Origin(xyz=(0.4, 0.0, 0.025)))",
+                "",
+                "def run_tests():",
+                "    ctx = TestContext(object_model)",
+                "    return ctx.report()",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_compile_artifacts_update_manifest(tmp_path: Path) -> None:
@@ -259,6 +322,24 @@ def test_compile_urdf_report_allows_explicitly_allowed_isolated_part(tmp_path: P
     )
 
 
+def test_compile_urdf_report_honors_authored_overlap_allowances_in_automated_baseline(
+    tmp_path: Path,
+) -> None:
+    script_path = tmp_path / "model.py"
+    _write_overlap_allowance_model_script(script_path)
+
+    report = compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert "<robot" in report.urdf_xml
+    assert any(
+        "Overlaps detected but allowed by justification" in warning for warning in report.warnings
+    )
+    assert any(
+        signal.kind == "allowed_overlap" and "bearing sleeve nests into the mount" in signal.details
+        for signal in report.signal_bundle.signals
+    )
+
+
 def test_compile_urdf_report_unrelated_isolated_part_allowance_does_not_suppress_failure(
     tmp_path: Path,
 ) -> None:
@@ -266,6 +347,14 @@ def test_compile_urdf_report_unrelated_isolated_part_allowance_does_not_suppress
     _write_isolated_part_model_script(script_path, allowed_part="support")
 
     with pytest.raises(RuntimeError, match="Isolated parts detected"):
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+
+def test_compile_urdf_report_fails_when_model_has_multiple_root_parts(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    _write_multiple_root_model_script(script_path)
+
+    with pytest.raises(RuntimeError, match="check_single_root_part"):
         compile_urdf_report(script_path, run_checks=True, target="full")
 
 
@@ -361,6 +450,16 @@ def test_compile_urdf_report_keeps_disconnected_geometry_as_warning_with_isolate
         warning.startswith("warn_if_part_contains_disconnected_geometry_islands(tol=1e-06):")
         for warning in report.warnings
     )
+
+
+def test_compile_urdf_report_suppresses_duplicate_manual_baseline_failures(tmp_path: Path) -> None:
+    script_path = tmp_path / "model.py"
+    _write_isolated_part_model_script(script_path)
+
+    with pytest.raises(RuntimeError, match="Isolated parts detected") as excinfo:
+        compile_urdf_report(script_path, run_checks=True, target="full")
+
+    assert str(excinfo.value).count("fail_if_isolated_parts()") == 1
 
 
 def test_compile_urdf_report_does_not_ignore_non_geometry_failures(tmp_path: Path) -> None:

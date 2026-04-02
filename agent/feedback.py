@@ -625,6 +625,7 @@ def _iter_allowance_notes(test_report: TestReportLike | None) -> Iterable[Compil
         return ()
 
     signals: list[CompileSignal] = []
+    structured_allowed_overlaps = tuple(getattr(test_report, "allowed_overlaps", ()))
     for allowance in test_report.allowances:
         text = str(allowance).strip()
         if not text:
@@ -638,10 +639,34 @@ def _iter_allowance_notes(test_report: TestReportLike | None) -> Iterable[Compil
                 )
             )
             continue
+        if text.startswith("allow_overlap(") and structured_allowed_overlaps:
+            continue
         signals.append(
             _signal_from_spec(
                 ALLOWANCE_SPEC,
                 summary=text,
+            )
+        )
+
+    for overlap in structured_allowed_overlaps:
+        link_a = str(getattr(overlap, "link_a", "")).strip()
+        link_b = str(getattr(overlap, "link_b", "")).strip()
+        reason = str(getattr(overlap, "reason", "")).strip()
+        elem_a = getattr(overlap, "elem_a", None)
+        elem_b = getattr(overlap, "elem_b", None)
+        details = f"allow_overlap({link_a!r}, {link_b!r})"
+        if elem_a is not None or elem_b is not None:
+            details += (
+                f", elem_a={None if elem_a is None else str(elem_a)!r},"
+                f" elem_b={None if elem_b is None else str(elem_b)!r}"
+            )
+        if reason:
+            details += f": {reason}"
+        signals.append(
+            _signal_from_spec(
+                ALLOWED_OVERLAP_SPEC,
+                summary="Overlap allowance declared.",
+                details=details,
             )
         )
     return signals
@@ -792,9 +817,9 @@ def render_compile_signals(
         parts.extend(["", "<notes>", _render_signal_lines(notes), "</notes>"])
 
     response_rules = [
-        "- Failures are blocking and should be investigated. If an isolated or floating part/group is intentional because the assembly requires a gap, you may explicitly bypass it; for `fail_if_parts_overlap_in_current_pose(...)`, be judicious because some overlaps are reasonable and may call for an allow-list or a better exact check rather than a geometry rewrite.",
+        "- Failures are blocking and should be investigated. Some come from compiler-owned automated QC rather than authored tests. If an isolated or floating part/group is intentional because the assembly requires a gap, you may explicitly bypass it; for real 3D overlap findings, be judicious because some penetrations are reasonable and may call for an allow-list or a better exact check rather than a geometry rewrite.",
         "- Warnings are possible issues and should not be ignored, but they are noisier than failures.",
-        "- `warn_if_part_contains_disconnected_geometry_islands(...)` can reflect a very real modeling issue. Investigate it before dismissing it as warning noise.",
+        "- Automated disconnected-geometry-island warnings can reflect a very real modeling issue. Investigate them before dismissing them as warning noise.",
         "- Before relaxing a warning-tier signal, use probe_model or exact checks to confirm whether it reflects a real issue.",
         "- If a signal reveals a wrong representation or composition, replace that representation instead of tuning around it.",
     ]

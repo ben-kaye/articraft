@@ -99,11 +99,9 @@ SDK_DOCS_MODE_FULL = "full"
 MAX_SINGLE_RUN_SLUG_LEN = 120
 _DRAFT_MOTION_LIMIT_EXAMPLE_BLOCK = """    # if hinge_limits is not None and hinge_limits.lower is not None and hinge_limits.upper is not None:
     #     with ctx.pose({lid_hinge: hinge_limits.lower}):
-    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_lower_no_overlap")
-    #         ctx.fail_if_isolated_parts(name="lid_hinge_lower_no_floating")
+    #         ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)
     #     with ctx.pose({lid_hinge: hinge_limits.upper}):
-    #         ctx.fail_if_parts_overlap_in_current_pose(name="lid_hinge_upper_no_overlap")
-    #         ctx.fail_if_isolated_parts(name="lid_hinge_upper_no_floating")
+    #         ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)
 """
 
 
@@ -128,27 +126,17 @@ def build_object_model() -> ArticulatedObject:
 
 def run_tests() -> TestReport:
     ctx = TestContext(object_model)
-    ctx.check_model_valid()
-    ctx.check_mesh_assets_ready()
-
-    # Preferred default QC stack:
-    # 1) blocking grounded-component floating check for disconnected part groups
-    ctx.fail_if_isolated_parts()
-    # 2) warning-tier within-part sensor for disconnected geometry islands
-    ctx.warn_if_part_contains_disconnected_geometry_islands()
-    # 3) blocking rest-pose part-to-part overlap backstop for real 3D interpenetration
-    # This is not an "inside / nested / footprint overlap" check.
-    # Use `ctx.allow_overlap(...)` only for true intended penetration.
-    # If parts are nested but should remain clear, prove that with exact
-    # `expect_contact(...)`, `expect_gap(...)`, `expect_overlap(...)`, or
-    # `expect_within(...)` checks instead.
-    ctx.fail_if_parts_overlap_in_current_pose()
+    # `compile_model` automatically runs baseline sanity/QC:
+    # - `check_model_valid()`
+    # - exactly one root part
+    # - `check_mesh_assets_ready()`
+    # - disconnected floating-part-group detection
+    # - disconnected within-part geometry-island detection
+    # - current-pose real 3D overlap detection
+    # Use `run_tests()` only for prompt-specific exact checks, targeted poses,
+    # and explicit allowances such as `ctx.allow_overlap(...)`.
 
     # Encode the actual visual/mechanical claims with prompt-specific exact checks.
-    # If you add a warning-tier heuristic and it fires, investigate it with
-    # `probe_model` before editing geometry or relaxing thresholds.
-    # Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is
-    # genuinely uncertain or mechanically important.
     # Cover each applicable category before returning:
     # - hero features are present and legible
     # - mounted parts are connected/seated, not floating
@@ -169,14 +157,8 @@ def run_tests() -> TestReport:
     # ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)
     # ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)
     # Keep pose-specific checks lean.
-    # Do not add blanket lower/upper pose sweeps or
-    # `ctx.fail_if_parts_overlap_in_sampled_poses(...)` by default.
+    # Prefer a few decisive exact checks over broad heuristics.
 {strict_motion_limit_block}\
-    # If the object has a mounted subassembly, prefer exact `expect_contact(...)`,
-    # `expect_gap(...)`, `expect_overlap(...)`, and `expect_within(...)` checks on
-    # named local features over the broad rest-pose overlap backstop.
-    # Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is
-    # genuinely uncertain or mechanically important.
     # Add prompt-specific exact visual checks below; optional warning heuristics are not enough.
     return ctx.report()
 

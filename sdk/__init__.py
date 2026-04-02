@@ -1,4 +1,5 @@
 from .v0 import (
+    AllowedOverlap,
     ArcPipeGeometry,
     ArticulatedObject,
     Articulation,
@@ -82,6 +83,7 @@ __all__ = [
     "SDKError",
     "ValidationError",
     "ArticulatedObject",
+    "AllowedOverlap",
     "Part",
     "Articulation",
     "ArticulationType",

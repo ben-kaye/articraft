@@ -401,27 +401,21 @@ def test_workbench_init_record_command(
     assert "Draft scaffold created by `articraft-workbench init-record`." in model_text
     assert "def build_object_model() -> ArticulatedObject:" in model_text
     assert "def run_tests() -> TestReport:" in model_text
-    assert "ctx.check_model_valid()" in model_text
-    assert "ctx.check_mesh_assets_ready()" in model_text
-    assert "ctx.fail_if_isolated_parts()" in model_text
-    assert "ctx.warn_if_part_contains_disconnected_geometry_islands()" in model_text
-    assert "ctx.fail_if_parts_overlap_in_current_pose()" in model_text
+    assert "ctx.check_model_valid()" not in model_text
+    assert "ctx.check_mesh_assets_ready()" not in model_text
+    assert "ctx.fail_if_isolated_parts()" not in model_text
+    assert "ctx.warn_if_part_contains_disconnected_geometry_islands()" not in model_text
+    assert "ctx.fail_if_parts_overlap_in_current_pose()" not in model_text
     assert "ctx.warn_if_articulation_origin_far_from_geometry" not in model_text
     assert "ctx.warn_if_articulation_overlaps(max_pose_samples=128)" not in model_text
     assert (
         "ctx.warn_if_overlaps(max_pose_samples=128, ignore_adjacent=True, ignore_fixed=True)"
         not in model_text
     )
-    assert "Preferred default QC stack" in model_text
-    assert "blocking grounded-component floating check for disconnected part groups" in model_text
-    assert "warning-tier within-part sensor for disconnected geometry islands" in model_text
-    assert "blocking rest-pose part-to-part overlap backstop" in model_text
-    assert "Use `ctx.allow_overlap(...)` only for true intended penetration." in model_text
-    assert "If you add a warning-tier heuristic and it fires" in model_text
-    assert "Add `ctx.warn_if_articulation_overlaps(...)` only when joint clearance is" in model_text
+    assert "`compile_model` automatically runs baseline sanity/QC:" in model_text
+    assert "- exactly one root part" in model_text
+    assert "Use `run_tests()` only for prompt-specific exact checks" in model_text
     assert "Keep pose-specific checks lean." in model_text
-    assert "Do not add blanket lower/upper pose sweeps" in model_text
-    assert "ctx.fail_if_parts_overlap_in_sampled_poses(...)" in model_text
     assert 'hinge_leaf = lid.get_visual("hinge_leaf")' in model_text
     assert 'ctx.expect_gap(lid, body, axis="z", max_gap=0.001, max_penetration=0.0)' in model_text
     assert "ctx.expect_contact(lid, body, elem_a=hinge_leaf, elem_b=body_leaf)" in model_text

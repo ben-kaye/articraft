@@ -38,6 +38,11 @@ class CompileModelTool(BaseDeclarativeTool):
             description=(
                 "Run full model compile and QC on the current bound file.\n\n"
                 "Use this after one or more edits when you want full compile/test feedback.\n"
+                "The harness automatically runs baseline sanity/QC checks for model validity, "
+                "exactly one root part, mesh assets, floating disconnected part groups, "
+                "disconnected geometry islands inside a part, and current-pose real 3D overlaps.\n"
+                "Do not manually author that baseline stack in `run_tests()`; reserve `run_tests()` "
+                "for exact checks, targeted poses, and explicit allowances.\n\n"
                 "The tool returns the same structured `<compile_signals>` block used by the harness "
                 "for clean success, warnings, or failures.\n\n"
                 "This tool takes no parameters; the harness supplies the current file automatically."

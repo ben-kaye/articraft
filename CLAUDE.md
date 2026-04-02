@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Articraft is an agentic system that generates articulated 3D objects (URDF models) from text prompts using LLMs (OpenAI, Gemini). It includes a custom geometry SDK, a generation agent with tool-use, a local storage/dataset layer, and a web-based 3D viewer.
 
+The SDK docs under `sdk/_docs/` are part of the agent authoring contract in this repository. Keep them aligned with the intended agent behavior and baseline compile/tooling policy; do not document agent-facing workflows there that the harness is supposed to own automatically.
+
 ## Common Commands
 
 Use `uv` for direct Python commands and `just` for the agent-facing shortcuts that help with record iteration. Run `just` or check [`justfile`](/Users/matthewzhou/articraft/justfile) for the full recipe list.

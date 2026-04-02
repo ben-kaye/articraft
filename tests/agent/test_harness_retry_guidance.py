@@ -25,11 +25,12 @@ def test_compile_failure_signal_message_has_structured_sections() -> None:
     assert "<response_rules>" in content
     assert "compile execution failed" in content
     assert "Failures are blocking and should be investigated." in content
+    assert "compiler-owned automated QC" in content
     assert "assembly requires a gap" in content
-    assert "fail_if_parts_overlap_in_current_pose(...)" in content
+    assert "real 3D overlap findings" in content
     assert "Warnings are possible issues and should not be ignored" in content
-    assert "warn_if_part_contains_disconnected_geometry_islands(...)" in content
-    assert "can reflect a very real modeling issue" in content
+    assert "Automated disconnected-geometry-island warnings" in content
+    assert "very real modeling issue" in content
     assert "use probe_model or exact checks" in content
     assert conversation
 

@@ -178,7 +178,7 @@ Return a part-level connectivity diagnosis that compares:
 - the current SDK connectivity-QC finding, if any
 
 Use this when a part visibly contains floating islands but
-`warn_if_part_contains_disconnected_geometry_islands(...)` did not fire.
+the automated compile warning did not fire.
 
 ### `layout_report(items, axis: str = "x") -> dict[str, object]`
 

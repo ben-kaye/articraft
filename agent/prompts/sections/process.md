@@ -15,11 +15,11 @@ PHASE 3 — BUILD INCREMENTALLY
 - Implement geometry one part or subassembly at a time. Do NOT write all geometry in one giant edit.
 - Upgrade each region from envelope geometry to realistic geometry only when silhouette, openings/cavities, curvature, or local clearances depend on it.
 - Edit tools only validate Python syntax. Use `compile_model` explicitly to run full compile + QC and receive `<compile_signals>` feedback.
+- `compile_model` automatically runs model-validity, single-root, mesh-asset, floating-group, disconnected-geometry-island, and current-pose real-overlap checks. Do not manually re-author that baseline stack in `run_tests()`.
 - Prefer several small coherent edits before compiling when that is cheaper than one large rewrite.
 - Fix issues from compile feedback before moving to the next part.
-- Treat `warn_if_part_contains_disconnected_geometry_islands(...)` as potentially real floating-geometry evidence, not routine warning noise. Intra-part disconnected islands usually mean the object still reads as floating; investigate and fix them before dismissing the warning.
 - Add tests only when they protect a prompt-critical invariant that is easy to regress. Prefer a small number of high-signal checks over a dense test suite.
-- Do not over-test poses. Avoid broad pose sweeps or many near-duplicate articulated poses unless they are the only practical way to protect a critical mechanism.
+- Do not over-test poses. Avoid many near-duplicate articulated poses unless they are the only practical way to protect a critical mechanism.
 - When a test fails or geometry looks wrong, use `probe_model` to diagnose before editing blindly.
 - Use `probe_model` for geometry inspection and debugging; use `run_tests()` for persistent regression checks that survive across turns.
 - Probe in the object-first style: resolve `part(...)`, `joint(...)`, `visual(...)` locals once, then pass them into probe reports.
@@ -29,7 +29,7 @@ PHASE 3 — BUILD INCREMENTALLY
 
 PHASE 4 — VERIFY AND REFINE
 - Explicitly check the four hard requirements:
-  - Floating parts: use `find_floating_parts(...)`, `mount_report(...)`, `nearest_neighbors(...)`, and treat `warn_if_part_contains_disconnected_geometry_islands(...)` as the same class of problem at intra-part scale.
+  - Floating parts: use `find_floating_parts(...)`, `mount_report(...)`, `nearest_neighbors(...)`.
   - Overlaps: use `overlap_report(...)`, `pair_report(...)`, `find_clearance_risks(...)`.
   - Proportions: use `summary(...)`, `dims(...)`, `projection(...)`, `layout_report(...)`.
 - Keep verification lean. Use exact checks in the most important pose(s), and only add pose-specific checks when a prompt-critical articulation remains ambiguous. Prefer one or two decisive poses over pose grids, dense sweeps, or many small pose variations. If a test does not add clear signal, do not keep adding tests.
@@ -38,7 +38,7 @@ PHASE 4 — VERIFY AND REFINE
 REPAIR RULES
 - When you receive `<compile_signals>`, read `<summary>` first to understand the overall status.
 - Treat `<failures>` as blocking, `<warnings>` as design evidence, `<notes>` as context.
-- If `warn_if_part_contains_disconnected_geometry_islands(...)` fires, assume it may be valid until you disprove it with inspection or exact checks. Prefer adding the missing support geometry or splitting the assembly into real parts over waving the warning away.
+- If an automated compile warning reports disconnected geometry inside a part, assume it may be valid until you disprove it with inspection or exact checks. Prefer adding the missing support geometry or splitting the assembly into real parts over waving the warning away.
 - Classify before patching: local bug, wrong representation, wrong composition, or wrong proportions.
 - If the same failure persists across 2 repair turns, stop patching. Simplify only the failing region back to envelope geometry, keep its learned dimensions/joints/attachments, then rebuild that region from scratch.
 - When you change geometry or motion, update tests in the same edit only if an existing high-signal invariant changed or a new prompt-critical invariant needs coverage.

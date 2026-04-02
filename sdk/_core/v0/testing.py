@@ -46,6 +46,15 @@ class TestFailure:
 
 
 @dataclass(frozen=True)
+class AllowedOverlap:
+    link_a: str
+    link_b: str
+    reason: str
+    elem_a: Optional[str] = None
+    elem_b: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class TestReport:
     passed: bool
     checks_run: int
@@ -54,6 +63,7 @@ class TestReport:
     warnings: Tuple[str, ...] = ()
     allowances: Tuple[str, ...] = ()
     allowed_isolated_parts: Tuple[str, ...] = ()
+    allowed_overlaps: Tuple[AllowedOverlap, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -439,6 +449,16 @@ class TestContext:
             warnings=tuple(self._warnings),
             allowances=tuple(self._allowances),
             allowed_isolated_parts=tuple(self._allow_isolated_parts),
+            allowed_overlaps=tuple(
+                AllowedOverlap(
+                    link_a=pair[0],
+                    link_b=pair[1],
+                    elem_a=elem_a,
+                    elem_b=elem_b,
+                    reason=reason,
+                )
+                for pair, elem_a, elem_b, reason in self._allow_elems
+            ),
         )
 
     def _record(self, name: str, ok: bool, details: str = "") -> bool:

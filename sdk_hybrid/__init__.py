@@ -1,4 +1,5 @@
 from .v0 import (
+    AllowedOverlap,
     ArticulatedObject,
     Articulation,
     ArticulationType,
@@ -78,6 +79,7 @@ __all__ = [
     "Limit",
     "Dynamics",
     "ArticulatedObject",
+    "AllowedOverlap",
     "Part",
     "Articulation",
     "ArticulationType",

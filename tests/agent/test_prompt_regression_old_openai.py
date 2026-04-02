@@ -46,11 +46,10 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
 
         # Probe and testing
         assert "find_floating_parts(...)" in text
-        assert "Do not add blanket lower/upper pose sweeps" in text
-        assert "fail_if_parts_overlap_in_sampled_poses(...)" in text
         assert "object-first" in text
         assert "resolve `part(...)`, `joint(...)`, `visual(...)` locals once" in text
-        assert "keep the scaffolded baseline check stack" in text
+        assert "exactly one root part" in text
+        assert "Use `run_tests()` for prompt-specific exact checks" in text
         assert "Never cap a visible opening with a solid placeholder" in text
 
         # No disallowed fragments
