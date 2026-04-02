@@ -3,15 +3,20 @@ import {
   useContext,
   useEffect,
   useReducer,
-  useRef,
   type Dispatch,
   type JSX,
   type ReactNode,
 } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { fetchBootstrap, fetchRecordSummary, fetchStagingEntries, HttpError } from "@/lib/api";
+import { HttpError } from "@/lib/api";
 import { isRunActive } from "@/lib/dashboard-stats";
 import { useRoute } from "@/lib/useRoute";
+import {
+  bootstrapQueryOptions,
+  recordSummaryQueryOptions,
+  stagingEntriesQueryOptions,
+} from "@/lib/viewer-queries";
 import type {
   BrowserTab,
   CostFilter,
@@ -791,41 +796,6 @@ function viewerReducer(state: ViewerState, action: ViewerAction): ViewerState {
 const ViewerStateContext = createContext<ViewerState>(initialState);
 const ViewerDispatchContext = createContext<Dispatch<ViewerAction>>(() => {});
 
-function useStagingPolling(state: ViewerState, dispatch: Dispatch<ViewerAction>): void {
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
-  const browserTab = state.browserTab;
-  const hasActiveRuns = state.bootstrap?.runs.some((run) => isRunActive(run)) ?? false;
-
-  useEffect(() => {
-    const shouldPoll = (): boolean => {
-      const { bootstrap, browserTab: currentBrowserTab } = stateRef.current;
-      if (!bootstrap) return false;
-      if (currentBrowserTab === "staging") return true;
-      return bootstrap.runs.some((run) => isRunActive(run));
-    };
-
-    if (!shouldPoll()) return;
-
-    const intervalId = setInterval(() => {
-      if (!shouldPoll()) return;
-
-      fetchStagingEntries()
-        .then((entries) => {
-          dispatch({ type: "UPDATE_STAGING", payload: entries });
-        })
-        .catch(() => {
-          // Silently ignore polling errors
-        });
-    }, STAGING_POLL_INTERVAL_MS);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [browserTab, dispatch, hasActiveRuns]);
-}
-
 export function ViewerProvider({ children }: { children: ReactNode }): JSX.Element {
   const [state, dispatch] = useReducer(viewerReducer, initialState);
   const route = useRoute();
@@ -833,30 +803,52 @@ export function ViewerProvider({ children }: { children: ReactNode }): JSX.Eleme
     state.selection?.kind === "record" && state.selectedRecordId
       ? state.recordCache[state.selectedRecordId] ?? null
       : null;
+  const bootstrapQuery = useQuery(bootstrapQueryOptions());
+  const activeBootstrap = state.bootstrap ?? bootstrapQuery.data ?? null;
+  const shouldPollStaging =
+    route.page === "viewer"
+      && activeBootstrap != null
+      && (
+        state.browserTab === "staging"
+        || activeBootstrap.runs.some((run) => isRunActive(run))
+      );
+  const stagingEntriesQuery = useQuery({
+    ...stagingEntriesQueryOptions(),
+    enabled: shouldPollStaging,
+    refetchInterval: STAGING_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  });
+  const selectedRecordId =
+    state.selection?.kind === "record" ? state.selectedRecordId : null;
+  const selectedRecordSummaryQuery = useQuery({
+    ...recordSummaryQueryOptions(selectedRecordId ?? ""),
+    enabled: selectedRecordId != null,
+    retry: (failureCount, error) =>
+      !(error instanceof HttpError && error.status === 404) && failureCount < 2,
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    dispatch({ type: "SET_LOADING", payload: true });
+    dispatch({ type: "SET_LOADING", payload: bootstrapQuery.isPending });
+  }, [bootstrapQuery.isPending]);
 
-    fetchBootstrap()
-      .then((data) => {
-        if (!cancelled) {
-          dispatch({ type: "SET_BOOTSTRAP", payload: data });
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          dispatch({
-            type: "SET_ERROR",
-            payload: err instanceof Error ? err.message : "Failed to load viewer data.",
-          });
-        }
-      });
+  useEffect(() => {
+    if (bootstrapQuery.data) {
+      dispatch({ type: "SET_BOOTSTRAP", payload: bootstrapQuery.data });
+    }
+  }, [bootstrapQuery.data]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useEffect(() => {
+    if (!bootstrapQuery.error) {
+      return;
+    }
+    dispatch({
+      type: "SET_ERROR",
+      payload:
+        bootstrapQuery.error instanceof Error
+          ? bootstrapQuery.error.message
+          : "Failed to load viewer data.",
+    });
+  }, [bootstrapQuery.error]);
 
   useEffect(() => {
     if (state.selection?.kind !== "record" || !state.selectedRecordId) {
@@ -874,35 +866,49 @@ export function ViewerProvider({ children }: { children: ReactNode }): JSX.Eleme
       return;
     }
 
-    const recordId = state.selectedRecordId;
-    let cancelled = false;
-    fetchRecordSummary(recordId)
-      .then((summary) => {
-        if (!cancelled) {
-          dispatch({ type: "SET_SELECTED_RECORD_SUMMARY", payload: summary });
-        }
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
+    if (selectedRecordSummaryQuery.data) {
+      dispatch({ type: "SET_SELECTED_RECORD_SUMMARY", payload: selectedRecordSummaryQuery.data });
+    }
+  }, [
+    dispatch,
+    selectedRecordSummaryQuery.data,
+    state.selectedRecordId,
+    state.selection?.kind,
+  ]);
 
-        if (error instanceof HttpError && error.status === 404) {
-          dispatch({ type: "DELETE_RECORD_LOCAL", payload: recordId });
-          return;
-        }
+  useEffect(() => {
+    if (
+      state.selection?.kind !== "record"
+      || !state.selectedRecordId
+      || !selectedRecordSummaryQuery.error
+    ) {
+      return;
+    }
 
-        if (!selectedCachedRecord) {
-          dispatch({ type: "SET_SELECTED_RECORD_SUMMARY", payload: null });
-        }
-      });
+    if (
+      selectedRecordSummaryQuery.error instanceof HttpError
+      && selectedRecordSummaryQuery.error.status === 404
+    ) {
+      dispatch({ type: "DELETE_RECORD_LOCAL", payload: state.selectedRecordId });
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
-  }, [dispatch, state.selectedRecordId, state.selection?.kind]);
+    if (!selectedCachedRecord) {
+      dispatch({ type: "SET_SELECTED_RECORD_SUMMARY", payload: null });
+    }
+  }, [
+    dispatch,
+    selectedCachedRecord,
+    selectedRecordSummaryQuery.error,
+    state.selectedRecordId,
+    state.selection?.kind,
+  ]);
 
-  useStagingPolling(state, dispatch);
+  useEffect(() => {
+    if (stagingEntriesQuery.data) {
+      dispatch({ type: "UPDATE_STAGING", payload: stagingEntriesQuery.data });
+    }
+  }, [stagingEntriesQuery.data]);
 
   useEffect(() => {
     if (route.page !== "viewer") {

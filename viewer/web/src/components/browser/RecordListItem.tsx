@@ -1,7 +1,6 @@
 import {
   memo,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -9,16 +8,42 @@ import {
   type JSX,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Check, ChevronDown, Copy, FolderOpen, MoreVertical, Search, Star, Trash2 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { deleteRecord, fetchBootstrap, fetchCategories, openRecordFolder, promoteRecordToDataset } from "@/lib/api";
+import { deleteRecord, openRecordFolder, promoteRecordToDataset } from "@/lib/api";
 import { buildRecordPath, copyTextToClipboard } from "@/lib/record-path";
 import type { CategoryOption, RecordSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { categoriesQueryOptions, viewerQueryKeys } from "@/lib/viewer-queries";
 import { useViewerDispatch } from "@/lib/viewer-context";
 
 interface RecordListItemProps {
@@ -91,6 +116,7 @@ function RecordListItemInner({
   onMultiSelectToggle,
 }: RecordListItemProps): JSX.Element {
   const dispatch = useViewerDispatch();
+  const queryClient = useQueryClient();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [promoteOpen, setPromoteOpen] = useState(false);
@@ -100,20 +126,23 @@ function RecordListItemInner({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [promotePending, setPromotePending] = useState(false);
   const [promoteError, setPromoteError] = useState<string | null>(null);
-  const [promoteCategoryOptions, setPromoteCategoryOptions] = useState<CategoryOption[]>([]);
-  const [promoteCategoryLoading, setPromoteCategoryLoading] = useState(false);
-  const [promoteCategoryLoadError, setPromoteCategoryLoadError] = useState<string | null>(null);
   const [promoteCategoryOpen, setPromoteCategoryOpen] = useState(false);
   const [promoteCategorySearch, setPromoteCategorySearch] = useState("");
   const [promoteCategorySlug, setPromoteCategorySlug] = useState("");
   const [promoteDatasetId, setPromoteDatasetId] = useState("");
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const promoteCategoryPopoverRef = useRef<HTMLDivElement | null>(null);
   const promoteCategorySearchInputRef = useRef<HTMLInputElement | null>(null);
-  const titleId = useId();
-  const descriptionId = useId();
-  const promoteTitleId = useId();
-  const promoteDescriptionId = useId();
+  const categoriesQuery = useQuery({
+    ...categoriesQueryOptions(),
+    enabled: promoteOpen,
+  });
+  const promoteCategoryOptions: CategoryOption[] = useMemo(
+    () => categoriesQuery.data ?? [],
+    [categoriesQuery.data],
+  );
+  const promoteCategoryLoading =
+    categoriesQuery.isPending || (categoriesQuery.isFetching && categoriesQuery.data == null);
+  const promoteCategoryLoadError =
+    categoriesQuery.error instanceof Error ? categoriesQuery.error.message : null;
   const alreadyInDataset = record?.collections.includes("dataset") ?? false;
   const summaryText = truncateWithEllipsis(record?.prompt_preview || record?.title || recordId);
   const metadata = [
@@ -146,133 +175,31 @@ function RecordListItemInner({
   }, [promoteCategoryOptions, promoteCategorySearch]);
 
   useEffect(() => {
-    if (!menuOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!menuRef.current) {
-        return;
-      }
-      if (event.target instanceof Node && !menuRef.current.contains(event.target)) {
-        setMenuOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!confirmOpen) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deletePending) {
-        setConfirmOpen(false);
-        setDeleteError(null);
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [confirmOpen, deletePending]);
-
-  useEffect(() => {
     if (!promoteOpen) {
       return;
     }
 
-    let cancelled = false;
-    setPromoteCategoryLoading(true);
-    setPromoteCategoryLoadError(null);
-
-    fetchCategories()
-      .then((categories) => {
-        if (cancelled) {
-          return;
-        }
-        setPromoteCategoryOptions(categories);
-        setPromoteCategoryLoading(false);
-        if (record?.category_slug && categories.some((option) => option.slug === record.category_slug)) {
-          setPromoteCategorySlug(record.category_slug);
-        } else {
-          setPromoteCategorySlug("");
-        }
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        setPromoteCategoryOptions([]);
-        setPromoteCategoryLoading(false);
-        setPromoteCategoryLoadError(error instanceof Error ? error.message : "Failed to load categories.");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [promoteOpen, record?.category_slug]);
-
-  useEffect(() => {
-    if (!promoteOpen) {
+    if (categoriesQuery.data == null) {
       return;
     }
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !promotePending) {
-        setPromoteOpen(false);
-        setPromoteError(null);
-      }
-    };
+    if (
+      record?.category_slug
+      && categoriesQuery.data.some((option) => option.slug === record.category_slug)
+    ) {
+      setPromoteCategorySlug(record.category_slug);
+      return;
+    }
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [promoteOpen, promotePending]);
+    setPromoteCategorySlug("");
+  }, [categoriesQuery.data, promoteOpen, record?.category_slug]);
 
   useEffect(() => {
     if (!promoteCategoryOpen) {
       return;
     }
 
-    promoteCategorySearchInputRef.current?.focus();
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!promoteCategoryPopoverRef.current) {
-        return;
-      }
-      if (event.target instanceof Node && !promoteCategoryPopoverRef.current.contains(event.target)) {
-        setPromoteCategoryOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setPromoteCategoryOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
+    requestAnimationFrame(() => promoteCategorySearchInputRef.current?.focus());
   }, [promoteCategoryOpen]);
 
   useEffect(() => {
@@ -325,11 +252,6 @@ function RecordListItemInner({
   const handleCheckboxClick = (event: ReactMouseEvent) => {
     event.stopPropagation();
     onMultiSelectToggle(recordId, event.shiftKey);
-  };
-
-  const handleMenuToggle = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    setMenuOpen((current) => !current);
   };
 
   const handleCopyRecordPath = async () => {
@@ -403,16 +325,7 @@ function RecordListItemInner({
       await deleteRecord(recordId);
       dispatch({ type: "DELETE_RECORD_LOCAL", payload: recordId });
       setConfirmOpen(false);
-
-      try {
-        const refreshedBootstrap = await fetchBootstrap();
-        dispatch({ type: "SET_BOOTSTRAP", payload: refreshedBootstrap });
-      } catch (error) {
-        dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof Error ? error.message : "Failed to refresh viewer data.",
-        });
-      }
+      await queryClient.invalidateQueries({ queryKey: viewerQueryKeys.root() });
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "Failed to delete record.");
     } finally {
@@ -446,17 +359,8 @@ function RecordListItemInner({
         datasetId: promoteDatasetId,
       });
       setPromoteOpen(false);
-
-      try {
-        const refreshedBootstrap = await fetchBootstrap();
-        dispatch({ type: "SET_BOOTSTRAP", payload: refreshedBootstrap });
-        dispatch({ type: "SET_BROWSER_TAB", payload: "dataset" });
-      } catch (error) {
-        dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof Error ? error.message : "Promotion succeeded, but viewer refresh failed.",
-        });
-      }
+      await queryClient.invalidateQueries({ queryKey: viewerQueryKeys.root() });
+      dispatch({ type: "SET_BROWSER_TAB", payload: "dataset" });
     } catch (error) {
       setPromoteError(error instanceof Error ? error.message : "Failed to promote record.");
     } finally {
@@ -586,50 +490,37 @@ function RecordListItemInner({
             ) : null}
           </button>
 
-          <div ref={menuRef} className={cn("relative shrink-0 pt-px", multiSelectActive && "hidden")}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`Open actions for ${record.title}`}
-                  aria-haspopup="menu"
-                  aria-expanded={menuOpen}
-                  onClick={handleMenuToggle}
-                  className={cn(
-                    "flex size-6 items-center justify-center rounded-md text-[var(--text-tertiary)] opacity-0 transition-all duration-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
-                    menuOpen
-                      ? "bg-[var(--surface-0)] text-[var(--text-primary)] opacity-100 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
-                      : "hover:bg-[var(--surface-0)] hover:text-[var(--text-primary)]",
-                  )}
-                >
-                  <MoreVertical className="size-3" />
-                </button>
-              </TooltipTrigger>
-              {!menuOpen ? <TooltipContent side="right">Actions</TooltipContent> : null}
-            </Tooltip>
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <div className={cn("relative shrink-0 pt-px", multiSelectActive && "hidden")}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`Open actions for ${record.title}`}
+                      className={cn(
+                        "flex size-6 items-center justify-center rounded-md text-[var(--text-tertiary)] opacity-0 transition-all duration-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
+                        menuOpen
+                          ? "bg-[var(--surface-0)] text-[var(--text-primary)] opacity-100 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+                          : "hover:bg-[var(--surface-0)] hover:text-[var(--text-primary)]",
+                      )}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <MoreVertical className="size-3" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                {!menuOpen ? <TooltipContent side="right">Actions</TooltipContent> : null}
+              </Tooltip>
 
-            {menuOpen ? (
-              <div
-                role="menu"
-                className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 text-[var(--text-primary)] shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]"
-              >
+              <DropdownMenuContent onClick={(event) => event.stopPropagation()}>
                 {!alreadyInDataset ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={handlePromoteIntent}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)]"
-                  >
+                  <DropdownMenuItem onSelect={handlePromoteIntent}>
                     <ArrowUpRight className="size-3.5" />
                     <span>Promote to dataset</span>
-                  </button>
+                  </DropdownMenuItem>
                 ) : null}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={handleCopyRecordPath}
-                  className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)]"
-                >
+                <DropdownMenuItem onSelect={() => void handleCopyRecordPath()}>
                   <Copy className="size-3.5" />
                   <span>
                     {copyState === "copied"
@@ -638,13 +529,8 @@ function RecordListItemInner({
                         ? "Copy failed"
                         : "Copy object path"}
                   </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={handleOpenRecordFolder}
-                  className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)]"
-                >
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void handleOpenRecordFolder()}>
                   <FolderOpen className="size-3.5" />
                   <span>
                     {openState === "opened"
@@ -653,78 +539,77 @@ function RecordListItemInner({
                         ? "Open failed"
                         : "Open object folder"}
                   </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={handleDeleteIntent}
-                  className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--destructive)] transition-colors hover:bg-[rgba(209,52,21,0.06)]"
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={handleDeleteIntent}
+                  className="text-[var(--destructive)] focus:bg-[rgba(209,52,21,0.06)] focus:text-[var(--destructive)]"
                 >
                   <Trash2 className="size-3.5" />
                   <span>Delete</span>
-                </button>
-              </div>
-            ) : null}
-          </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </div>
+          </DropdownMenu>
         </div>
       </div>
 
-      {promoteOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.15)] px-4 backdrop-blur-[2px]"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              handlePromoteCancel();
-            }
-          }}
-        >
-          <form
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={promoteTitleId}
-            aria-describedby={promoteDescriptionId}
-            className="w-full max-w-[420px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-0)] p-5 shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
-            onMouseDown={(event) => event.stopPropagation()}
-            onSubmit={handleConfirmPromote}
-          >
-            <div className="space-y-1.5">
-              <h2 id={promoteTitleId} className="text-[14px] font-semibold text-[var(--text-primary)]">
-                Promote to dataset
-              </h2>
-              <p id={promoteDescriptionId} className="text-[12px] leading-5 text-[var(--text-secondary)]">
-                Assign a category and optional dataset ID for this record. Leave dataset ID empty to auto-generate one.
-              </p>
-            </div>
+      <Dialog
+        open={promoteOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            handlePromoteCancel();
+          } else {
+            setPromoteOpen(true);
+          }
+        }}
+      >
+        <DialogContent className="w-full max-w-[420px] p-5">
+          <form onSubmit={handleConfirmPromote}>
+            <DialogHeader>
+              <DialogTitle>Promote to dataset</DialogTitle>
+              <DialogDescription>
+                Assign a category and optional dataset ID for this record. Leave dataset ID empty
+                to auto-generate one.
+              </DialogDescription>
+            </DialogHeader>
 
             <div className="mt-4 space-y-3">
-              <div ref={promoteCategoryPopoverRef} className="relative space-y-1.5">
-                <Label className="text-[11px] text-[var(--text-secondary)]">
-                  Category
-                </Label>
-                <button
-                  type="button"
-                  aria-expanded={promoteCategoryOpen}
-                  aria-haspopup="listbox"
-                  onClick={() => setPromoteCategoryOpen((current) => !current)}
-                  className={cn(
-                    "flex h-8 w-full items-center justify-between gap-2 rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] px-2.5 py-1.5 text-left text-[12px] text-[var(--text-primary)] transition-all duration-150 outline-none",
-                    "focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
-                    !selectedCategoryOption && "text-[var(--text-quaternary)]",
-                  )}
-                  disabled={promotePending}
-                >
-                  <span className="truncate">
-                    {selectedCategoryOption
-                      ? selectedCategoryOption.title
-                      : promoteCategoryLoading
-                        ? "Loading categories..."
-                        : "Select a category"}
-                  </span>
-                  <ChevronDown className={cn("size-3.5 shrink-0 text-[var(--text-tertiary)] transition-transform", promoteCategoryOpen && "rotate-180")} />
-                </button>
-
-                {promoteCategoryOpen ? (
-                  <div className="absolute left-0 top-[calc(100%+0.375rem)] z-10 w-full rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]">
+              <div className="space-y-1.5">
+                <Label className="text-[11px] text-[var(--text-secondary)]">Category</Label>
+                <Popover open={promoteCategoryOpen} onOpenChange={setPromoteCategoryOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex h-8 w-full items-center justify-between gap-2 rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] px-2.5 py-1.5 text-left text-[12px] text-[var(--text-primary)] transition-all duration-150 outline-none",
+                        "focus-visible:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent-soft)]",
+                        !selectedCategoryOption && "text-[var(--text-quaternary)]",
+                      )}
+                      disabled={promotePending}
+                    >
+                      <span className="truncate">
+                        {selectedCategoryOption
+                          ? selectedCategoryOption.title
+                          : promoteCategoryLoading
+                            ? "Loading categories..."
+                            : "Select a category"}
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "size-3.5 shrink-0 text-[var(--text-tertiary)] transition-transform",
+                          promoteCategoryOpen && "rotate-180",
+                        )}
+                      />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="start"
+                    className="w-[var(--radix-popover-trigger-width)] p-1"
+                    onOpenAutoFocus={(event) => {
+                      event.preventDefault();
+                      promoteCategorySearchInputRef.current?.focus();
+                    }}
+                  >
                     <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-2 py-1.5">
                       <Search className="size-3 shrink-0 text-[var(--text-quaternary)]" />
                       <Input
@@ -788,8 +673,8 @@ function RecordListItemInner({
                         })}
                       </div>
                     )}
-                  </div>
-                ) : null}
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <div className="space-y-1.5">
@@ -821,57 +706,43 @@ function RecordListItemInner({
               </Button>
             </div>
           </form>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
 
-      {confirmOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.15)] px-4 backdrop-blur-[2px]"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              handleDeleteCancel();
-            }
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-            aria-describedby={descriptionId}
-            className="w-full max-w-[380px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-0)] p-5 shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="space-y-1.5">
-              <h2 id={titleId} className="text-[14px] font-semibold text-[var(--text-primary)]">
-                Delete record?
-              </h2>
-              <p id={descriptionId} className="text-[12px] leading-5 text-[var(--text-secondary)]">
-                This will permanently remove this record and its stored files from the viewer.
-              </p>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove this record and its stored files from the viewer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {deleteError ? (
+            <div className="mt-3 rounded-lg border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-3 py-2 text-[11px] text-[var(--destructive)]">
+              {deleteError}
             </div>
+          ) : null}
 
-            {deleteError ? (
-              <div className="mt-3 rounded-lg border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-3 py-2 text-[11px] text-[var(--destructive)]">
-                {deleteError}
-              </div>
-            ) : null}
-
-            <div className="mt-5 flex items-center justify-end gap-2">
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
               <Button type="button" variant="outline" onClick={handleDeleteCancel} disabled={deletePending}>
                 Cancel
               </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
               <Button
                 type="button"
-                onClick={handleConfirmDelete}
+                onClick={() => void handleConfirmDelete()}
                 disabled={deletePending}
                 className="bg-[var(--destructive)] text-white hover:bg-[#b82d12]"
               >
                 {deletePending ? "Deleting..." : "Delete"}
               </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

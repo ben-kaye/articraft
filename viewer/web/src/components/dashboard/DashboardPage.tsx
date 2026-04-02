@@ -7,7 +7,7 @@ import {
   useState,
   type JSX,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { DASHBOARD_REFRESH_EVENT } from "@/lib/dashboard-events";
 import type { DashboardData, TimeFilter } from "@/lib/types";
@@ -38,6 +38,7 @@ function DashboardSectionSkeleton({ heightClass }: { heightClass: string }): JSX
 }
 
 export function DashboardPage(): JSX.Element {
+  const queryClient = useQueryClient();
   const [timeFilter, setTimeFilter] = useState<TimeFilter>({ oldest: null, newest: null });
   const [starsFilter, setStarsFilter] = useState<[number, number]>([
     STAR_SLIDER_MIN,
@@ -49,7 +50,6 @@ export function DashboardPage(): JSX.Element {
   });
   const [sdkFilter, setSdkFilter] = useState<string | null>(null);
   const [rollingWindowDays, setRollingWindowDays] = useState(14);
-  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const requestParams = useMemo(
     () => ({
@@ -58,9 +58,8 @@ export function DashboardPage(): JSX.Element {
       costFilter,
       sdkFilter,
       rollingWindowDays,
-      refreshNonce,
     }),
-    [costFilter, refreshNonce, rollingWindowDays, sdkFilter, starsFilter, timeFilter],
+    [costFilter, rollingWindowDays, sdkFilter, starsFilter, timeFilter],
   );
   const deferredRequest = useDeferredValue(requestParams);
   const dashboardQuery = useQuery(
@@ -78,14 +77,14 @@ export function DashboardPage(): JSX.Element {
 
   useEffect(() => {
     const handleRefresh = () => {
-      setRefreshNonce((value) => value + 1);
+      void queryClient.invalidateQueries({ queryKey: ["viewer", "dashboard"] });
     };
 
     window.addEventListener(DASHBOARD_REFRESH_EVENT, handleRefresh);
     return () => {
       window.removeEventListener(DASHBOARD_REFRESH_EVENT, handleRefresh);
     };
-  }, []);
+  }, [queryClient]);
 
   if (!dashboard && dashboardQuery.isPending) {
     return (

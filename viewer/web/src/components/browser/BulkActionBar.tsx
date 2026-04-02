@@ -1,11 +1,23 @@
-import { useEffect, useId, useState, type JSX } from "react";
+import { useEffect, useState, type JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Copy, FolderOpen, Trash2 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { deleteRecord, fetchBootstrap, openRecordFolder } from "@/lib/api";
+import { deleteRecord, openRecordFolder } from "@/lib/api";
 import { buildRecordPath, copyTextToClipboard } from "@/lib/record-path";
 import { cn } from "@/lib/utils";
+import { viewerQueryKeys } from "@/lib/viewer-queries";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 
 const MAX_OPEN_FOLDERS = 10;
@@ -17,8 +29,7 @@ interface BulkActionBarProps {
 export function BulkActionBar({ visibleRecordIds }: BulkActionBarProps): JSX.Element {
   const { bootstrap, multiSelection, recordCache } = useViewer();
   const dispatch = useViewerDispatch();
-  const titleId = useId();
-  const descriptionId = useId();
+  const queryClient = useQueryClient();
   const selectedCount = multiSelection.size;
 
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
@@ -39,18 +50,6 @@ export function BulkActionBar({ visibleRecordIds }: BulkActionBarProps): JSX.Ele
     const timeoutId = window.setTimeout(() => setOpenState("idle"), 1800);
     return () => window.clearTimeout(timeoutId);
   }, [openState]);
-
-  useEffect(() => {
-    if (!confirmOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deletePending) {
-        setConfirmOpen(false);
-        setDeleteError(null);
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [confirmOpen, deletePending]);
 
   const selectedIds = [...multiSelection];
 
@@ -114,16 +113,7 @@ export function BulkActionBar({ visibleRecordIds }: BulkActionBarProps): JSX.Ele
       }
       setConfirmOpen(false);
       dispatch({ type: "CLEAR_MULTI_SELECT" });
-
-      try {
-        const refreshedBootstrap = await fetchBootstrap();
-        dispatch({ type: "SET_BOOTSTRAP", payload: refreshedBootstrap });
-      } catch (error) {
-        dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof Error ? error.message : "Failed to refresh viewer data.",
-        });
-      }
+      await queryClient.invalidateQueries({ queryKey: viewerQueryKeys.root() });
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "Failed to delete record.");
     } finally {
@@ -223,67 +213,55 @@ export function BulkActionBar({ visibleRecordIds }: BulkActionBarProps): JSX.Ele
         </div>
       </div>
 
-      {confirmOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.15)] px-4 backdrop-blur-[2px]"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              handleDeleteCancel();
-            }
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-            aria-describedby={descriptionId}
-            className="w-full max-w-[340px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-0)] p-4 shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="space-y-1">
-              <h2 id={titleId} className="text-[13px] font-semibold text-[var(--text-primary)]">
-                Delete {selectedCount} record{selectedCount === 1 ? "" : "s"}?
-              </h2>
-              <p id={descriptionId} className="text-[11px] leading-[1.5] text-[var(--text-tertiary)]">
-                This will permanently remove {selectedCount === 1 ? "this record" : "these records"} and stored files.
-              </p>
-              {previewTitles.length > 0 ? (
-                <div className="mt-1.5 space-y-px text-[10px] text-[var(--text-quaternary)]">
-                  {previewTitles.map((title) => (
-                    <p key={title} className="truncate">
-                      {title}
-                    </p>
-                  ))}
-                  {selectedRecords.length > 3 ? (
-                    <p>+{selectedRecords.length - 3} more</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-
-            {deleteError ? (
-              <div className="mt-2.5 rounded-md border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-2.5 py-1.5 text-[10px] text-[var(--destructive)]">
-                {deleteError}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="max-w-[340px] p-4">
+          <AlertDialogHeader className="space-y-1">
+            <AlertDialogTitle className="text-[13px]">
+              Delete {selectedCount} record{selectedCount === 1 ? "" : "s"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-[11px] leading-[1.5] text-[var(--text-tertiary)]">
+              This will permanently remove {selectedCount === 1 ? "this record" : "these records"} and stored files.
+            </AlertDialogDescription>
+            {previewTitles.length > 0 ? (
+              <div className="mt-1.5 space-y-px text-[10px] text-[var(--text-quaternary)]">
+                {previewTitles.map((title) => (
+                  <p key={title} className="truncate">
+                    {title}
+                  </p>
+                ))}
+                {selectedRecords.length > 3 ? (
+                  <p>+{selectedRecords.length - 3} more</p>
+                ) : null}
               </div>
             ) : null}
+          </AlertDialogHeader>
 
-            <div className="mt-4 flex items-center justify-end gap-1.5">
+          {deleteError ? (
+            <div className="mt-2.5 rounded-md border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-2.5 py-1.5 text-[10px] text-[var(--destructive)]">
+              {deleteError}
+            </div>
+          ) : null}
+
+          <AlertDialogFooter className="mt-4 gap-1.5">
+            <AlertDialogCancel asChild>
               <Button type="button" variant="outline" size="sm" onClick={handleDeleteCancel} disabled={deletePending}>
                 Cancel
               </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
               <Button
                 type="button"
                 size="sm"
-                onClick={handleConfirmDelete}
+                onClick={() => void handleConfirmDelete()}
                 disabled={deletePending}
                 className="bg-[var(--destructive)] text-white hover:bg-[#b82d12]"
               >
-                {deletePending ? `${deleteProgress}/${selectedCount}…` : "Delete"}
+                {deletePending ? `${deleteProgress}/${selectedCount}...` : "Delete"}
               </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

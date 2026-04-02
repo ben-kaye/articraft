@@ -1,19 +1,29 @@
 import {
-  useCallback,
   useDeferredValue,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type JSX,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AutoSizer } from "react-virtualized-auto-sizer";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 
 import { RecordListItem } from "@/components/browser/RecordListItem";
 import type { DatasetFilterMetadata } from "@/components/browser/ExplorerFilters";
-import { browseRecords, searchRecords } from "@/lib/api";
-import type { CostFilter, RatingFilter, RecordSummary, TimeFilter } from "@/lib/types";
+import type {
+  CostFilter,
+  RatingFilter,
+  RecordBrowseResponse,
+  RecordSummary,
+  TimeFilter,
+} from "@/lib/types";
+import {
+  browseRecordsQueryOptions,
+  searchRecordsQueryOptions,
+} from "@/lib/viewer-queries";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 
 const TIME_DURATIONS: Record<string, number> = {
@@ -141,6 +151,7 @@ export function RecordList({
   onCountsChange,
   onDatasetMetadataChange,
 }: RecordListProps): JSX.Element {
+  const queryClient = useQueryClient();
   const {
     bootstrap,
     recordCache,
@@ -203,20 +214,22 @@ export function RecordList({
     setSearchedRecords(null);
     setSearchPending(true);
 
-    searchRecords({
-      query: deferredSearchQuery,
-      source: sourceFilter,
-      runId: selectedRunId,
-      timeFilter,
-      modelFilter,
-      sdkFilter,
-      authorFilters: [],
-      categoryFilters: [],
-      costFilter,
-      ratingFilter,
-      secondaryRatingFilter,
-      limit: 200,
-    })
+    queryClient.fetchQuery(
+      searchRecordsQueryOptions({
+        query: deferredSearchQuery,
+        source: sourceFilter,
+        runId: selectedRunId,
+        timeFilter,
+        modelFilter,
+        sdkFilter,
+        authorFilters: [],
+        categoryFilters: [],
+        costFilter,
+        ratingFilter,
+        secondaryRatingFilter,
+        limit: 200,
+      }),
+    )
       .then((results) => {
         if (!cancelled) {
           setSearchedRecords(results);
@@ -245,6 +258,7 @@ export function RecordList({
     selectedRunId,
     sourceFilter,
     timeFilter,
+    queryClient,
   ]);
 
   const workbenchRecords = useMemo(() => {
@@ -337,7 +351,7 @@ export function RecordList({
   );
 
   const applyDatasetMetadata = useCallback(
-    (response: Awaited<ReturnType<typeof browseRecords>>) => {
+    (response: RecordBrowseResponse) => {
       onDatasetMetadataChange?.({
         availableModels: response.facets.models,
         availableSdks: response.facets.sdk_packages,
@@ -365,11 +379,13 @@ export function RecordList({
       const requestId = activeDatasetRequestIdRef.current;
       loadingDatasetPagesRef.current.add(pageIndex);
 
-      browseRecords({
-        ...datasetBrowseParams,
-        offset: pageIndex * DATASET_PAGE_SIZE,
-        limit: DATASET_PAGE_SIZE,
-      })
+      queryClient.fetchQuery(
+        browseRecordsQueryOptions({
+          ...datasetBrowseParams,
+          offset: pageIndex * DATASET_PAGE_SIZE,
+          limit: DATASET_PAGE_SIZE,
+        }),
+      )
         .then((response) => {
           if (activeDatasetRequestIdRef.current !== requestId) {
             return;
@@ -387,7 +403,7 @@ export function RecordList({
           loadingDatasetPagesRef.current.delete(pageIndex);
         });
     },
-    [applyDatasetMetadata, datasetBrowseParams, mergeDatasetRecords, sourceFilter],
+    [applyDatasetMetadata, datasetBrowseParams, mergeDatasetRecords, queryClient, sourceFilter],
   );
 
   useEffect(() => {
@@ -412,11 +428,13 @@ export function RecordList({
     setDatasetRecordsById({});
     setDatasetSourceTotal(0);
 
-    browseRecords({
-      ...datasetBrowseParams,
-      offset: 0,
-      limit: DATASET_PAGE_SIZE,
-    })
+    queryClient.fetchQuery(
+      browseRecordsQueryOptions({
+        ...datasetBrowseParams,
+        offset: 0,
+        limit: DATASET_PAGE_SIZE,
+      }),
+    )
       .then((response) => {
         if (cancelled || activeDatasetRequestIdRef.current !== requestId) {
           return;
@@ -447,6 +465,7 @@ export function RecordList({
     datasetGeneratedAt,
     mergeDatasetRecords,
     onDatasetMetadataChange,
+    queryClient,
     sourceFilter,
   ]);
 

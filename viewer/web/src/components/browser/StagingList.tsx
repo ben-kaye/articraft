@@ -1,13 +1,31 @@
-import { useEffect, useId, useMemo, useRef, useState, type JSX, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useState, type JSX } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, MoreVertical, Trash2 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { StagingEntry, ViewerSelection } from "@/lib/types";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { deleteStagingEntry, fetchBootstrap, openStagingFolder } from "@/lib/api";
+import { deleteStagingEntry, openStagingFolder } from "@/lib/api";
+import { viewerQueryKeys } from "@/lib/viewer-queries";
 import {
   getPreviewStagingEntries,
   isPreviewStagingEntry,
@@ -89,6 +107,7 @@ function matchesSearch(entry: StagingEntry, query: string): boolean {
 function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
   const { bootstrap, selection } = useViewer();
   const dispatch = useViewerDispatch();
+  const queryClient = useQueryClient();
   const isPreview = isPreviewStagingEntry(entry);
   const isSelected = isStagingSelected(selection, entry);
   const isFailed = isFailedEntry(entry);
@@ -97,9 +116,6 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
   const [openState, setOpenState] = useState<"idle" | "opened" | "error">("idle");
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const titleId = useId();
-  const descriptionId = useId();
   const summaryText = truncateWithEllipsis(entry.prompt_preview || entry.title || "Untitled");
   const metadata = [
     !isFailed ? entry.status : null,
@@ -107,52 +123,6 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
     entry.turn_count !== null ? `${entry.turn_count} turns` : null,
     formatTimeAgo(entry.updated_at),
   ].filter((value): value is string => Boolean(value));
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!menuRef.current) {
-        return;
-      }
-      if (event.target instanceof Node && !menuRef.current.contains(event.target)) {
-        setMenuOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!confirmOpen) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !deletePending) {
-        setConfirmOpen(false);
-        setDeleteError(null);
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [confirmOpen, deletePending]);
 
   useEffect(() => {
     if (openState === "idle") {
@@ -167,11 +137,6 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
       window.clearTimeout(timeoutId);
     };
   }, [openState]);
-
-  const handleMenuToggle = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    setMenuOpen((current) => !current);
-  };
 
   const handleOpenStagingFolder = async () => {
     try {
@@ -215,16 +180,7 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
         });
       }
       setConfirmOpen(false);
-
-      try {
-        const refreshedBootstrap = await fetchBootstrap();
-        dispatch({ type: "SET_BOOTSTRAP", payload: refreshedBootstrap });
-      } catch (error) {
-        dispatch({
-          type: "SET_ERROR",
-          payload: error instanceof Error ? error.message : "Failed to refresh viewer data.",
-        });
-      }
+      await queryClient.invalidateQueries({ queryKey: viewerQueryKeys.root() });
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "Failed to delete staging entry.");
     } finally {
@@ -300,39 +256,31 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
           </button>
 
           {!isPreview ? (
-            <div ref={menuRef} className="relative shrink-0 pt-px">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={`Open actions for ${entry.title || entry.record_id}`}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    onClick={handleMenuToggle}
-                    className={cn(
-                      "flex size-6 items-center justify-center rounded-md text-[var(--text-tertiary)] opacity-0 transition-all duration-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(26,138,74,0.18)]",
-                      menuOpen
-                        ? "bg-[var(--surface-0)] text-[var(--text-primary)] opacity-100 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
-                        : "hover:bg-[var(--surface-0)] hover:text-[var(--text-primary)]",
-                    )}
-                  >
-                    <MoreVertical className="size-3" />
-                  </button>
-                </TooltipTrigger>
-                {!menuOpen ? <TooltipContent side="right">Actions</TooltipContent> : null}
-              </Tooltip>
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <div className="relative shrink-0 pt-px">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`Open actions for ${entry.title || entry.record_id}`}
+                        className={cn(
+                          "flex size-6 items-center justify-center rounded-md text-[var(--text-tertiary)] opacity-0 transition-all duration-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(26,138,74,0.18)]",
+                          menuOpen
+                            ? "bg-[var(--surface-0)] text-[var(--text-primary)] opacity-100 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+                            : "hover:bg-[var(--surface-0)] hover:text-[var(--text-primary)]",
+                        )}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <MoreVertical className="size-3" />
+                      </button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  {!menuOpen ? <TooltipContent side="right">Actions</TooltipContent> : null}
+                </Tooltip>
 
-              {menuOpen ? (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-20 mt-1 min-w-[11rem] overflow-hidden rounded-lg border border-[var(--border-default)] bg-[var(--surface-0)] p-1 text-[var(--text-primary)] shadow-[0_4px_16px_rgba(0,0,0,0.08),0_0_0_1px_rgba(0,0,0,0.02)]"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={handleOpenStagingFolder}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)]"
-                  >
+                <DropdownMenuContent onClick={(event) => event.stopPropagation()}>
+                  <DropdownMenuItem onSelect={() => void handleOpenStagingFolder()}>
                     <FolderOpen className="size-3.5" />
                     <span>
                       {openState === "opened"
@@ -341,71 +289,56 @@ function StagingListItem({ entry }: { entry: StagingEntry }): JSX.Element {
                           ? "Open failed"
                           : "Open staging folder"}
                     </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={handleDeleteIntent}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2.5 py-1.5 text-left font-sans text-[12px] font-medium text-[var(--destructive)] transition-colors hover:bg-[rgba(209,52,21,0.06)]"
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={handleDeleteIntent}
+                    className="text-[var(--destructive)] focus:bg-[rgba(209,52,21,0.06)] focus:text-[var(--destructive)]"
                   >
                     <Trash2 className="size-3.5" />
                     <span>Delete</span>
-                  </button>
-                </div>
-              ) : null}
-            </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </div>
+            </DropdownMenu>
           ) : null}
         </div>
       </div>
 
-      {confirmOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.15)] px-4 backdrop-blur-[2px]"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              handleDeleteCancel();
-            }
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-            aria-describedby={descriptionId}
-            className="w-full max-w-[380px] rounded-xl border border-[var(--border-default)] bg-[var(--surface-0)] p-5 shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="space-y-1.5">
-              <h2 id={titleId} className="text-[14px] font-semibold text-[var(--text-primary)]">
-                Delete staging entry?
-              </h2>
-              <p id={descriptionId} className="text-[12px] leading-5 text-[var(--text-secondary)]">
-                This will permanently remove this staging entry and its staged files from the viewer cache.
-              </p>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete staging entry?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove this staging entry and its staged files from the viewer
+              cache.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {deleteError ? (
+            <div className="mt-3 rounded-lg border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-3 py-2 text-[11px] text-[var(--destructive)]">
+              {deleteError}
             </div>
+          ) : null}
 
-            {deleteError ? (
-              <div className="mt-3 rounded-lg border border-[rgba(209,52,21,0.1)] bg-[rgba(209,52,21,0.04)] px-3 py-2 text-[11px] text-[var(--destructive)]">
-                {deleteError}
-              </div>
-            ) : null}
-
-            <div className="mt-5 flex items-center justify-end gap-2">
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
               <Button type="button" variant="outline" onClick={handleDeleteCancel} disabled={deletePending}>
                 Cancel
               </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
               <Button
                 type="button"
-                onClick={handleConfirmDelete}
+                onClick={() => void handleConfirmDelete()}
                 disabled={deletePending}
                 className="bg-[var(--destructive)] text-white hover:bg-[#b82d12]"
               >
                 {deletePending ? "Deleting..." : "Delete"}
               </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
