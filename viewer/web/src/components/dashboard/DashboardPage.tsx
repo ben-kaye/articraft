@@ -1,29 +1,43 @@
-import { useState, useEffect, useCallback, useMemo, type JSX } from "react";
-
-import { fetchDatasetEntries, fetchRepoStats } from "@/lib/api";
 import {
-  buildDashboardCategoryStats,
-  buildDashboardOverviewStats,
-  collectDatasetRecords,
-  filterDashboardRecords,
-  getDashboardAvailableSdks,
-  getDashboardCostBounds,
-  hasActiveDashboardFilters,
-} from "@/lib/dashboard-data";
-import type { DatasetEntry, RepoStats, TimeFilter } from "@/lib/types";
-import { useViewer } from "@/lib/viewer-context";
-import { CostTrendSection } from "@/components/dashboard/CostTrendSection";
+  lazy,
+  Suspense,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+  type JSX,
+} from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { DASHBOARD_REFRESH_EVENT } from "@/lib/dashboard-events";
+import type { DashboardData, TimeFilter } from "@/lib/types";
+import { dashboardQueryOptions } from "@/lib/viewer-queries";
 import { DashboardFilterBar } from "@/components/dashboard/DashboardFilterBar";
 import { OverviewSection } from "@/components/dashboard/OverviewSection";
-import { SupercategoriesSection } from "@/components/dashboard/SupercategoriesSection";
 import { CategoriesSection } from "@/components/dashboard/CategoriesSection";
 import { STAR_SLIDER_MAX, STAR_SLIDER_MIN } from "@/components/dashboard/dashboard-filters";
 
+const CostTrendSection = lazy(() =>
+  import("@/components/dashboard/CostTrendSection").then((module) => ({
+    default: module.CostTrendSection,
+  })),
+);
+
+const SupercategoriesSection = lazy(() =>
+  import("@/components/dashboard/SupercategoriesSection").then((module) => ({
+    default: module.SupercategoriesSection,
+  })),
+);
+
+function DashboardSectionSkeleton({ heightClass }: { heightClass: string }): JSX.Element {
+  return (
+    <div className="rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] p-4">
+      <div className={`animate-pulse rounded-md bg-[var(--surface-1)] ${heightClass}`} />
+    </div>
+  );
+}
+
 export function DashboardPage(): JSX.Element {
-  const { bootstrap } = useViewer();
-  const [repoStats, setRepoStats] = useState<RepoStats | null>(null);
-  const [statsError, setStatsError] = useState<string | null>(null);
-  const [datasetEntries, setDatasetEntries] = useState<DatasetEntry[] | null>(null);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>({ oldest: null, newest: null });
   const [starsFilter, setStarsFilter] = useState<[number, number]>([
     STAR_SLIDER_MIN,
@@ -35,80 +49,58 @@ export function DashboardPage(): JSX.Element {
   });
   const [sdkFilter, setSdkFilter] = useState<string | null>(null);
   const [rollingWindowDays, setRollingWindowDays] = useState(14);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
-  const loadStats = useCallback(() => {
-    fetchRepoStats()
-      .then((data) => {
-        setRepoStats(data);
-        setStatsError(null);
-      })
-      .catch((err) => {
-        setStatsError(err instanceof Error ? err.message : "Failed to load stats");
-      });
-  }, []);
-
-  useEffect(() => {
-    loadStats();
-  }, [loadStats]);
-
-  useEffect(() => {
-    fetchDatasetEntries()
-      .then((entries) => {
-        setDatasetEntries(entries);
-      })
-      .catch(() => {
-        setDatasetEntries([]);
-      });
-  }, [bootstrap?.generated_at]);
-
-  const allDatasetRecords = useMemo(
-    () => collectDatasetRecords(datasetEntries ?? []),
-    [datasetEntries],
-  );
-
-  const dashboardFilters = useMemo(
+  const requestParams = useMemo(
     () => ({
       timeFilter,
       starsFilter,
       costFilter,
       sdkFilter,
+      rollingWindowDays,
+      refreshNonce,
     }),
-    [timeFilter, starsFilter, costFilter, sdkFilter],
+    [costFilter, refreshNonce, rollingWindowDays, sdkFilter, starsFilter, timeFilter],
   );
-
-  const filteredDatasetRecords = useMemo(
-    () => filterDashboardRecords(allDatasetRecords, dashboardFilters),
-    [allDatasetRecords, dashboardFilters],
+  const deferredRequest = useDeferredValue(requestParams);
+  const dashboardQuery = useQuery(
+    dashboardQueryOptions({
+      timeFilter: deferredRequest.timeFilter,
+      starsFilter: deferredRequest.starsFilter,
+      costFilter: deferredRequest.costFilter,
+      sdkFilter: deferredRequest.sdkFilter,
+      rollingWindowDays: deferredRequest.rollingWindowDays,
+    }),
   );
+  const dashboard: DashboardData | null = dashboardQuery.data ?? null;
+  const loadError = dashboardQuery.error instanceof Error ? dashboardQuery.error.message : null;
+  const loading = dashboardQuery.isFetching;
 
-  const availableSdks = useMemo(
-    () => getDashboardAvailableSdks(allDatasetRecords),
-    [allDatasetRecords],
-  );
+  useEffect(() => {
+    const handleRefresh = () => {
+      setRefreshNonce((value) => value + 1);
+    };
 
-  const costBounds = useMemo(
-    () => getDashboardCostBounds(allDatasetRecords),
-    [allDatasetRecords],
-  );
+    window.addEventListener(DASHBOARD_REFRESH_EVENT, handleRefresh);
+    return () => {
+      window.removeEventListener(DASHBOARD_REFRESH_EVENT, handleRefresh);
+    };
+  }, []);
 
-  const categoryStats = useMemo(
-    () => buildDashboardCategoryStats(filteredDatasetRecords),
-    [filteredDatasetRecords],
-  );
-
-  const overviewStats = useMemo(
-    () =>
-      buildDashboardOverviewStats(filteredDatasetRecords, {
-        dataSizeBytes: repoStats?.data_size_bytes ?? null,
-        isFiltered: hasActiveDashboardFilters(dashboardFilters),
-      }),
-    [filteredDatasetRecords, repoStats?.data_size_bytes, dashboardFilters],
-  );
-
-  if (!bootstrap && datasetEntries == null && !repoStats) {
+  if (!dashboard && dashboardQuery.isPending) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-[12px] text-[var(--text-quaternary)]">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!dashboard) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="max-w-md px-6 text-center text-[12px] text-[var(--text-quaternary)]">
+          {loadError ?? "Failed to load dashboard"}
+        </p>
       </div>
     );
   }
@@ -117,53 +109,53 @@ export function DashboardPage(): JSX.Element {
     <main className="custom-scrollbar h-full overflow-y-auto bg-[var(--surface-2)]">
       <div className="mx-auto max-w-[1120px] px-6 py-6">
         <div className="flex flex-col gap-6">
-          {datasetEntries ? (
-            <DashboardFilterBar
-              timeFilter={timeFilter}
-              onTimeFilterChange={setTimeFilter}
-              starsFilter={starsFilter}
-              onStarsFilterChange={setStarsFilter}
-              costFilter={costFilter}
-              onCostFilterChange={setCostFilter}
-              sdkFilter={sdkFilter}
-              onSdkFilterChange={setSdkFilter}
-              availableSdks={availableSdks}
-              costBounds={costBounds}
-              recordCount={filteredDatasetRecords.length}
-              categoryCount={overviewStats.categoryCount}
-            />
-          ) : null}
+          <DashboardFilterBar
+            timeFilter={timeFilter}
+            onTimeFilterChange={setTimeFilter}
+            starsFilter={starsFilter}
+            onStarsFilterChange={setStarsFilter}
+            costFilter={costFilter}
+            onCostFilterChange={setCostFilter}
+            sdkFilter={sdkFilter}
+            onSdkFilterChange={setSdkFilter}
+            availableSdks={dashboard.available_sdks}
+            costBounds={dashboard.cost_bounds}
+            recordCount={dashboard.overview.total_records}
+            categoryCount={dashboard.overview.category_count}
+          />
 
-          {statsError ? (
+          {loadError ? (
             <p className="text-[11px] text-[var(--text-quaternary)]">
-              Some repo stats are unavailable: {statsError}
+              Some dashboard data may be stale: {loadError}
             </p>
           ) : null}
 
-          {datasetEntries ? (
-            <OverviewSection stats={overviewStats} />
-          ) : null}
+          <OverviewSection stats={dashboard.overview} />
 
-          {datasetEntries ? (
+          <Suspense fallback={<DashboardSectionSkeleton heightClass="h-[260px]" />}>
             <CostTrendSection
-              records={filteredDatasetRecords}
+              trend={dashboard.cost_trend}
               rollingWindowDays={rollingWindowDays}
               onRollingWindowDaysChange={setRollingWindowDays}
             />
+          </Suspense>
+
+          {dashboard.supercategories.length > 0 ? (
+            <Suspense fallback={<DashboardSectionSkeleton heightClass="h-[420px]" />}>
+              <SupercategoriesSection
+                categoryStats={dashboard.category_stats}
+                supercategories={dashboard.supercategories}
+              />
+            </Suspense>
           ) : null}
 
-          {bootstrap?.supercategories && bootstrap.supercategories.length > 0 ? (
-            <SupercategoriesSection
-              categoryStats={categoryStats}
-              supercategories={bootstrap.supercategories}
-            />
-          ) : null}
+          <CategoriesSection
+            categoryStats={dashboard.category_stats}
+            supercategories={dashboard.supercategories}
+          />
 
-          {datasetEntries ? (
-            <CategoriesSection
-              categoryStats={categoryStats}
-              supercategories={bootstrap?.supercategories}
-            />
+          {loading ? (
+            <p className="text-[10px] text-[var(--text-quaternary)]">Refreshing…</p>
           ) : null}
         </div>
       </div>

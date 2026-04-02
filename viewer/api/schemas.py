@@ -253,3 +253,58 @@ class RepoStatsResponse(BaseModel):
     model_counts: dict[str, int] = Field(default_factory=dict)
     provider_counts: dict[str, int] = Field(default_factory=dict)
     rating_distribution: dict[str, int] = Field(default_factory=dict)
+
+
+class DashboardCostBoundsResponse(BaseModel):
+    min: float
+    max: float
+
+
+class DashboardOverviewResponse(BaseModel):
+    total_records: int
+    total_runs: int
+    total_cost_usd: float | None = None
+    average_cost_usd: float | None = None
+    data_size_bytes: int | None = None
+    category_count: int
+    model_count: int
+    sdk_count: int
+    is_filtered: bool = False
+
+
+class DashboardCategoryStatsResponse(BaseModel):
+    count: int
+    sdk_package: str | None = None
+    average_rating: float | None = None
+    average_cost_usd: float | None = None
+    average_input_tokens: float | None = None
+    average_output_tokens: float | None = None
+    input_token_sample_count: int = 0
+    output_token_sample_count: int = 0
+
+
+class DashboardCostTrendPointResponse(BaseModel):
+    date_key: str
+    day_start_ms: int
+    record_count: int
+    total_cost_usd: float
+    daily_average_cost_usd: float | None = None
+    rolling_average_cost_usd: float | None = None
+
+
+class DashboardCostTrendResponse(BaseModel):
+    points: list[DashboardCostTrendPointResponse] = Field(default_factory=list)
+    latest_average_cost_usd: float | None = None
+    previous_average_cost_usd: float | None = None
+    delta_usd: float | None = None
+    delta_pct: float | None = None
+
+
+class DashboardResponse(BaseModel):
+    generated_at: str
+    supercategories: list[SupercategoryOptionResponse] = Field(default_factory=list)
+    available_sdks: list[str] = Field(default_factory=list)
+    cost_bounds: DashboardCostBoundsResponse | None = None
+    overview: DashboardOverviewResponse
+    category_stats: dict[str, DashboardCategoryStatsResponse] = Field(default_factory=dict)
+    cost_trend: DashboardCostTrendResponse

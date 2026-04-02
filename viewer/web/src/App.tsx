@@ -8,17 +8,22 @@ import { DashboardPage } from "@/components/dashboard/DashboardPage";
 
 const ViewerShell = lazy(() => import("@/ViewerShell"));
 
-function AppContent(): JSX.Element {
-  const route = useRoute();
-
+function DashboardApp(): JSX.Element {
   return (
     <div className="flex h-screen flex-col bg-[var(--surface-2)]">
       <AppHeader />
-      {route.page === "dashboard" ? (
-        <div className="min-h-0 flex-1">
-          <DashboardPage />
-        </div>
-      ) : (
+      <div className="min-h-0 flex-1">
+        <DashboardPage />
+      </div>
+    </div>
+  );
+}
+
+function ViewerApp(): JSX.Element {
+  return (
+    <ViewerProvider>
+      <div className="flex h-screen flex-col bg-[var(--surface-2)]">
+        <AppHeader />
         <Suspense
           fallback={
             <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -28,17 +33,17 @@ function AppContent(): JSX.Element {
         >
           <ViewerShell />
         </Suspense>
-      )}
-    </div>
+      </div>
+    </ViewerProvider>
   );
 }
 
 export default function App(): JSX.Element {
+  const route = useRoute();
+
   return (
-    <ViewerProvider>
-      <TooltipProvider>
-        <AppContent />
-      </TooltipProvider>
-    </ViewerProvider>
+    <TooltipProvider>
+      {route.page === "dashboard" ? <DashboardApp /> : <ViewerApp />}
+    </TooltipProvider>
   );
 }

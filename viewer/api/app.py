@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 
 from agent.prompts import (
@@ -28,6 +29,7 @@ from storage.trajectories import (
 )
 from viewer.api.schemas import (
     CategoryOptionResponse,
+    DashboardResponse,
     DatasetEntryResponse,
     DeleteRecordResponse,
     DeleteStagingResponse,
@@ -105,6 +107,7 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     text_media_types = {
         ".urdf": "application/xml",
@@ -404,6 +407,29 @@ def create_app(*, repo_root: Path | None = None) -> FastAPI:
     @app.get("/api/stats", response_model=RepoStatsResponse)
     async def repo_stats() -> RepoStatsResponse:
         return await asyncio.to_thread(app.state.viewer_store.compute_stats)
+
+    @app.get("/api/dashboard", response_model=DashboardResponse)
+    async def dashboard(
+        time_from: str | None = None,
+        time_to: str | None = None,
+        stars_min: float | None = Query(default=None, ge=0, le=5),
+        stars_max: float | None = Query(default=None, ge=0, le=5),
+        cost_min: float | None = Query(default=None, ge=0),
+        cost_max: float | None = Query(default=None, ge=0),
+        sdk: str | None = None,
+        rolling_window_days: int = Query(default=14, ge=1, le=365),
+    ) -> DashboardResponse:
+        return await asyncio.to_thread(
+            app.state.viewer_store.compute_dashboard,
+            time_oldest=time_from,
+            time_newest=time_to,
+            stars_min=stars_min,
+            stars_max=stars_max,
+            cost_min=cost_min,
+            cost_max=cost_max,
+            sdk_filter=sdk,
+            rolling_window_days=rolling_window_days,
+        )
 
     @app.get("/api/collections/workbench", response_model=list[WorkbenchEntryResponse])
     async def workbench_entries() -> list[WorkbenchEntryResponse]:

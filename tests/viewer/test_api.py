@@ -764,6 +764,65 @@ def test_viewer_api_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         "unrated": 1,
     }
 
+    dashboard = client.get("/api/dashboard?rolling_window_days=7")
+    assert dashboard.status_code == 200
+    dashboard_payload = dashboard.json()
+    assert dashboard_payload["available_sdks"] == ["sdk"]
+    assert dashboard_payload["cost_bounds"] == {
+        "min": 0.05,
+        "max": 0.15,
+    }
+    assert dashboard_payload["overview"] == {
+        "total_records": 3,
+        "total_runs": 1,
+        "total_cost_usd": 0.2,
+        "average_cost_usd": pytest.approx(0.2 / 3),
+        "data_size_bytes": None,
+        "category_count": 3,
+        "model_count": 1,
+        "sdk_count": 1,
+        "is_filtered": False,
+    }
+    assert dashboard_payload["category_stats"]["hinges"] == {
+        "count": 1,
+        "sdk_package": "sdk",
+        "average_rating": 3.5,
+        "average_cost_usd": 0.05,
+        "average_input_tokens": 800.0,
+        "average_output_tokens": 200.0,
+        "input_token_sample_count": 1,
+        "output_token_sample_count": 1,
+    }
+    assert len(dashboard_payload["cost_trend"]["points"]) == 1
+    assert dashboard_payload["cost_trend"]["points"][0]["date_key"] == "2026-03-17"
+    assert dashboard_payload["cost_trend"]["points"][0]["record_count"] == 2
+    assert dashboard_payload["cost_trend"]["points"][0]["total_cost_usd"] == 0.2
+    assert dashboard_payload["cost_trend"]["points"][0]["daily_average_cost_usd"] == 0.1
+    assert dashboard_payload["cost_trend"]["points"][0]["rolling_average_cost_usd"] == 0.1
+    assert dashboard_payload["cost_trend"]["latest_average_cost_usd"] == 0.1
+    assert dashboard_payload["cost_trend"]["previous_average_cost_usd"] is None
+    assert dashboard_payload["cost_trend"]["delta_usd"] is None
+    assert dashboard_payload["cost_trend"]["delta_pct"] is None
+
+    filtered_dashboard = client.get("/api/dashboard?stars_min=3&stars_max=4&rolling_window_days=7")
+    assert filtered_dashboard.status_code == 200
+    filtered_dashboard_payload = filtered_dashboard.json()
+    assert filtered_dashboard_payload["overview"]["total_records"] == 1
+    assert filtered_dashboard_payload["overview"]["category_count"] == 1
+    assert filtered_dashboard_payload["overview"]["is_filtered"] is True
+    assert filtered_dashboard_payload["category_stats"] == {
+        "hinges": {
+            "count": 1,
+            "sdk_package": "sdk",
+            "average_rating": 3.5,
+            "average_cost_usd": 0.05,
+            "average_input_tokens": 800.0,
+            "average_output_tokens": 200.0,
+            "input_token_sample_count": 1,
+            "output_token_sample_count": 1,
+        }
+    }
+
     clear_secondary_rating = client.put(
         "/api/records/rec_001/secondary-rating",
         json={"secondary_rating": None},

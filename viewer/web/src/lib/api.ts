@@ -1,6 +1,7 @@
 import type {
   CategoryOption,
   CostFilter,
+  DashboardData,
   DatasetEntry,
   DeleteStagingResult,
   DeleteRecordResult,
@@ -60,8 +61,8 @@ async function readErrorMessage(response: Response): Promise<string> {
   return fallback;
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(path);
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init);
   if (!response.ok) {
     throw new HttpError(response.status, await readErrorMessage(response));
   }
@@ -74,6 +75,43 @@ export async function fetchBootstrap(): Promise<ViewerBootstrap> {
 
 export async function fetchRepoStats(): Promise<RepoStats> {
   return fetchJson<RepoStats>("/api/stats");
+}
+
+export async function fetchDashboard(
+  params: {
+    timeFilter: TimeFilter;
+    starsFilter: [number, number];
+    costFilter: CostFilter;
+    sdkFilter: string | null;
+    rollingWindowDays: number;
+  },
+  init?: RequestInit,
+): Promise<DashboardData> {
+  const searchParams = new URLSearchParams();
+  if (params.timeFilter.oldest) {
+    searchParams.set("time_from", params.timeFilter.oldest);
+  }
+  if (params.timeFilter.newest) {
+    searchParams.set("time_to", params.timeFilter.newest);
+  }
+  if (params.starsFilter[0] > 0) {
+    searchParams.set("stars_min", String(params.starsFilter[0]));
+  }
+  if (params.starsFilter[1] < 5) {
+    searchParams.set("stars_max", String(params.starsFilter[1]));
+  }
+  if (params.costFilter.min != null) {
+    searchParams.set("cost_min", String(params.costFilter.min));
+  }
+  if (params.costFilter.max != null) {
+    searchParams.set("cost_max", String(params.costFilter.max));
+  }
+  if (params.sdkFilter) {
+    searchParams.set("sdk", params.sdkFilter);
+  }
+  searchParams.set("rolling_window_days", String(params.rollingWindowDays));
+
+  return fetchJson<DashboardData>(`/api/dashboard?${searchParams.toString()}`, init);
 }
 
 export async function fetchCategories(): Promise<CategoryOption[]> {

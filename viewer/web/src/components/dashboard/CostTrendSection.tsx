@@ -10,9 +10,8 @@ import {
   type TooltipProps,
 } from "recharts";
 
-import { buildDashboardCostTrend } from "@/lib/dashboard-data";
 import { formatCost } from "@/lib/dashboard-stats";
-import type { RecordSummary } from "@/lib/types";
+import type { DashboardCostTrend } from "@/lib/types";
 import {
   ChartContainer,
   type ChartConfig,
@@ -39,7 +38,7 @@ const TOOLTIP_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
 });
 
 type CostTrendSectionProps = {
-  records: RecordSummary[];
+  trend: DashboardCostTrend;
   rollingWindowDays: number;
   onRollingWindowDaysChange: (value: number) => void;
 };
@@ -63,48 +62,43 @@ function CostTrendTooltip({
 }: TooltipProps<number, string> & {
   payload?: Array<{
     payload?: {
-      dayStartMs?: number;
-      recordCount?: number;
-      dailyAverageCostUsd?: number | null;
-      rollingAverageCostUsd?: number | null;
+      day_start_ms?: number;
+      record_count?: number;
+      daily_average_cost_usd?: number | null;
+      rolling_average_cost_usd?: number | null;
     };
   }>;
 }): JSX.Element | null {
   if (!active || !payload || payload.length === 0) return null;
   const point = payload[0]?.payload;
-  if (!point || point.dayStartMs == null) return null;
+  if (!point || point.day_start_ms == null) return null;
 
   return (
     <div className="rounded-md border border-[var(--border-default)] bg-[var(--surface-0)] px-3 py-2 shadow-md">
       <div className="text-[11px] font-medium text-[var(--text-primary)]">
-        {TOOLTIP_DATE_FORMATTER.format(point.dayStartMs)}
+        {TOOLTIP_DATE_FORMATTER.format(point.day_start_ms)}
       </div>
       <div className="mt-1 space-y-0.5 text-[10px] text-[var(--text-tertiary)]">
-        <div>Records: {point.recordCount ?? 0}</div>
-        <div>Daily avg: {formatCost(point.dailyAverageCostUsd ?? null)}</div>
-        <div>Rolling avg: {formatCost(point.rollingAverageCostUsd ?? null)}</div>
+        <div>Records: {point.record_count ?? 0}</div>
+        <div>Daily avg: {formatCost(point.daily_average_cost_usd ?? null)}</div>
+        <div>Rolling avg: {formatCost(point.rolling_average_cost_usd ?? null)}</div>
       </div>
     </div>
   );
 }
 
 export function CostTrendSection({
-  records,
+  trend,
   rollingWindowDays,
   onRollingWindowDaysChange,
 }: CostTrendSectionProps): JSX.Element {
-  const trend = useMemo(
-    () => buildDashboardCostTrend(records, rollingWindowDays),
-    [records, rollingWindowDays],
-  );
-
   const chartConfig = useMemo<ChartConfig>(
     () => ({
-      rollingAverageCostUsd: {
+      rolling_average_cost_usd: {
         label: "Rolling average",
         color: "var(--accent)",
       },
-      recordCount: {
+      record_count: {
         label: "Record count",
         color: "var(--border-subtle)",
       },
@@ -151,7 +145,7 @@ export function CostTrendSection({
                   {rollingWindowDays}d avg
                 </p>
                 <p className="mt-0.5 font-mono text-[18px] font-medium leading-tight text-[var(--text-primary)]">
-                  {formatCost(trend.latestAverageCostUsd)}
+                  {formatCost(trend.latest_average_cost_usd)}
                 </p>
               </div>
               <div>
@@ -159,7 +153,7 @@ export function CostTrendSection({
                   vs prev {rollingWindowDays}d
                 </p>
                 <p className="mt-0.5 font-mono text-[12px] leading-tight text-[var(--text-tertiary)]">
-                  {formatDelta(trend.deltaUsd, trend.deltaPct)}
+                  {formatDelta(trend.delta_usd, trend.delta_pct)}
                 </p>
               </div>
             </div>
@@ -171,7 +165,7 @@ export function CostTrendSection({
               >
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
-                  dataKey="dayStartMs"
+                  dataKey="day_start_ms"
                   minTickGap={28}
                   tickLine={false}
                   axisLine={false}
@@ -188,8 +182,8 @@ export function CostTrendSection({
                 <Tooltip cursor={false} content={<CostTrendTooltip />} />
                 <Bar
                   yAxisId="count"
-                  dataKey="recordCount"
-                  fill="var(--color-recordCount)"
+                  dataKey="record_count"
+                  fill="var(--color-record_count)"
                   fillOpacity={0.5}
                   radius={[3, 3, 0, 0]}
                   maxBarSize={16}
@@ -197,8 +191,8 @@ export function CostTrendSection({
                 <Line
                   yAxisId="cost"
                   type="monotone"
-                  dataKey="rollingAverageCostUsd"
-                  stroke="var(--color-rollingAverageCostUsd)"
+                  dataKey="rolling_average_cost_usd"
+                  stroke="var(--color-rolling_average_cost_usd)"
                   strokeWidth={2}
                   dot={false}
                   activeDot={{ r: 3, fill: "var(--accent)", strokeWidth: 0 }}

@@ -212,6 +212,61 @@ export type RepoStats = {
   rating_distribution: Record<string, number>;
 };
 
+export type DashboardCostBounds = {
+  min: number;
+  max: number;
+};
+
+export type DashboardOverview = {
+  total_records: number;
+  total_runs: number;
+  total_cost_usd: number | null;
+  average_cost_usd: number | null;
+  data_size_bytes: number | null;
+  category_count: number;
+  model_count: number;
+  sdk_count: number;
+  is_filtered: boolean;
+};
+
+export type DashboardCategoryStats = {
+  count: number;
+  sdk_package: string | null;
+  average_rating: number | null;
+  average_cost_usd: number | null;
+  average_input_tokens: number | null;
+  average_output_tokens: number | null;
+  input_token_sample_count: number;
+  output_token_sample_count: number;
+};
+
+export type DashboardCostTrendPoint = {
+  date_key: string;
+  day_start_ms: number;
+  record_count: number;
+  total_cost_usd: number;
+  daily_average_cost_usd: number | null;
+  rolling_average_cost_usd: number | null;
+};
+
+export type DashboardCostTrend = {
+  points: DashboardCostTrendPoint[];
+  latest_average_cost_usd: number | null;
+  previous_average_cost_usd: number | null;
+  delta_usd: number | null;
+  delta_pct: number | null;
+};
+
+export type DashboardData = {
+  generated_at: string;
+  supercategories: SupercategoryOption[];
+  available_sdks: string[];
+  cost_bounds: DashboardCostBounds | null;
+  overview: DashboardOverview;
+  category_stats: Record<string, DashboardCategoryStats>;
+  cost_trend: DashboardCostTrend;
+};
+
 export type ViewerBootstrap = {
   repo_root: string;
   generated_at: string;
