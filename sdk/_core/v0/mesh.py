@@ -1517,9 +1517,6 @@ class MeshGeometry:
         out_path.write_text(self.to_obj())
 
 
-BufferGeometry = MeshGeometry
-
-
 def _coerce_positive_radii3(
     value: Union[float, Sequence[float]],
     *,

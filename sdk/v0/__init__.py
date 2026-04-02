@@ -5,7 +5,6 @@ from .geometry_scale import scale_geometry_to_size
 from .mesh import (
     ArcPipeGeometry,
     BoxGeometry,
-    BufferGeometry,
     CapsuleGeometry,
     ConeGeometry,
     CylinderGeometry,
@@ -90,7 +89,6 @@ __all__ = [
     "scale_geometry_to_size",
     "MeshGeometry",
     "WirePath",
-    "BufferGeometry",
     "BoxGeometry",
     "CapsuleGeometry",
     "CylinderGeometry",

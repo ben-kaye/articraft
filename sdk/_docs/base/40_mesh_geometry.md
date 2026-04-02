@@ -10,7 +10,6 @@ geometry and then exported as an OBJ-backed `sdk.Mesh`.
 ```python
 from sdk import (
     MeshGeometry,
-    BufferGeometry,
     BoxGeometry,
     CapsuleGeometry,
     CylinderGeometry,
@@ -37,7 +36,7 @@ from sdk import (
 
 ## Recommended Surface
 
-- `MeshGeometry` / `BufferGeometry`
+- `MeshGeometry`
 - primitive builders: `BoxGeometry`, `CylinderGeometry`, `ConeGeometry`,
   `SphereGeometry`, `DomeGeometry`, `CapsuleGeometry`, `TorusGeometry`
 - loft/extrude/sweep builders: `LatheGeometry`, `ExtrudeGeometry`,
@@ -80,10 +79,6 @@ geom.save_obj(path) -> None
 - Vertices are 3D points in meters.
 - Faces are 0-based triangle indices.
 - All transforms mutate in place and return `self`.
-
-### `BufferGeometry`
-
-Alias of `MeshGeometry`.
 
 ## Primitive Builders
 
