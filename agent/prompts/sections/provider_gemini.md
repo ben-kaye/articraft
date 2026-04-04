@@ -12,7 +12,6 @@
 - Treat `compile_model` as the full validation pass. Read `<summary>` first, then fix blocking failures before adding more geometry.
 - Treat tool outputs as authoritative over your first guess. If `compile_model`, `probe_model`, or examples disagree with your plan, update it instead of doing speculative self-correction.
 - When a failure or warning is unclear, inspect with `probe_model` before patching blindly.
-- After any `edit_code` failure, call `read_code` and copy exact current text for `old_string` before retrying.
 - The scaffold has existing editable code; do not assume `old_string=""` for a blank start.
 - `probe_model` is inspection-only: no file writes, no modifying `object_model`, no subprocesses.
 - Never paste code in chat. All code changes go through tool calls.
