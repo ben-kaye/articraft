@@ -10,6 +10,49 @@ import agent.harness as harness
 from agent.feedback import build_compile_signal_bundle
 from agent.harness import ArticraftAgent
 from agent.models import CompileReport, TerminateReason
+from agent.tools.compile_model import CompileModelTool
+from agent.tools.registry import ToolRegistry
+from agent.tools.write_code import WriteCodeTool
+
+
+class _CountingDisplay:
+    def __init__(self) -> None:
+        self.current_turn = 0
+        self.end_turn_calls = 0
+
+    def start(self) -> None:
+        return None
+
+    def start_turn(self, turn_number: int) -> None:
+        self.current_turn = turn_number
+
+    def start_llm_wait(self) -> None:
+        return None
+
+    def stop_llm_wait(self) -> None:
+        return None
+
+    def add_llm_call(self, tokens: dict, cost: float, duration: float) -> None:
+        return None
+
+    def add_thinking_summary(self, summary: str) -> None:
+        return None
+
+    def add_tool_call(
+        self,
+        *,
+        tool_name: str,
+        args: dict,
+        success: bool,
+        duration: float,
+        result: str | None = None,
+        compilation: dict | None = None,
+        error: str | None = None,
+    ) -> None:
+        return None
+
+    def end_turn(self, success: bool, error: str | None = None) -> None:
+        self.end_turn_calls += 1
 
 
 def test_compile_async_uses_timeout_wrapper(
@@ -128,7 +171,7 @@ def test_execute_compile_model_failure_leaves_latest_revision_stale() -> None:
     assert "bad loft" in str(result.output)
 
 
-def test_mark_code_mutated_invalidates_fresh_compile_and_resets_audit() -> None:
+def test_mark_code_mutated_invalidates_fresh_compile_without_rearming_audit() -> None:
     agent = ArticraftAgent.__new__(ArticraftAgent)
     agent._current_edit_revision = 3
     agent._last_successful_compile_revision = 3
@@ -143,7 +186,7 @@ def test_mark_code_mutated_invalidates_fresh_compile_and_resets_audit() -> None:
 
     assert agent._current_edit_revision == 4
     assert agent._latest_code_is_fresh() is False
-    assert agent._post_success_design_audit_sent is False
+    assert agent._post_success_design_audit_sent is True
 
 
 def test_run_requires_compile_model_before_concluding_and_delays_design_audit(
@@ -252,3 +295,210 @@ def test_run_requires_compile_model_before_concluding_and_delays_design_audit(
         if message.get("role") == "user" and "<design_audit>" in str(message.get("content", ""))
     )
     assert audit_index > compile_index + 1
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider_attr"),
+    [
+        ("gemini", "GeminiLLM"),
+        ("openai", "OpenAILLM"),
+    ],
+)
+def test_design_audit_only_fires_once_even_after_post_audit_edit_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider_name: str,
+    provider_attr: str,
+) -> None:
+    rewritten_code = """
+def build_object_model():
+    return "v2"
+
+
+def run_tests():
+    return None
+""".strip()
+
+    class _SequenceLLM:
+        model_id = "test-model"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._responses = [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_write_1",
+                            "type": "function",
+                            "function": {
+                                "name": "write_code",
+                                "arguments": json.dumps({"code": rewritten_code}),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_compile_1",
+                            "type": "function",
+                            "function": {"name": "compile_model", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_write_2",
+                            "type": "function",
+                            "function": {
+                                "name": "write_code",
+                                "arguments": json.dumps({"code": rewritten_code}),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_compile_2",
+                            "type": "function",
+                            "function": {"name": "compile_model", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+            ]
+
+        async def generate_with_tools(
+            self, *, system_prompt: str, messages: list[dict], tools: list[dict]
+        ) -> dict:
+            assert tools
+            return self._responses.pop(0)
+
+        async def close(self) -> None:
+            return None
+
+    report = CompileReport(
+        urdf_xml="<robot />",
+        warnings=[],
+        signal_bundle=build_compile_signal_bundle(status="success"),
+    )
+
+    monkeypatch.setattr(harness, provider_attr, _SequenceLLM)
+    agent = ArticraftAgent(
+        file_path=str(tmp_path / f"{provider_name}_model.py"),
+        provider=provider_name,
+        max_turns=10,
+        display_enabled=False,
+    )
+    agent.tool_registry = ToolRegistry([WriteCodeTool(), CompileModelTool()])
+
+    async def fake_compile() -> CompileReport:
+        return report
+
+    async def fake_persist(_: str) -> None:
+        return None
+
+    agent._compile_urdf_report_async = fake_compile
+    agent._persist_compile_success_checkpoint_async = fake_persist
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is True
+    assert result.reason == TerminateReason.CODE_VALID
+
+    user_messages = [
+        str(message.get("content", ""))
+        for message in result.conversation
+        if message.get("role") == "user"
+    ]
+    assert sum("<design_audit>" in content for content in user_messages) == 1
+    assert sum("<compile_required>" in content for content in user_messages) == 2
+
+
+@pytest.mark.parametrize(
+    "finish_response",
+    [
+        {"content": "Done.", "tool_calls": []},
+        {},
+    ],
+)
+def test_finish_attempt_paths_end_turn_and_share_compile_then_audit_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    finish_response: dict[str, object],
+) -> None:
+    class _SequenceLLM:
+        model_id = "gemini-2.5-pro"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._responses = [
+                dict(finish_response),
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_compile",
+                            "type": "function",
+                            "function": {"name": "compile_model", "arguments": "{}"},
+                        }
+                    ],
+                },
+                dict(finish_response),
+                dict(finish_response),
+            ]
+
+        async def generate_with_tools(
+            self, *, system_prompt: str, messages: list[dict], tools: list[dict]
+        ) -> dict:
+            assert tools
+            return self._responses.pop(0)
+
+        async def close(self) -> None:
+            return None
+
+    report = CompileReport(
+        urdf_xml="<robot />",
+        warnings=[],
+        signal_bundle=build_compile_signal_bundle(status="success"),
+    )
+
+    monkeypatch.setattr(harness, "GeminiLLM", _SequenceLLM)
+    agent = ArticraftAgent(
+        file_path=str(tmp_path / "model.py"),
+        provider="gemini",
+        max_turns=6,
+        display_enabled=False,
+    )
+    agent.tool_registry = ToolRegistry([CompileModelTool()])
+    agent.display = _CountingDisplay()
+
+    async def fake_compile() -> CompileReport:
+        return report
+
+    async def fake_persist(_: str) -> None:
+        return None
+
+    agent._compile_urdf_report_async = fake_compile
+    agent._persist_compile_success_checkpoint_async = fake_persist
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is True
+    assert result.reason == TerminateReason.CODE_VALID
+    assert agent.display.end_turn_calls == 4
+
+    user_messages = [
+        str(message.get("content", ""))
+        for message in result.conversation
+        if message.get("role") == "user"
+    ]
+    assert sum("<compile_required>" in content for content in user_messages) == 1
+    assert sum("<design_audit>" in content for content in user_messages) == 1

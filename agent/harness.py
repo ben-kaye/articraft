@@ -426,7 +426,6 @@ class ArticraftAgent:
         if tool_name not in _MUTATING_TOOL_NAMES:
             return
         self._current_edit_revision += 1
-        self._post_success_design_audit_sent = False
 
     def _append_compile_required_reminder(self, conversation: list[dict]) -> None:
         msg = {
@@ -442,6 +441,9 @@ class ArticraftAgent:
         trace_writer = getattr(self, "trace_writer", None)
         if trace_writer:
             trace_writer.write_message(msg)
+
+    def _append_code_paste_nudge(self, conversation: list[dict]) -> None:
+        self._append_guidance_message(conversation, self._code_paste_nudge_text())
 
     def _append_guidance_message(self, conversation: list[dict], content: str) -> None:
         msg = {"role": "user", "content": content}
@@ -1167,19 +1169,80 @@ class ArticraftAgent:
                 return result.compilation.get("status") == "success"
         return False
 
-    def _should_terminate(
-        self,
-        text_response: str,
-        tool_calls: list[dict],
-        turn: int,
-    ) -> tuple[bool, TerminateReason, str]:
-        if contains_code_in_text(text_response):
-            return False, TerminateReason.GOAL_COMPLETE, ""
+    def _compile_warnings_snapshot(self) -> list[str]:
+        report = self._last_successful_compile_report
+        return list(report.warnings) if report else []
+
+    async def _read_final_code(self) -> str | None:
+        try:
+            import aiofiles
+
+            async with aiofiles.open(self.file_path, "r") as file:
+                return await file.read()
+        except Exception:
+            return None
+
+    def _termination_message(self, text_response: str, tool_calls: list[dict]) -> str | None:
         if text_response.strip() and not tool_calls:
-            return True, TerminateReason.GOAL_COMPLETE, "Agent completed with response"
-        if turn >= self.max_turns:
-            return False, TerminateReason.MAX_TURNS, "Agent hit max turns limit"
-        return False, TerminateReason.GOAL_COMPLETE, ""
+            return "Agent completed with response"
+        return None
+
+    async def _build_code_valid_result(
+        self,
+        *,
+        message: str,
+        conversation: list[dict],
+        turn_count: int,
+        tool_call_count: int,
+        usage: dict[str, int],
+    ) -> AgentResult:
+        final_code = await self._read_final_code()
+        self._persist_cost_tracking()
+        report = self._last_successful_compile_report
+        return AgentResult(
+            success=True,
+            reason=TerminateReason.CODE_VALID,
+            message=message,
+            conversation=conversation,
+            final_code=final_code,
+            urdf_xml=report.urdf_xml if report else None,
+            compile_warnings=self._compile_warnings_snapshot(),
+            turn_count=turn_count,
+            tool_call_count=tool_call_count,
+            compile_attempt_count=self._compile_attempt_count,
+            usage=usage or None,
+        )
+
+    async def _handle_finish_attempt(
+        self,
+        conversation: list[dict],
+        *,
+        message: str,
+        turn_count: int,
+        tool_call_count: int,
+        usage: dict[str, int],
+        display_turn_override: int | None = None,
+    ) -> AgentResult | None:
+        if not self._latest_code_is_fresh():
+            self._append_compile_required_reminder(conversation)
+        elif self._maybe_inject_post_success_design_audit(conversation):
+            pass
+        else:
+            if display_turn_override is not None:
+                self.display.current_turn = display_turn_override
+            self.display.end_turn(success=True)
+            return await self._build_code_valid_result(
+                message=message,
+                conversation=conversation,
+                turn_count=turn_count,
+                tool_call_count=tool_call_count,
+                usage=usage,
+            )
+
+        if display_turn_override is not None:
+            self.display.current_turn = display_turn_override
+        self.display.end_turn(success=True)
+        return None
 
     async def run(
         self,
@@ -1301,11 +1364,7 @@ class ArticraftAgent:
                                 f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
                             ),
                             conversation=conversation,
-                            compile_warnings=(
-                                list(self._last_successful_compile_report.warnings)
-                                if self._last_successful_compile_report
-                                else []
-                            ),
+                            compile_warnings=self._compile_warnings_snapshot(),
                             turn_count=completed_turns,
                             tool_call_count=tool_call_count,
                             compile_attempt_count=self._compile_attempt_count,
@@ -1324,11 +1383,7 @@ class ArticraftAgent:
                     reason=TerminateReason.ERROR,
                     message=f"LLM error: {str(exc)}",
                     conversation=conversation,
-                    compile_warnings=(
-                        list(self._last_successful_compile_report.warnings)
-                        if self._last_successful_compile_report
-                        else []
-                    ),
+                    compile_warnings=self._compile_warnings_snapshot(),
                     turn_count=completed_turns,
                     tool_call_count=tool_call_count,
                     compile_attempt_count=self._compile_attempt_count,
@@ -1374,11 +1429,7 @@ class ArticraftAgent:
                             f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
                         ),
                         conversation=conversation,
-                        compile_warnings=(
-                            list(self._last_successful_compile_report.warnings)
-                            if self._last_successful_compile_report
-                            else []
-                        ),
+                        compile_warnings=self._compile_warnings_snapshot(),
                         turn_count=completed_turns + 1,
                         tool_call_count=tool_call_count,
                         compile_attempt_count=self._compile_attempt_count,
@@ -1396,93 +1447,38 @@ class ArticraftAgent:
 
             is_empty_response = not has_assistant_payload and not tool_calls and not text.strip()
             if is_empty_response:
-                if self._latest_code_is_fresh():
-                    if self._maybe_inject_post_success_design_audit(conversation):
-                        self.display.current_turn = completed_turns
-                        self.display.end_turn(success=True)
-                        continue
-
+                finish_result = await self._handle_finish_attempt(
+                    conversation,
+                    message="Compile succeeded and model returned no further actions",
+                    turn_count=completed_turns,
+                    tool_call_count=tool_call_count,
+                    usage=usage_totals,
+                    display_turn_override=completed_turns,
+                )
+                if finish_result is not None:
                     logger.info("Empty response after fresh compile; terminating run.")
-                    final_code = None
-                    try:
-                        import aiofiles
-
-                        async with aiofiles.open(self.file_path, "r") as file:
-                            final_code = await file.read()
-                    except Exception:
-                        pass
-
-                    self._persist_cost_tracking()
-
-                    self.display.current_turn = completed_turns
-                    self.display.end_turn(success=True)
-                    report = self._last_successful_compile_report
-                    return AgentResult(
-                        success=True,
-                        reason=TerminateReason.CODE_VALID,
-                        message="Compile succeeded and model returned no further actions",
-                        conversation=conversation,
-                        final_code=final_code,
-                        urdf_xml=report.urdf_xml if report else None,
-                        compile_warnings=list(report.warnings) if report else [],
-                        turn_count=completed_turns,
-                        tool_call_count=tool_call_count,
-                        compile_attempt_count=self._compile_attempt_count,
-                        usage=usage_totals or None,
-                    )
-
-                self._append_compile_required_reminder(conversation)
-                self.display.current_turn = completed_turns
-                self.display.end_turn(success=True)
+                    return finish_result
                 continue
 
             completed_turns += 1
 
             if contains_code_in_text(text):
-                nudge = {
-                    "role": "user",
-                    "content": self._code_paste_nudge_text(),
-                }
-                conversation.append(nudge)
-                if self.trace_writer:
-                    self.trace_writer.write_message(nudge)
+                self._append_code_paste_nudge(conversation)
+                self.display.end_turn(success=True)
                 continue
 
-            should_stop, reason, msg = self._should_terminate(text, tool_calls, turn)
-            if should_stop:
-                if not self._latest_code_is_fresh():
-                    self._append_compile_required_reminder(conversation)
-                    continue
-
-                if self._maybe_inject_post_success_design_audit(conversation):
-                    continue
-
-                final_code = None
-                try:
-                    import aiofiles
-
-                    async with aiofiles.open(self.file_path, "r") as file:
-                        final_code = await file.read()
-                except Exception:
-                    pass
-
-                self._persist_cost_tracking()
-
-                self.display.end_turn(success=True)
-                report = self._last_successful_compile_report
-                return AgentResult(
-                    success=True,
-                    reason=TerminateReason.CODE_VALID,
-                    message=msg,
-                    conversation=conversation,
-                    final_code=final_code,
-                    urdf_xml=report.urdf_xml if report else None,
-                    compile_warnings=list(report.warnings) if report else [],
+            termination_message = self._termination_message(text, tool_calls)
+            if termination_message is not None:
+                finish_result = await self._handle_finish_attempt(
+                    conversation,
+                    message=termination_message,
                     turn_count=completed_turns,
                     tool_call_count=tool_call_count,
-                    compile_attempt_count=self._compile_attempt_count,
-                    usage=usage_totals or None,
+                    usage=usage_totals,
                 )
+                if finish_result is not None:
+                    return finish_result
+                continue
 
             turn_tool_results: list[ToolResult] = []
             tool_call_count += len(tool_calls)
@@ -1554,11 +1550,7 @@ class ArticraftAgent:
             message=max_turn_message,
             conversation=conversation,
             final_code=final_code,
-            compile_warnings=(
-                list(self._last_successful_compile_report.warnings)
-                if self._last_successful_compile_report
-                else []
-            ),
+            compile_warnings=self._compile_warnings_snapshot(),
             turn_count=completed_turns,
             tool_call_count=tool_call_count,
             compile_attempt_count=self._compile_attempt_count,
