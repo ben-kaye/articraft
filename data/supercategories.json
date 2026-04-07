@@ -110,6 +110,7 @@
         "faucet_with_side_handle",
         "wall_thermostat_with_articulated_controls",
         "screwin_light_bulb_with_socket",
+        "stand_mixer",
         "stick_vacuum_with_folding_joint",
         "vacuum_cleaner_with_articulated_wand"
       ]
@@ -133,6 +134,8 @@
         "simple_ironing_board",
         "simple_drying_rack",
         "easel",
+        "floor_standing_drafting_table",
+        "orchestra_style_music_stand",
         "sewing_box_with_simple_hinged_lid",
         "tackle_box_with_simple_hinged_lid",
         "instrument_case_with_hinged_lid",
@@ -160,8 +163,11 @@
         "binoculars",
         "camera_lens",
         "glasses",
+        "benchtop_monocular_laboratory_microscope",
+        "metronome",
         "astronomical_telescope_on_tripod",
         "tripodmounted_device",
+        "remote",
         "usb_drive_with_swivel_cover",
         "overear_headphones_with_folding_earcups"
       ]
@@ -190,6 +196,7 @@
         "platform_cart",
         "wheelbarrow",
         "drone",
+        "toy_car",
         "toy_model_planes",
         "jet_engine"
       ]
@@ -237,12 +244,14 @@
         "barrier_gate",
         "sliding_security_gate",
         "turnstile_gates",
+        "revolving_door",
         "hinged_window_or_hatch",
         "sliding_window",
         "electrical_cabinet_door",
         "service_access_panel",
         "pet_door_flap",
-        "mailbox_with_front_access_door"
+        "mailbox_with_front_access_door",
+        "wall_safe_with_hinged_door_and_dial"
       ]
     },
     {
@@ -287,6 +296,16 @@
         "cannon",
         "missile_launcher",
         "remote_weapon_station"
+      ]
+    },
+    {
+      "slug": "commercial_coinop_and_vending",
+      "title": "Commercial Coin-Op & Vending",
+      "description": "Arcade, gaming, and vending cabinets with payment, dispensing, and service access mechanisms",
+      "category_slugs": [
+        "arcade_machine",
+        "candy_vending_machine",
+        "casino_machine"
       ]
     }
   ]
