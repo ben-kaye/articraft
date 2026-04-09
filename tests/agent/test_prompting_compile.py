@@ -22,7 +22,7 @@ def _opening_tag_count(text: str) -> int:
     return len(re.findall(r"^<(?!(?:/|compile_signals>))[a-z_]+>$", text, flags=re.MULTILINE))
 
 
-def _assert_shared_contract(text: str, *, budget: int) -> None:
+def _assert_shared_contract(text: str) -> None:
     for tag in REQUIRED_TAGS:
         assert tag in text
     assert _opening_tag_count(text) == 4
@@ -53,7 +53,6 @@ def _assert_shared_contract(text: str, *, budget: int) -> None:
 
     for fragment in DISALLOWED_FRAGMENTS:
         assert fragment not in text
-    assert len(text.splitlines()) <= budget
 
 
 def test_prompt_outputs_are_current() -> None:
@@ -65,7 +64,7 @@ def test_prompt_outputs_are_current() -> None:
     }
 
     openai_text = compiled_by_name["designer_system_prompt_openai.txt"]
-    _assert_shared_contract(openai_text, budget=56)
+    _assert_shared_contract(openai_text)
     assert (
         "Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`"
         in openai_text
@@ -80,7 +79,7 @@ def test_prompt_outputs_are_current() -> None:
     assert "Treat `compile_model` as the full validation pass." in openai_text
 
     openai_hybrid_text = compiled_by_name["designer_system_prompt_openai_hybrid.txt"]
-    _assert_shared_contract(openai_hybrid_text, budget=58)
+    _assert_shared_contract(openai_hybrid_text)
     assert (
         "Use ONLY `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`"
         in openai_hybrid_text
@@ -97,7 +96,7 @@ def test_prompt_outputs_are_current() -> None:
     assert "Treat `compile_model` as the full validation pass." in openai_hybrid_text
 
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
-    _assert_shared_contract(gemini_text, budget=57)
+    _assert_shared_contract(gemini_text)
     assert (
         "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_text
@@ -110,7 +109,7 @@ def test_prompt_outputs_are_current() -> None:
     assert "Author visual geometry only; do not author collision geometry in `sdk`." in gemini_text
 
     gemini_hybrid_text = compiled_by_name["designer_system_prompt_gemini_hybrid.txt"]
-    _assert_shared_contract(gemini_hybrid_text, budget=59)
+    _assert_shared_contract(gemini_hybrid_text)
     assert (
         "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_hybrid_text

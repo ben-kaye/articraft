@@ -3,6 +3,7 @@ GEOMETRY
 - Keep `build_object_model()` and `run_tests()` as top-level entry points.
 - Import from `sdk`, not `sdk_hybrid`.
 - Choose the SDK representation that best achieves a realistic result, then upgrade geometry when visible shape, hollowness, curvature, or clearances require it.
+- Match the visible construction logic of the object. If a face should read as one continuous manufactured piece, keep it as a connected face with openings or cutouts instead of rebuilding it from separate floating members. Use separate member-based construction only when the visible form should genuinely read as discrete members.
 - When authoring mesh-backed visuals, use managed logical names like `mesh_from_geometry(..., "door_panel")`; do not reason about filesystem paths.
 - Author visual geometry only; do not author collision geometry in `sdk`.
 - Preserve correct joint origins, axes, limits, and articulation behavior.
