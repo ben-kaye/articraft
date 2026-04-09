@@ -142,6 +142,9 @@ makes positive angles open upward.
   visible opening with a solid placeholder.
 - If the object is layered or nested, model those layers with clear visual
   separation instead of collapsing them into one solid mass.
+- Preserve the visible construction logic of major faces and covers. If a
+  visible surface should read as one continuous piece, keep it connected and
+  cut openings into it rather than replacing it with floating fragments.
 - Hidden supports and internal structure can stay simple as long as the visible
   form reads correctly.
 - Within one part, avoid disconnected visual islands. If a feature should read

@@ -359,6 +359,15 @@ VentGrilleGeometry(
 - This helper is intended for complete vent/register-style shells rather than
   a standalone louver insert panel.
 
+### Choosing Panel vs Member Construction
+
+- Use perforated, slotted, or cutout panel strategies when the visible result
+  should read as one connected face with repeated openings.
+- Use explicit bars, rings, rods, or similar member-by-member construction only
+  when the visible result should read as an assembly of discrete members.
+- When choosing between these approaches, preserve the visible manufacturing
+  logic of the object before optimizing for convenience.
+
 ### `SweepGeometry`
 
 ```python
