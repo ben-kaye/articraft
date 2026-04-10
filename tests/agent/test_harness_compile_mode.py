@@ -398,6 +398,90 @@ def test_run_requires_compile_model_before_concluding_and_delays_design_audit(
     assert audit_index > compile_index + 1
 
 
+def test_run_accepts_gemini_edit_code_without_replace_all(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _SequenceLLM:
+        model_id = "gemini-2.5-pro"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._responses = [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_edit",
+                            "type": "function",
+                            "function": {
+                                "name": "edit_code",
+                                "arguments": json.dumps(
+                                    {
+                                        "old_string": '"draft_model"',
+                                        "new_string": '"draft_model_v2"',
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_compile",
+                            "type": "function",
+                            "function": {"name": "compile_model", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"content": "Done.", "tool_calls": []},
+            ]
+
+        async def generate_with_tools(
+            self, *, system_prompt: str, messages: list[dict], tools: list[dict]
+        ) -> dict:
+            assert tools
+            return self._responses.pop(0)
+
+        async def close(self) -> None:
+            return None
+
+    report = CompileReport(
+        urdf_xml="<robot />",
+        warnings=[],
+        signal_bundle=build_compile_signal_bundle(status="success"),
+    )
+
+    monkeypatch.setattr(harness, "GeminiLLM", _SequenceLLM)
+    agent = ArticraftAgent(
+        file_path=str(tmp_path / "model.py"),
+        provider="gemini",
+        max_turns=5,
+        post_success_design_audit=False,
+        display_enabled=False,
+    )
+
+    async def fake_compile() -> CompileReport:
+        return report
+
+    async def fake_persist(_: str) -> None:
+        return None
+
+    agent._compile_urdf_report_async = fake_compile
+    agent._persist_compile_success_checkpoint_async = fake_persist
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is True
+    assert result.reason == TerminateReason.CODE_VALID
+    assert result.compile_attempt_count == 1
+    assert result.tool_call_count == 2
+    assert result.final_code is not None
+    assert '"draft_model_v2"' in result.final_code
+
+
 @pytest.mark.parametrize(
     ("provider_name", "provider_attr"),
     [

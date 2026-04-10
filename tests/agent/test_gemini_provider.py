@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -470,6 +471,44 @@ def test_convert_message_preserves_thought_flag_when_replaying_google_parts() ->
     assert thought_part.thought_signature == b"sig"
     assert tool_part.function_call.name == "compile_model"
     assert tool_part.thought_signature == b"sig"
+
+
+def test_convert_response_serializes_edit_code_function_call_args() -> None:
+    provider = GeminiLLM(dry_run=True)
+
+    response = SimpleNamespace(
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(
+                            function_call=SimpleNamespace(
+                                id="call_edit",
+                                name="edit_code",
+                                args={
+                                    "old_string": '"draft_model"',
+                                    "new_string": '"draft_model_v2"',
+                                },
+                            ),
+                            thought_signature=None,
+                        )
+                    ]
+                )
+            )
+        ]
+    )
+
+    converted = provider._convert_response(response)
+
+    assert converted["content"] == ""
+    assert len(converted["tool_calls"]) == 1
+    tool_call = converted["tool_calls"][0]
+    assert tool_call["id"] == "call_edit"
+    assert tool_call["function"]["name"] == "edit_code"
+    assert json.loads(tool_call["function"]["arguments"]) == {
+        "old_string": '"draft_model"',
+        "new_string": '"draft_model_v2"',
+    }
 
 
 def test_count_generate_request_tokens_uses_sdk_count_tokens() -> None:

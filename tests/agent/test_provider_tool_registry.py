@@ -41,9 +41,19 @@ def test_provider_tool_registry_schemas() -> None:
     find_examples_schema = next(
         s for s in openai_schemas if s.get("function", {}).get("name") == "find_examples"
     )
+    gemini_schemas = gemini_registry.get_tool_schemas()
+    edit_code_schema = next(
+        s for s in gemini_schemas if s.get("function", {}).get("name") == "edit_code"
+    )
     assert apply_patch_schema.get("type") == "custom"
     read_file_props = read_file_schema["function"]["parameters"]["properties"]
     assert set(read_file_props.keys()) == {"path", "offset", "limit"}
+    edit_code_props = edit_code_schema["function"]["parameters"]["properties"]
+    assert set(edit_code_props.keys()) == {"old_string", "new_string", "replace_all"}
+    assert edit_code_schema["function"]["parameters"]["required"] == [
+        "old_string",
+        "new_string",
+    ]
     compile_model_props = compile_model_schema["function"]["parameters"]["properties"]
     assert set(compile_model_props.keys()) == set()
     assert (
