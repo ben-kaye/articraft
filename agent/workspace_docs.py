@@ -148,14 +148,18 @@ def _build_sdk_reference_files(
     sdk_package: str,
 ) -> dict[str, VirtualWorkspaceFile]:
     profile = get_sdk_profile(sdk_package)
+    runtime_source = "runtime_hybrid.md" if sdk_package == "sdk_hybrid" else "runtime.md"
+    abstraction_source = (
+        "native-vs-cadquery_hybrid.md" if sdk_package == "sdk_hybrid" else "native-vs-cadquery.md"
+    )
     files: dict[str, VirtualWorkspaceFile] = {
         "docs/sdk/references/runtime.md": VirtualWorkspaceFile(
             virtual_path="docs/sdk/references/runtime.md",
-            content=_build_runtime_doc(sdk_package=sdk_package),
+            disk_path=repo_root / "agent" / "docs" / "sdk" / "references" / runtime_source,
         ),
         "docs/sdk/references/native-vs-cadquery.md": VirtualWorkspaceFile(
             virtual_path="docs/sdk/references/native-vs-cadquery.md",
-            content=_build_native_vs_cadquery_doc(sdk_package=sdk_package),
+            disk_path=repo_root / "agent" / "docs" / "sdk" / "references" / abstraction_source,
         ),
     }
 
@@ -169,56 +173,6 @@ def _build_sdk_reference_files(
             disk_path=repo_root / rel_path,
         )
     return files
-
-
-def _build_runtime_doc(*, sdk_package: str) -> str:
-    if sdk_package == "sdk_hybrid":
-        return (
-            "# Runtime\n\n"
-            "- Import from `sdk_hybrid` in `model.py`.\n"
-            "- This runtime includes the articulated-object/test/export stack plus CadQuery-backed "
-            "geometry helpers.\n"
-            "- Use native Articraft abstractions when they clearly express the object.\n"
-            "- Use CadQuery when lower-level geometry control or shape construction warrants it.\n"
-            "- `section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable "
-            "in this runtime.\n"
-            "- Only `model.py` is writable. All `docs/` paths are read-only.\n"
-        )
-    return (
-        "# Runtime\n\n"
-        "- Import from `sdk` in `model.py`.\n"
-        "- This runtime includes both the Articraft-native geometry/tooling surface and the "
-        "CadQuery-backed geometry helpers.\n"
-        "- Prefer native Articraft abstractions first, then use CadQuery when lower-level "
-        "shape construction or construction history is the clearer fit.\n"
-        "- `section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` remain "
-        "available alongside the CadQuery path.\n"
-        "- Only `model.py` is writable. All `docs/` paths are read-only.\n"
-    )
-
-
-def _build_native_vs_cadquery_doc(*, sdk_package: str) -> str:
-    if sdk_package == "sdk_hybrid":
-        return (
-            "# Native vs CadQuery\n\n"
-            "- Default to Articraft-native abstractions for articulated structure, placements, "
-            "tests, and straightforward geometry.\n"
-            "- Reach for CadQuery when shells, local cut geometry, smooth transitions, or precise "
-            "construction history are easier to express at the lower level.\n"
-            "- Mixing native Articraft and CadQuery-backed geometry in one artifact is allowed "
-            "when it produces a clearer, more realistic model.\n"
-            "- Keep units in meters by the time geometry reaches Articraft export helpers.\n"
-        )
-    return (
-        "# Native vs CadQuery\n\n"
-        "- Default to Articraft-native abstractions for articulated structure, placements, "
-        "tests, and straightforward geometry.\n"
-        "- Reach for CadQuery when shells, local cut geometry, smooth transitions, precise "
-        "construction history, or richer low-level shape composition make the model clearer.\n"
-        "- Mixing native Articraft geometry helpers with CadQuery-backed meshes in one artifact "
-        "is allowed when it produces a more realistic result.\n"
-        "- Keep units in meters by the time geometry reaches Articraft export helpers.\n"
-    )
 
 
 def _resolve_sdk_docs_relative_path(path: str) -> str:
