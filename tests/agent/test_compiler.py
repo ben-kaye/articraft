@@ -354,7 +354,10 @@ def test_compile_urdf_report_fails_when_model_has_multiple_root_parts(tmp_path: 
     script_path = tmp_path / "model.py"
     _write_multiple_root_model_script(script_path)
 
-    with pytest.raises(RuntimeError, match="check_single_root_part"):
+    with pytest.raises(
+        RuntimeError,
+        match="check_single_root_part|exactly one root part",
+    ):
         compile_urdf_report(script_path, run_checks=True, target="full")
 
 

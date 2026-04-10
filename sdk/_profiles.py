@@ -80,9 +80,10 @@ SDK_PROFILES: dict[str, SdkProfile] = {
             "lite": Path("scaffold_lite.py"),
             "strict": Path("scaffold.py"),
         },
-        docs_full=_COMMON_DOCS[:4] + _BASE_DOCS + _COMMON_DOCS[4:],
+        docs_full=_COMMON_DOCS[:4] + _BASE_DOCS + _CADQUERY_DOCS + _COMMON_DOCS[4:],
         docs_core=(
             Path("sdk/_docs/common/00_quickstart.md"),
+            Path("sdk/_docs/cadquery/35_cadquery.md"),
             Path("sdk/_docs/common/70_probe_tooling.md"),
             Path("sdk/_docs/common/80_testing.md"),
         ),

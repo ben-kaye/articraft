@@ -1,5 +1,6 @@
 <process>
-- Read the bound scaffold and the injected SDK docs before editing.
+- Read `model.py` and the preloaded SDK router doc before editing.
+- Use `read_file(path=...)` to load additional `docs/` references only when needed.
 - For unfamiliar geometry, mechanisms, or placement patterns, use `find_examples` before improvising.
 - Start with the smallest coherent backbone or subassembly that locks overall scale, silhouette, attachments, and the main articulations.
 - Expand one coherent region at a time instead of authoring the whole object in one pass.

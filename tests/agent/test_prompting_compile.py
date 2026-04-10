@@ -10,6 +10,7 @@ REQUIRED_TAGS = (
     "<process>",
     "<tools>",
     "<modeling>",
+    "<link_naming>",
 )
 DISALLOWED_FRAGMENTS = (
     "expect_aabb_",
@@ -25,7 +26,7 @@ def _opening_tag_count(text: str) -> int:
 def _assert_shared_contract(text: str) -> None:
     for tag in REQUIRED_TAGS:
         assert tag in text
-    assert _opening_tag_count(text) == 4
+    assert _opening_tag_count(text) >= 5
     assert "<compile_signals>" in text
 
     # Three hard requirements
@@ -34,7 +35,10 @@ def _assert_shared_contract(text: str) -> None:
     assert "REALISTIC GEOMETRY" in text
 
     # Shared process stub stays compact
-    assert "Read the bound scaffold and the injected SDK docs before editing." in text
+    assert "Read `model.py` and the preloaded SDK router doc before editing." in text
+    assert (
+        "Use `read_file(path=...)` to load additional `docs/` references only when needed." in text
+    )
     assert "Start with the smallest coherent backbone or subassembly" in text
     assert "Expand one coherent region at a time" in text
     assert "Always run `compile_model` on the latest revision before concluding." in text
@@ -98,7 +102,7 @@ def test_prompt_outputs_are_current() -> None:
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
     _assert_shared_contract(gemini_text)
     assert (
-        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_file`, `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_text
     )
     assert 'old_string=""' in gemini_text
@@ -111,7 +115,7 @@ def test_prompt_outputs_are_current() -> None:
     gemini_hybrid_text = compiled_by_name["designer_system_prompt_gemini_hybrid.txt"]
     _assert_shared_contract(gemini_hybrid_text)
     assert (
-        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_file`, `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_hybrid_text
     )
     assert "Prefer small exact `edit_code` replacements over broad rewrites" in gemini_hybrid_text

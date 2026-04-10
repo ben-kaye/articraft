@@ -61,8 +61,9 @@ def test_runner_dump_provider_payload_supports_hybrid_sdk(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     docs_message = payload["input"][0]["content"][0]["text"]
-    assert "The selected SDK package for this run is `sdk_hybrid`." in docs_message
-    assert "## sdk/_docs/cadquery/35_cadquery.md" in docs_message
+    assert "## docs/sdk/README.md" in docs_message
+    assert "## docs/sdk/references/runtime.md" in docs_message
+    assert "Import from `sdk_hybrid` in `model.py`." in docs_message
 
 
 def test_runner_accepts_openai_api_keys_env(

@@ -188,6 +188,14 @@ def test_find_examples_tool_supports_base_sdk_examples() -> None:
     assert output[0]["matched_fields"]
 
 
+def test_search_example_documents_sdk_can_retrieve_cadquery_examples() -> None:
+    matches = search_example_documents("making lofts", sdk_package="sdk", limit=3)
+
+    assert matches
+    assert matches[0].title == "Making Lofts"
+    assert matches[0].path.as_posix().endswith("sdk/_examples/hybrid/making_lofts.md")
+
+
 def test_search_example_documents_can_return_weakly_relevant_hybrid_matches() -> None:
     matches = search_example_documents("support bracket", sdk_package="sdk_hybrid", limit=5)
 

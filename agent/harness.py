@@ -50,6 +50,7 @@ from agent.tools.base import ToolResult
 from agent.tools.code_region import extract_editable_code
 from agent.traces import TraceWriter
 from agent.tui.single_run import SingleRunDisplay
+from agent.workspace_docs import build_virtual_workspace
 from sdk._profiles import get_sdk_profile
 from sdk._profiles import normalize_scaffold_mode as _normalize_scaffold_mode
 
@@ -400,6 +401,11 @@ class ArticraftAgent:
         else:
             self.system_prompt = base_system_prompt
         repo_root = Path(__file__).resolve().parents[1]
+        self.virtual_workspace = build_virtual_workspace(
+            repo_root,
+            model_file_path=Path(self.file_path),
+            sdk_package=self.sdk_package,
+        )
         self.sdk_docs_context = load_sdk_docs_reference(
             repo_root,
             sdk_package=self.sdk_package,
@@ -1178,6 +1184,9 @@ class ArticraftAgent:
                 bind_file_path = getattr(invocation, "bind_file_path", None)
                 if callable(bind_file_path):
                     bind_file_path(self.file_path)
+                bind_virtual_workspace = getattr(invocation, "bind_virtual_workspace", None)
+                if callable(bind_virtual_workspace):
+                    bind_virtual_workspace(self.virtual_workspace)
                 result = await invocation.execute()
                 result.tool_call_id = tool_id
                 if result.is_success() and func_name == "find_examples":

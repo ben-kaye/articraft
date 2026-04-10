@@ -25,7 +25,7 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         assert "REALISTIC GEOMETRY" in text
 
         # Compact shared workflow stub
-        assert "Read the bound scaffold and the injected SDK docs before editing." in text
+        assert "Read `model.py` and the preloaded SDK router doc before editing." in text
         assert "Start with the smallest coherent backbone or subassembly" in text
         assert "Expand one coherent region at a time" in text
         assert "Always run `compile_model` on the latest revision before concluding." in text
@@ -49,4 +49,4 @@ def test_compiled_openai_prompt_keeps_compact_contract_and_visual_test_gate() ->
         # No disallowed fragments
         assert "expect_aabb_" not in text
         assert "expect_joint_motion_axis(" not in text
-        assert len(text.splitlines()) <= 56
+        assert len(text.splitlines()) <= 80

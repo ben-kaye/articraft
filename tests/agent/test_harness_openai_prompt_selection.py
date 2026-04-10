@@ -94,7 +94,11 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "REALISTIC GEOMETRY" in instructions
 
     # Compact workflow + moved SDK guidance
-    assert "Read the bound scaffold and the injected SDK docs before editing." in instructions
+    assert "Read `model.py` and the preloaded SDK router doc before editing." in instructions
+    assert (
+        "Use `read_file(path=...)` to load additional `docs/` references only when needed."
+        in instructions
+    )
     assert "Start with the smallest coherent backbone or subassembly" in instructions
     assert "Always run `compile_model` on the latest revision before concluding." in instructions
     assert "PHASE 1" not in instructions
@@ -110,7 +114,10 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
 
     # Runtime first-turn task guidance
     assert task_message.startswith("<runtime_task_guidance>")
-    assert "Read the exact current code with `read_file` before editing." in task_message
+    assert (
+        'Read the exact current code with `read_file(path="model.py")` before editing.'
+        in task_message
+    )
     assert task_message.endswith("a pair of scissors")
 
     # Cache key
@@ -118,12 +125,15 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert len(payload["prompt_cache_key"]) <= 64
     assert payload["prompt_cache_retention"] == "24h"
 
-    # SDK docs injected
-    assert "## sdk/_docs/common/00_quickstart.md" in docs_message
-    assert "## sdk/_docs/common/70_probe_tooling.md" in docs_message
-    assert "## sdk/_docs/common/80_testing.md" in docs_message
+    # SDK docs router bundle is injected
+    assert "## docs/sdk/README.md" in docs_message
+    assert "## docs/sdk/references/runtime.md" in docs_message
+    assert "## docs/sdk/references/quickstart.md" in docs_message
+    assert "## docs/sdk/references/probe-tooling.md" in docs_message
+    assert "## docs/sdk/references/testing.md" in docs_message
+    assert "virtual authoring workspace" in docs_message
+    assert "Import from `sdk` in `model.py`." in docs_message
     assert "Use `place_on_surface(...)` by default" in docs_message
-    assert "Prefer object-first snippets" in docs_message
     assert "Once `run_tests()` references a visual by exact `elem_*` name" in docs_message
 
 
@@ -132,32 +142,34 @@ def test_openai_hybrid_payload_preview_includes_hybrid_docs() -> None:
         sdk_package="sdk_hybrid",
         sdk_docs_mode="full",
     )["input"][0]["content"][0]["text"]
-    assert "## sdk/_docs/common/00_quickstart.md" in hybrid_docs_message
-    assert "## sdk/_docs/cadquery/35_cadquery.md" in hybrid_docs_message
-    assert "## sdk/_docs/common/70_probe_tooling.md" in hybrid_docs_message
-    assert "## sdk/_docs/common/80_testing.md" in hybrid_docs_message
-    assert "## sdk/_docs/cadquery/39a_cadquery_examples.md" not in hybrid_docs_message
+    assert "## docs/sdk/README.md" in hybrid_docs_message
+    assert "## docs/sdk/references/runtime.md" in hybrid_docs_message
+    assert "## docs/sdk/references/quickstart.md" in hybrid_docs_message
+    assert "Import from `sdk_hybrid` in `model.py`." in hybrid_docs_message
+    assert (
+        "`section_loft(...)`, `repair_loft(...)`, and `partition_shell(...)` are unavailable"
+        in hybrid_docs_message
+    )
 
 
-def test_openai_core_payload_preview_includes_probe_doc() -> None:
+def test_openai_core_payload_preview_keeps_router_bundle() -> None:
     docs_message = _build_openai_preview(sdk_package="sdk", sdk_docs_mode="core")["input"][0][
         "content"
     ][0]["text"]
-    assert "## sdk/_docs/common/00_quickstart.md" in docs_message
-    assert "## sdk/_docs/common/70_probe_tooling.md" in docs_message
-    assert "## sdk/_docs/common/80_testing.md" in docs_message
-    assert "## sdk/_docs/base/40_mesh_geometry.md" not in docs_message
+    assert "## docs/sdk/README.md" in docs_message
+    assert "## docs/sdk/references/quickstart.md" in docs_message
+    assert "## docs/sdk/references/probe-tooling.md" in docs_message
+    assert "## docs/sdk/references/testing.md" in docs_message
 
 
-def test_openai_hybrid_core_payload_preview_includes_probe_doc() -> None:
+def test_openai_hybrid_core_payload_preview_keeps_router_bundle() -> None:
     docs_message = _build_openai_preview(sdk_package="sdk_hybrid", sdk_docs_mode="core")["input"][
         0
     ]["content"][0]["text"]
-    assert "## sdk/_docs/common/00_quickstart.md" in docs_message
-    assert "## sdk/_docs/cadquery/35_cadquery.md" in docs_message
-    assert "## sdk/_docs/common/70_probe_tooling.md" in docs_message
-    assert "## sdk/_docs/common/80_testing.md" in docs_message
-    assert "## sdk/_docs/cadquery/36_cadquery_primer.md" not in docs_message
+    assert "## docs/sdk/README.md" in docs_message
+    assert "## docs/sdk/references/runtime.md" in docs_message
+    assert "## docs/sdk/references/quickstart.md" in docs_message
+    assert "Import from `sdk_hybrid` in `model.py`." in docs_message
 
 
 def test_openai_hybrid_payload_preview_includes_find_examples_tool() -> None:
@@ -340,7 +352,7 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
 
     # Tool contract
     assert (
-        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_file`, `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in gemini_instructions
     )
     assert 'old_string=""' in gemini_instructions
@@ -354,8 +366,10 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     assert "REALISTIC GEOMETRY" in gemini_instructions
 
     # Compact workflow
+    assert "Read `model.py` and the preloaded SDK router doc before editing." in gemini_instructions
     assert (
-        "Read the bound scaffold and the injected SDK docs before editing." in gemini_instructions
+        "Use `read_file(path=...)` to load additional `docs/` references only when needed."
+        in gemini_instructions
     )
     assert "Start with the smallest coherent backbone or subassembly" in gemini_instructions
     assert (
@@ -372,9 +386,11 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     # Runtime first-turn task guidance
     assert gemini_task_message.startswith("<runtime_task_guidance>")
     assert "Read the exact current code with `read_code` before editing." in gemini_task_message
+    assert 'read_file(path="docs/...")' in gemini_task_message
     assert gemini_task_message.endswith("a pair of scissors")
 
-    assert "## sdk/_docs/common/70_probe_tooling.md" in gemini_docs_message
+    assert "## docs/sdk/README.md" in gemini_docs_message
+    assert "## docs/sdk/references/probe-tooling.md" in gemini_docs_message
     assert "Prefer object-first snippets" in gemini_docs_message
     assert "Once `run_tests()` references a visual by exact `elem_*` name" in gemini_docs_message
 
@@ -395,7 +411,7 @@ def test_gemini_hybrid_payload_preview_includes_find_examples_tool() -> None:
     assert "probe_model" in tool_names
     assert "find_examples" in tool_names
     assert (
-        "Use ONLY `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
+        "Use ONLY `read_file`, `read_code`, `edit_code`, `compile_model`, `probe_model`, and `find_examples`"
         in payload["config"]["system_instruction"]
     )
     assert (

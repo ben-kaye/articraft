@@ -22,6 +22,7 @@ def test_provider_tool_registry_schemas() -> None:
         "find_examples",
     }
     assert set(gemini_registry.get_all_tool_names()) == {
+        "read_file",
         "read_code",
         "edit_code",
         "compile_model",
@@ -36,6 +37,7 @@ def test_provider_tool_registry_schemas() -> None:
         "find_examples",
     }
     assert set(hybrid_gemini_registry.get_all_tool_names()) == {
+        "read_file",
         "read_code",
         "edit_code",
         "compile_model",
@@ -59,7 +61,7 @@ def test_provider_tool_registry_schemas() -> None:
     )
     assert apply_patch_schema.get("type") == "custom"
     read_file_props = read_file_schema["function"]["parameters"]["properties"]
-    assert set(read_file_props.keys()) == {"offset", "limit"}
+    assert set(read_file_props.keys()) == {"path", "offset", "limit"}
     compile_model_props = compile_model_schema["function"]["parameters"]["properties"]
     assert set(compile_model_props.keys()) == set()
     assert (
@@ -101,7 +103,7 @@ def test_tool_registry_rejects_hidden_file_path_parameter() -> None:
         asyncio.run(
             openai_registry.build_invocation(
                 "read_file",
-                {"offset": 1, "limit": 20, "file_path": "/tmp/model.py"},
+                {"path": "model.py", "offset": 1, "limit": 20, "file_path": "/tmp/model.py"},
             )
         )
 
@@ -120,10 +122,11 @@ def test_openai_tool_registry_treats_null_optional_args_as_defaults() -> None:
     read_file = asyncio.run(
         openai_registry.build_invocation(
             "read_file",
-            {"offset": None, "limit": None},
+            {"path": "model.py", "offset": None, "limit": None},
         )
     )
     assert read_file is not None
+    assert read_file.params.path == "model.py"
     assert read_file.params.offset == 1
     assert read_file.params.limit == 200
 
