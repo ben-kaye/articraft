@@ -46,6 +46,10 @@ def test_provider_tool_registry_schemas() -> None:
         s for s in gemini_schemas if s.get("function", {}).get("name") == "edit_code"
     )
     assert apply_patch_schema.get("type") == "custom"
+    apply_patch_description = apply_patch_schema["description"]
+    assert "current bound file" in apply_patch_description
+    assert "Single-file mode only" in apply_patch_description
+    assert "`*** Add File`, `*** Delete File`, or `*** Move to`" in apply_patch_description
     read_file_props = read_file_schema["function"]["parameters"]["properties"]
     assert set(read_file_props.keys()) == {"path", "offset", "limit"}
     edit_code_props = edit_code_schema["function"]["parameters"]["properties"]
