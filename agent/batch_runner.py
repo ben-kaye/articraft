@@ -1707,7 +1707,9 @@ class BatchRunSession:
                 )
             except Exception as exc:
                 logger.exception("Batch row %s failed unexpectedly", row.row_id)
-                staging_dir = self.repo.layout.run_staging_dir(self.config.run_id) / allocation.record_id
+                staging_dir = (
+                    self.repo.layout.run_staging_dir(self.config.run_id) / allocation.record_id
+                )
                 outcome = BatchRowOutcome(
                     row_id=row.row_id,
                     success=False,
@@ -1741,7 +1743,9 @@ class BatchRunSession:
         try:
             async with self.commit_lock:
                 self.display.print_finalizing("compacting run results")
-                await asyncio.to_thread(self.run_store.compact_results, self.config.run_id, key="row_id")
+                await asyncio.to_thread(
+                    self.run_store.compact_results, self.config.run_id, key="row_id"
+                )
                 self.display.print_finalizing("rebuilding dataset manifests and categories")
                 await _finalize_batch_dataset_artifacts(
                     repo=self.repo,
@@ -1758,7 +1762,9 @@ class BatchRunSession:
             raise
 
         self.display.stop()
-        success_count = sum(1 for status in self.final_status_by_row.values() if status == "success")
+        success_count = sum(
+            1 for status in self.final_status_by_row.values() if status == "success"
+        )
         return {
             "run_id": self.config.run_id,
             "status": overall_status,

@@ -309,7 +309,9 @@ def test_read_total_cost_prefers_all_in_total(tmp_path: Path) -> None:
     assert batch_runner._read_total_cost(run_dir) == pytest.approx(0.91)
 
 
-def test_build_allocations_reuses_dataset_id_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_allocations_reuses_dataset_id_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()
     rows = [
