@@ -1,4 +1,4 @@
-# Section Lofts (`sdk.mesh`)
+# Section Lofts
 
 ## Purpose
 

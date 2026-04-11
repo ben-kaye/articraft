@@ -57,8 +57,15 @@ _COMMON_DOCS = (
 
 _BASE_DOCS = (
     Path("sdk/_docs/base/40_mesh_geometry.md"),
+    Path("sdk/_docs/base/41_panels_and_grilles.md"),
+    Path("sdk/_docs/base/42_brackets_and_mounts.md"),
+    Path("sdk/_docs/base/43_fans_and_rotors.md"),
+    Path("sdk/_docs/base/44_knobs_and_controls.md"),
     Path("sdk/_docs/base/45_wires.md"),
     Path("sdk/_docs/base/46_section_lofts.md"),
+    Path("sdk/_docs/base/47_bezels_and_frames.md"),
+    Path("sdk/_docs/base/48_wheels_and_tires.md"),
+    Path("sdk/_docs/base/49_hinges.md"),
 )
 
 _CADQUERY_DOCS = (

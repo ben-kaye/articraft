@@ -1,9 +1,11 @@
-# Procedural Meshes (`sdk.mesh`)
+# Procedural Meshes
 
 ## Purpose
 
-Use these helpers when the visible shape should be authored as procedural mesh
-geometry and then exported as an OBJ-backed `sdk.Mesh`.
+Use this page for low-level procedural mesh authoring: primitive solids,
+lathed forms, extrusions, sweeps, profiles, shell helpers, and mesh export.
+If the shape matches a semantic family such as a knob, bezel, wheel, fan, or
+panel, prefer the focused geometry-family references listed below.
 
 ## Import
 
@@ -21,47 +23,6 @@ from sdk import (
     LoftGeometry,
     ExtrudeGeometry,
     ExtrudeWithHolesGeometry,
-    PerforatedPanelGeometry,
-    SlotPatternPanelGeometry,
-    ClevisBracketGeometry,
-    PivotForkGeometry,
-    TrunnionYokeGeometry,
-    FanRotorGeometry,
-    BlowerWheelGeometry,
-    KnobGeometry,
-    KnobSkirt,
-    KnobGrip,
-    KnobIndicator,
-    KnobTopFeature,
-    KnobBore,
-    KnobRelief,
-    BezelGeometry,
-    BezelFace,
-    BezelRecess,
-    BezelVisor,
-    BezelFlange,
-    BezelMounts,
-    BezelCutout,
-    BezelEdgeFeature,
-    WheelGeometry,
-    WheelRim,
-    WheelHub,
-    WheelFace,
-    WheelSpokes,
-    WheelBore,
-    WheelFlange,
-    BoltPattern,
-    TireGeometry,
-    TireCarcass,
-    TireTread,
-    TireGroove,
-    TireSidewall,
-    TireShoulder,
-    BarrelHingeGeometry,
-    PianoHingeGeometry,
-    HingeHolePattern,
-    HingePinStyle,
-    VentGrilleGeometry,
     SweepGeometry,
     rounded_rect_profile,
     superellipse_profile,
@@ -80,19 +41,25 @@ from sdk import (
 - `MeshGeometry`
 - primitive builders: `BoxGeometry`, `CylinderGeometry`, `ConeGeometry`,
   `SphereGeometry`, `DomeGeometry`, `CapsuleGeometry`, `TorusGeometry`
-- loft/extrude/sweep builders: `LatheGeometry`, `ExtrudeGeometry`,
-  `ExtrudeWithHolesGeometry`, `PerforatedPanelGeometry`,
-  `SlotPatternPanelGeometry`, `VentGrilleGeometry`, `SweepGeometry`
-- bracket/fan helpers: `ClevisBracketGeometry`, `PivotForkGeometry`,
-  `TrunnionYokeGeometry`, `FanRotorGeometry`, `BlowerWheelGeometry`
-- control/frame helpers: `KnobGeometry`, `BezelGeometry`
-- wheel/tire helpers: `WheelGeometry`, `TireGeometry`
-- hinge helpers: `BarrelHingeGeometry`, `PianoHingeGeometry`
+- loft/extrude/sweep builders: `LatheGeometry`, `LoftGeometry`,
+  `ExtrudeGeometry`, `ExtrudeWithHolesGeometry`, `SweepGeometry`
 - profile helpers: `rounded_rect_profile`, `superellipse_profile`
-- shell helpers: `superellipse_side_loft`, `split_superellipse_side_loft`,
-  `resample_side_sections`
-- `cut_opening_on_face(...)`
-- `mesh_from_geometry(...)`
+- spline/profile helpers: `sample_catmull_rom_spline_2d(...)`,
+  `sample_cubic_bezier_spline_2d(...)`
+- shell helpers: `superellipse_side_loft(...)`,
+  `split_superellipse_side_loft(...)`, `resample_side_sections(...)`
+- panel opening helper: `cut_opening_on_face(...)`
+- export helper: `mesh_from_geometry(...)`
+
+Focused semantic geometry references:
+
+- `41_panels_and_grilles.md` for perforated, slotted, and vent-grille faces
+- `42_brackets_and_mounts.md` for clevises, forks, and yokes
+- `43_fans_and_rotors.md` for axial rotors and blower wheels
+- `44_knobs_and_controls.md` for knobs and control caps
+- `47_bezels_and_frames.md` for bezels, trims, and framed openings
+- `48_wheels_and_tires.md` for wheels and tire visuals
+- `49_hinges.md` for exposed utility hinge geometry
 
 ## Core Mesh Type
 
@@ -206,368 +173,6 @@ ExtrudeWithHolesGeometry(
 
 - `outer_profile`: outer 2D loop.
 - `hole_profiles`: zero or more through-cut loops inside the outer profile.
-
-### `PerforatedPanelGeometry`
-
-```python
-PerforatedPanelGeometry(
-    panel_size,
-    thickness,
-    *,
-    hole_diameter,
-    pitch,
-    frame: float = 0.008,
-    corner_radius: float = 0.0,
-    stagger: bool = False,
-    center: bool = True,
-)
-```
-
-- Builds a rectangular plate with a centered grid of round through-holes.
-- `panel_size`: `(width, height)` in local XY.
-- `pitch`: either a scalar or `(x_pitch, y_pitch)`.
-- `stagger=True` offsets alternating rows by half of the X pitch.
-- `frame` reserves a solid border margin around the perforated region.
-- `center=False` places the rear face on `z=0`.
-
-### `SlotPatternPanelGeometry`
-
-```python
-SlotPatternPanelGeometry(
-    panel_size,
-    thickness,
-    *,
-    slot_size,
-    pitch,
-    frame: float = 0.008,
-    corner_radius: float = 0.0,
-    slot_angle_deg: float = 0.0,
-    stagger: bool = False,
-    center: bool = True,
-)
-```
-
-- Builds a rectangular plate with rounded through-slots.
-- `slot_size`: `(length, width)` of each slot before rotation.
-- `pitch`: either a scalar or `(x_pitch, y_pitch)`.
-- `slot_angle_deg` uses degrees.
-- `frame` reserves a solid border margin around the slot field.
-- `center=False` places the rear face on `z=0`.
-
-### `ClevisBracketGeometry`
-
-```python
-ClevisBracketGeometry(
-    overall_size,
-    *,
-    gap_width,
-    bore_diameter,
-    bore_center_z,
-    base_thickness,
-    corner_radius: float = 0.0,
-    center: bool = True,
-)
-```
-
-- Builds a U-shaped clevis with a bottom base and a transverse bore.
-- `overall_size`: `(width_x, depth_y, height_z)`.
-- `gap_width` is the clear spacing between the cheeks.
-- `bore_center_z` is measured upward from the bottom face.
-- This is a good default for pinned brackets and linkage end mounts.
-- `center=False` places the bottom mounting face on `z=0`.
-
-### `PivotForkGeometry`
-
-```python
-PivotForkGeometry(
-    overall_size,
-    *,
-    gap_width,
-    bore_diameter,
-    bore_center_z,
-    bridge_thickness,
-    corner_radius: float = 0.0,
-    center: bool = True,
-)
-```
-
-- Builds an open-front fork with two tines and a rear bridge.
-- `overall_size`: `(width_x, depth_y, height_z)`.
-- `gap_width` is the clear spacing between the tines.
-- `bridge_thickness` is the rear connecting bridge thickness along local `Y`.
-- `bore_center_z` is measured upward from the bottom face.
-- This is useful when the front of the fork must stay open for insertion.
-
-### `TrunnionYokeGeometry`
-
-```python
-TrunnionYokeGeometry(
-    overall_size,
-    *,
-    span_width,
-    trunnion_diameter,
-    trunnion_center_z,
-    base_thickness,
-    corner_radius: float = 0.0,
-    center: bool = True,
-)
-```
-
-- Builds a trunnion support yoke with cheek-mounted trunnion bores.
-- `overall_size`: `(width_x, depth_y, height_z)`.
-- `span_width` is the clear opening between the cheeks.
-- `trunnion_center_z` is measured upward from the bottom face.
-- This is intended for yokes that cradle a rotating trunnion or barrel.
-- `center=False` places the base on `z=0`.
-
-### `FanRotorGeometry`
-
-```python
-FanRotorGeometry(
-    outer_radius,
-    hub_radius,
-    blade_count,
-    *,
-    thickness,
-    blade_pitch_deg: float = 28.0,
-    blade_sweep_deg: float = 20.0,
-    blade_root_chord=None,
-    blade_tip_chord=None,
-    center: bool = True,
-)
-```
-
-- Builds an axial fan rotor that spins about local `Z`.
-- `thickness` controls the hub thickness and overall blade section depth.
-- `blade_pitch_deg` and `blade_sweep_deg` use degrees.
-- `blade_root_chord` and `blade_tip_chord` let you widen or taper the blades.
-- Use this for exposed axial rotors such as PC, appliance, or small cooling fans.
-- `center=False` places the rear-most face on `z=0`.
-
-### `BlowerWheelGeometry`
-
-```python
-BlowerWheelGeometry(
-    outer_radius,
-    inner_radius,
-    width,
-    blade_count,
-    *,
-    blade_thickness,
-    blade_sweep_deg: float = 35.0,
-    backplate: bool = True,
-    shroud: bool = True,
-    center: bool = True,
-)
-```
-
-- Builds a squirrel-cage blower wheel that spins about local `Z`.
-- `width` is the overall axial width along local `Z`.
-- `blade_thickness` controls the blade arc thickness in plan view.
-- `backplate=False` and `shroud=False` produce a lighter visual variant.
-- The vane passages open into the interior drum cavity rather than stopping at a flat inner wall.
-- `center=False` places the rear-most face on `z=0`.
-
-### `KnobGeometry`
-
-```python
-KnobGeometry(
-    diameter,
-    height,
-    *,
-    body_style: Literal["cylindrical", "tapered", "domed", "mushroom", "skirted", "hourglass"] = "cylindrical",
-    top_diameter=None,
-    base_diameter=None,
-    crown_radius: float = 0.0,
-    edge_radius: float = 0.0,
-    side_draft_deg: float = 0.0,
-    skirt: KnobSkirt | None = None,
-    grip: KnobGrip | None = None,
-    indicator: KnobIndicator | None = None,
-    top_feature: KnobTopFeature | None = None,
-    bore: KnobBore | None = None,
-    body_reliefs: Sequence[KnobRelief] = (),
-    center: bool = True,
-)
-```
-
-- Builds a rotary knob aligned to local `Z`.
-- `center=False` places the mounting face on `z=0`.
-- Use `KnobSkirt`, `KnobGrip`, `KnobIndicator`, `KnobTopFeature`,
-  `KnobBore`, and `KnobRelief` to add visible detail without switching to
-  manual mesh work.
-- This helper is intended to cover plain appliance knobs, fluted or knurled
-  knobs, mushroom clamp knobs, and pointer-style dial caps.
-
-### `BezelGeometry`
-
-```python
-BezelGeometry(
-    opening_size,
-    outer_size,
-    depth,
-    *,
-    opening_shape: Literal["rect", "rounded_rect", "circle", "ellipse", "superellipse"] = "rounded_rect",
-    outer_shape: Literal["rect", "rounded_rect", "circle", "ellipse", "superellipse"] = "rounded_rect",
-    opening_corner_radius: float = 0.0,
-    outer_corner_radius: float = 0.0,
-    wall: float | tuple[float, float, float, float] | None = None,
-    face: BezelFace | None = None,
-    recess: BezelRecess | None = None,
-    visor: BezelVisor | None = None,
-    flange: BezelFlange | None = None,
-    mounts: BezelMounts | None = None,
-    cutouts: Sequence[BezelCutout] = (),
-    edge_features: Sequence[BezelEdgeFeature] = (),
-    center: bool = True,
-)
-```
-
-- Builds a framed opening with optional recesses, visors, flanges, rear
-  mounts, edge cutouts, and trim features.
-- The opening lies in local `XY`; depth extends along `Z`.
-- `center=False` places the rear mounting face on `z=0`.
-- Use this for display frames, instrument trims, light/lens bezels, and
-  recessed panel surrounds.
-
-### `WheelGeometry`
-
-```python
-WheelGeometry(
-    radius,
-    width,
-    *,
-    rim: WheelRim | None = None,
-    hub: WheelHub | None = None,
-    face: WheelFace | None = None,
-    spokes: WheelSpokes | None = None,
-    bore: WheelBore | None = None,
-    flange: WheelFlange | None = None,
-    center: bool = True,
-)
-```
-
-- Builds a wheel, rim, and hub visual that spins about local `X`.
-- Width spans local `X`; the radial wheel profile lies in `YZ`.
-- `center=False` places the inner mounting side on `x=0`.
-- Use `WheelRim`, `WheelHub`, `WheelFace`, `WheelSpokes`, `WheelBore`,
-  `WheelFlange`, and `BoltPattern` to cover solid wheels, slotted wheels,
-  spoke wheels, deep-dish faces, and push-rim style variants.
-
-### `TireGeometry`
-
-```python
-TireGeometry(
-    outer_radius,
-    width,
-    *,
-    inner_radius: float | None = None,
-    carcass: TireCarcass | None = None,
-    tread: TireTread | None = None,
-    grooves: Sequence[TireGroove] = (),
-    sidewall: TireSidewall | None = None,
-    shoulder: TireShoulder | None = None,
-    center: bool = True,
-)
-```
-
-- Builds a tire aligned to local `X` so it composes directly with
-  `WheelGeometry`.
-- `inner_radius` controls the wheel-seat cavity; `outer_radius` controls the
-  outside rolling radius.
-- `center=False` places the inner side face on `x=0`.
-- Use `TireCarcass`, `TireTread`, `TireGroove`, `TireSidewall`, and
-  `TireShoulder` to cover smooth rollers, road tires, square utility tires,
-  ribbed tires, chevron tires, and block/lug tires.
-
-### `BarrelHingeGeometry`
-
-```python
-BarrelHingeGeometry(
-    length,
-    *,
-    leaf_width_a,
-    leaf_width_b=None,
-    leaf_thickness,
-    pin_diameter,
-    knuckle_outer_diameter=None,
-    knuckle_count: int = 5,
-    clearance: float = 0.0005,
-    open_angle_deg: float = 180.0,
-    holes_a: HingeHolePattern | None = None,
-    holes_b: HingeHolePattern | None = None,
-    pin: HingePinStyle | None = None,
-    center: bool = True,
-)
-```
-
-- Builds an exposed two-leaf barrel hinge around a local `Z` pin axis.
-- `center=False` places the lower end on `z=0`.
-- Use `HingeHolePattern` for round or slotted leaf holes and `HingePinStyle`
-  for visible pin-head variants.
-- This is the right helper for visible utility hinges on doors, lids, and
-  access panels.
-
-### `PianoHingeGeometry`
-
-```python
-PianoHingeGeometry(
-    length,
-    *,
-    leaf_width_a,
-    leaf_width_b=None,
-    leaf_thickness,
-    pin_diameter,
-    knuckle_pitch,
-    clearance: float = 0.0005,
-    open_angle_deg: float = 180.0,
-    holes_a: HingeHolePattern | None = None,
-    holes_b: HingeHolePattern | None = None,
-    pin: HingePinStyle | None = None,
-    center: bool = True,
-)
-```
-
-- Builds a continuous hinge strip around a local `Z` pin axis.
-- `knuckle_pitch` controls the repeating hinge pattern along the strip.
-- `center=False` places the lower end on `z=0`.
-- Use this for long lids, access doors, and panelized box-style hinges.
-
-### `VentGrilleGeometry`
-
-```python
-VentGrilleGeometry(
-    panel_size,
-    *,
-    frame: float = 0.012,
-    face_thickness: float = 0.004,
-    duct_depth: float = 0.026,
-    duct_wall: float = 0.003,
-    slat_pitch: float = 0.018,
-    slat_width: float = 0.009,
-    slat_angle_deg: float = 35.0,
-    slat_thickness: float | None = None,
-    corner_radius: float = 0.0,
-)
-```
-
-- Builds a vent grille shell with true open slots, fused slats, and a shallow
-  rear sleeve.
-- `panel_size`: `(width, height)` of the front flange.
-- The front flange is centered on local `z=0`; the sleeve extends toward `-Z`.
-- `slat_pitch` must be greater than `slat_width`.
-- `slat_angle_deg` uses degrees.
-- This helper is intended for complete vent/register-style shells rather than
-  a standalone louver insert panel.
-
-### Choosing Panel vs Member Construction
-
-- Use perforated, slotted, or cutout panel strategies when the visible result
-  should read as one connected face with repeated openings.
-- Use explicit bars, rings, rods, or similar member-by-member construction only
-  when the visible result should read as an assembly of discrete members.
-- When choosing between these approaches, preserve the visible manufacturing
-  logic of the object before optimizing for convenience.
 
 ### `SweepGeometry`
 
@@ -713,8 +318,10 @@ mesh_from_geometry(
 - `MeshGeometry` transforms mutate in place.
 - Call `copy()` or `clone()` before reusing a base mesh in multiple variants.
 
-### Choosing higher-level helpers
+### Choosing helper level
 
+- Prefer the focused family pages when the visible part is already a known
+  semantic shape such as a knob, bezel, wheel, vent grille, or bracket.
 - Prefer `section_loft(...)` over raw `LoftGeometry(...)` for new shell/exterior
   loft authoring.
 - Prefer the spline-first wire/tube guidance in `45_wires.md` over manual
@@ -751,208 +358,34 @@ lip = LatheGeometry.from_shell_profiles(
 )
 ```
 
-```python
-speaker_face = PerforatedPanelGeometry(
-    (0.16, 0.10),
-    0.004,
-    hole_diameter=0.006,
-    pitch=(0.012, 0.012),
-    frame=0.010,
-    corner_radius=0.004,
-    stagger=True,
-)
-mesh = mesh_from_geometry(speaker_face, "speaker_face")
-```
-
-```python
-filter_face = SlotPatternPanelGeometry(
-    (0.18, 0.09),
-    0.004,
-    slot_size=(0.024, 0.006),
-    pitch=(0.032, 0.016),
-    frame=0.010,
-    corner_radius=0.004,
-    slot_angle_deg=18.0,
-    stagger=True,
-)
-mesh = mesh_from_geometry(filter_face, "filter_face")
-```
-
-```python
-clevis = ClevisBracketGeometry(
-    (0.08, 0.04, 0.06),
-    gap_width=0.032,
-    bore_diameter=0.012,
-    bore_center_z=0.038,
-    base_thickness=0.012,
-)
-clevis_mesh = mesh_from_geometry(clevis, "clevis")
-
-pivot_fork = PivotForkGeometry(
-    (0.08, 0.05, 0.05),
-    gap_width=0.034,
-    bore_diameter=0.010,
-    bore_center_z=0.028,
-    bridge_thickness=0.012,
-)
-pivot_fork_mesh = mesh_from_geometry(pivot_fork, "pivot_fork")
-
-trunnion_yoke = TrunnionYokeGeometry(
-    (0.12, 0.05, 0.08),
-    span_width=0.060,
-    trunnion_diameter=0.016,
-    trunnion_center_z=0.050,
-    base_thickness=0.014,
-)
-trunnion_yoke_mesh = mesh_from_geometry(trunnion_yoke, "trunnion_yoke")
-```
-
-```python
-fan_rotor = FanRotorGeometry(
-    0.070,
-    0.020,
-    5,
-    thickness=0.010,
-    blade_pitch_deg=24.0,
-    blade_sweep_deg=14.0,
-)
-mesh = mesh_from_geometry(fan_rotor, "fan_rotor")
-```
-
-```python
-blower_wheel = BlowerWheelGeometry(
-    0.080,
-    0.040,
-    0.050,
-    18,
-    blade_thickness=0.004,
-    blade_sweep_deg=25.0,
-)
-mesh = mesh_from_geometry(blower_wheel, "blower_wheel")
-```
-
-```python
-range_knob = KnobGeometry(
-    0.042,
-    0.024,
-    body_style="skirted",
-    top_diameter=0.034,
-    skirt=KnobSkirt(0.052, 0.006, flare=0.08),
-    grip=KnobGrip(style="fluted", count=18, depth=0.0014),
-    indicator=KnobIndicator(style="line", mode="engraved", depth=0.0008),
-    bore=KnobBore(style="d_shaft", diameter=0.006, flat_depth=0.001),
-)
-mesh = mesh_from_geometry(range_knob, "range_knob")
-```
-
-```python
-display_bezel = BezelGeometry(
-    (0.080, 0.050),
-    (0.110, 0.080),
-    0.012,
-    opening_shape="rounded_rect",
-    outer_shape="rounded_rect",
-    opening_corner_radius=0.006,
-    outer_corner_radius=0.010,
-)
-mesh = mesh_from_geometry(display_bezel, "display_bezel")
-```
-
-```python
-wheel = WheelGeometry(
-    0.120,
-    0.040,
-    rim=WheelRim(
-        inner_radius=0.082,
-        flange_height=0.010,
-        flange_thickness=0.004,
-        bead_seat_depth=0.004,
-    ),
-    hub=WheelHub(
-        radius=0.028,
-        width=0.030,
-        cap_style="domed",
-        bolt_pattern=BoltPattern(
-            count=5,
-            circle_diameter=0.034,
-            hole_diameter=0.004,
-        ),
-    ),
-    face=WheelFace(dish_depth=0.006, front_inset=0.003, rear_inset=0.002),
-    spokes=WheelSpokes(style="split_y", count=5, thickness=0.003, window_radius=0.010),
-    bore=WheelBore(style="round", diameter=0.012),
-)
-wheel_mesh = mesh_from_geometry(wheel, "wheel")
-
-tire = TireGeometry(
-    0.145,
-    0.052,
-    inner_radius=0.110,
-    carcass=TireCarcass(belt_width_ratio=0.66, sidewall_bulge=0.08),
-    tread=TireTread(style="chevron", depth=0.006, count=18, angle_deg=26.0, land_ratio=0.58),
-    grooves=(TireGroove(center_offset=0.0, width=0.006, depth=0.003),),
-    sidewall=TireSidewall(style="rounded", bulge=0.06),
-    shoulder=TireShoulder(width=0.006, radius=0.004),
-)
-tire_mesh = mesh_from_geometry(tire, "tire")
-```
-
-```python
-barrel_hinge = BarrelHingeGeometry(
-    0.090,
-    leaf_width_a=0.024,
-    leaf_width_b=0.020,
-    leaf_thickness=0.0024,
-    pin_diameter=0.003,
-    holes_a=HingeHolePattern(style="round", count=3, diameter=0.0032, edge_margin=0.010),
-    holes_b=HingeHolePattern(style="slotted", count=2, slot_size=(0.007, 0.003), edge_margin=0.012),
-)
-barrel_hinge_mesh = mesh_from_geometry(barrel_hinge, "barrel_hinge")
-
-piano_hinge = PianoHingeGeometry(
-    0.180,
-    leaf_width_a=0.016,
-    leaf_width_b=0.014,
-    leaf_thickness=0.0018,
-    pin_diameter=0.0025,
-    knuckle_pitch=0.012,
-)
-piano_hinge_mesh = mesh_from_geometry(piano_hinge, "piano_hinge")
-```
-
-```python
-wall_vent = VentGrilleGeometry(
-    (0.18, 0.10),
-    frame=0.012,
-    face_thickness=0.004,
-    duct_depth=0.026,
-    duct_wall=0.003,
-    slat_pitch=0.018,
-    slat_width=0.009,
-    slat_angle_deg=35.0,
-    corner_radius=0.006,
-)
-mesh = mesh_from_geometry(wall_vent, "wall_vent")
-```
-
 ## See Also
 
+- `41_panels_and_grilles.md` for panel-face geometry helpers
+- `42_brackets_and_mounts.md` for semantic bracket helpers
+- `43_fans_and_rotors.md` for fan and blower geometry helpers
+- `44_knobs_and_controls.md` for control-surface geometry helpers
 - `45_wires.md` for rails, loops, tubes, and frames
 - `46_section_lofts.md` for the recommended loft API
+- `47_bezels_and_frames.md` for display, trim, and frame helpers
+- `48_wheels_and_tires.md` for wheel and tire geometry helpers
+- `49_hinges.md` for exposed hinge geometry helpers
 - `50_placement.md` for wrapping and mounting mesh-backed geometry
 
 ## Clarifications for agent usage
 
-- Angle arguments are radians and use the right-hand rule.
-- `KnobGrip.helix_angle_deg` and `KnobIndicator.angle_deg` use degrees.
-- `SlotPatternPanelGeometry.slot_angle_deg` uses degrees.
-- `FanRotorGeometry.blade_pitch_deg` and `FanRotorGeometry.blade_sweep_deg` use degrees.
-- `BlowerWheelGeometry.blade_sweep_deg` uses degrees.
-- `BarrelHingeGeometry.open_angle_deg` and `PianoHingeGeometry.open_angle_deg` use degrees.
-- `TireTread.angle_deg` uses degrees.
-- `VentGrilleGeometry.slat_angle_deg` also uses degrees.
-- `LoftGeometry` validates profiles through their XY projection. End caps only behave as expected when the first and last profiles are planar at constant `z`.
-- `ExtrudeGeometry(..., center=True)` produces a solid centered on the profile plane, spanning `z in [-height/2, +height/2]`. Use the `from_z0(...)` form when the intended span is `z in [0, height]`.
-- `rounded_rect_profile(...)` and `superellipse_profile(...)` return centered counter-clockwise XY loops.
-- `cut_opening_on_face(...)` does not subtract material from a closed solid by itself. It adds the interior throat wall geometry and works best when the target face is already open or when you perform the outer cut separately.
-- The side-loft helpers use explicit section tuples in the final part frame. For `superellipse_side_loft(...)`, `split_superellipse_side_loft(...)`, and `resample_side_sections(...)`, each section is `(y, z_min, z_max, width)` with the loft axis along `+Y` and each profile section lying in `XZ`.
+- Angle arguments are radians and use the right-hand rule unless a parameter
+  name explicitly ends in `_deg`.
+- `LoftGeometry` validates profiles through their XY projection. End caps only
+  behave as expected when the first and last profiles are planar at constant `z`.
+- `ExtrudeGeometry(..., center=True)` produces a solid centered on the profile
+  plane, spanning `z in [-height/2, +height/2]`. Use the `from_z0(...)` form
+  when the intended span is `z in [0, height]`.
+- `rounded_rect_profile(...)` and `superellipse_profile(...)` return centered
+  counter-clockwise XY loops.
+- `cut_opening_on_face(...)` does not subtract material from a closed solid by
+  itself. It adds the interior throat wall geometry and works best when the
+  target face is already open or when you perform the outer cut separately.
+- The side-loft helpers use explicit section tuples in the final part frame.
+  For `superellipse_side_loft(...)`, `split_superellipse_side_loft(...)`, and
+  `resample_side_sections(...)`, each section is `(y, z_min, z_max, width)`
+  with the loft axis along `+Y` and each profile section lying in `XZ`.

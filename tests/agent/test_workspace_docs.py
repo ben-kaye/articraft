@@ -20,6 +20,9 @@ def test_load_sdk_docs_bundle_mounts_router_and_default_refs() -> None:
     )
     assert "docs/sdk/references/assets.md" in bundle.files_by_path
     assert "docs/sdk/references/geometry/mesh-geometry.md" in bundle.files_by_path
+    assert "docs/sdk/references/geometry/panels-and-grilles.md" in bundle.files_by_path
+    assert "docs/sdk/references/geometry/knobs-and-controls.md" in bundle.files_by_path
+    assert "docs/sdk/references/geometry/wheels-and-tires.md" in bundle.files_by_path
     assert "docs/sdk/references/cadquery/overview.md" in bundle.files_by_path
     assert "docs/sdk/references/cadquery/gears.md" in bundle.files_by_path
 
@@ -62,7 +65,7 @@ def test_read_file_tool_reads_virtual_model_and_docs_paths(tmp_path: Path) -> No
         assert model_result.error is None
 
         docs_invocation = await tool.build(
-            {"path": "docs/sdk/references/quickstart.md", "offset": 1, "limit": 40}
+            {"path": "docs/sdk/references/quickstart.md", "offset": 1, "limit": 120}
         )
         docs_invocation.bind_virtual_workspace(workspace)
         docs_result = await docs_invocation.execute()
@@ -75,6 +78,7 @@ def test_read_file_tool_reads_virtual_model_and_docs_paths(tmp_path: Path) -> No
     assert model_output == "L2: beta\nL3: gamma"
     assert "Virtual Workspace" in docs_output
     assert "Import from `sdk` in `model.py`." in docs_output
+    assert "geometry/knobs-and-controls.md" in docs_output
 
 
 def test_read_file_tool_rejects_unknown_virtual_path(tmp_path: Path) -> None:

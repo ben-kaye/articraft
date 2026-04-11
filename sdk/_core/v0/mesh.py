@@ -2481,6 +2481,59 @@ class HingePinStyle:
     exposed_end: float = 0.0
 
 
+@dataclass(frozen=True)
+class VentGrilleSlats:
+    profile: Literal["flat", "airfoil", "boxed"] = "flat"
+    direction: Literal["down", "up"] = "down"
+    inset: float = 0.0
+    divider_count: int = 0
+    divider_width: float = 0.004
+
+
+@dataclass(frozen=True)
+class VentGrilleFrame:
+    style: Literal["flush", "beveled", "radiused"] = "flush"
+    depth: float = 0.0
+
+
+@dataclass(frozen=True)
+class VentGrilleMounts:
+    style: Literal["none", "holes"] = "none"
+    inset: float = 0.008
+    hole_diameter: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class VentGrilleSleeve:
+    style: Literal["none", "short", "full"] = "full"
+    depth: Optional[float] = None
+    wall: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class FanRotorBlade:
+    shape: Literal["straight", "scimitar", "broad", "narrow"] = "straight"
+    tip_pitch_deg: Optional[float] = None
+    camber: float = 0.0
+    tip_clearance: float = 0.0
+
+
+@dataclass(frozen=True)
+class FanRotorHub:
+    style: Literal["flat", "domed", "capped", "spinner"] = "domed"
+    rear_collar_height: Optional[float] = None
+    rear_collar_radius: Optional[float] = None
+    bore_diameter: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class FanRotorShroud:
+    thickness: float
+    depth: Optional[float] = None
+    clearance: float = 0.0
+    lip_depth: float = 0.0
+
+
 def _cq_polyline_wire(cq_module, points: Sequence[Vec2], plane: str = "XY"):
     return cq_module.Workplane(plane).polyline(points).close()
 
@@ -2779,6 +2832,11 @@ class VentGrilleGeometry(MeshGeometry):
         slat_angle_deg: float = 35.0,
         slat_thickness: Optional[float] = None,
         corner_radius: float = 0.0,
+        slats: Optional[VentGrilleSlats] = None,
+        frame_profile: Optional[VentGrilleFrame] = None,
+        mounts: Optional[VentGrilleMounts] = None,
+        sleeve: Optional[VentGrilleSleeve] = None,
+        center: bool = True,
     ):
         super().__init__()
         panel_w = float(panel_size[0])
@@ -2791,6 +2849,10 @@ class VentGrilleGeometry(MeshGeometry):
         slat_w = float(slat_width)
         slat_t = float(slat_thickness) if slat_thickness is not None else max(0.001, face_t * 0.35)
         corner_radius = max(0.0, float(corner_radius))
+        slats = slats or VentGrilleSlats()
+        frame_profile = frame_profile or VentGrilleFrame()
+        mounts = mounts or VentGrilleMounts()
+        sleeve = sleeve or VentGrilleSleeve()
 
         if panel_w <= 0 or panel_h <= 0:
             raise ValueError("panel_size must be positive")
@@ -2803,9 +2865,62 @@ class VentGrilleGeometry(MeshGeometry):
         if slat_pitch <= slat_w:
             raise ValueError("slat_pitch must be greater than slat_width")
 
+        slat_profile = str(slats.profile)
+        if slat_profile not in {"flat", "airfoil", "boxed"}:
+            raise ValueError("slats.profile must be one of flat, airfoil, or boxed")
+        slat_direction = str(slats.direction)
+        if slat_direction not in {"down", "up"}:
+            raise ValueError("slats.direction must be one of down or up")
+        slat_inset = float(slats.inset)
+        divider_count = int(slats.divider_count)
+        divider_width = float(slats.divider_width)
+        if slat_inset < 0.0:
+            raise ValueError("slats.inset must be non-negative")
+        if divider_count < 0:
+            raise ValueError("slats.divider_count must be non-negative")
+        if divider_count > 0 and divider_width <= 0.0:
+            raise ValueError("slats.divider_width must be positive when dividers are requested")
+
+        frame_style = str(frame_profile.style)
+        if frame_style not in {"flush", "beveled", "radiused"}:
+            raise ValueError("frame_profile.style must be one of flush, beveled, or radiused")
+        frame_depth = float(frame_profile.depth)
+        if frame_depth < 0.0:
+            raise ValueError("frame_profile.depth must be non-negative")
+
+        mount_style = str(mounts.style)
+        if mount_style not in {"none", "holes"}:
+            raise ValueError("mounts.style must be one of none or holes")
+        mount_inset = float(mounts.inset)
+        if mount_inset < 0.0:
+            raise ValueError("mounts.inset must be non-negative")
+        mount_hole_diameter = (
+            float(mounts.hole_diameter)
+            if mounts.hole_diameter is not None
+            else max(frame * 0.36, 0.0032)
+        )
+        if mount_style != "none" and mount_hole_diameter <= 0.0:
+            raise ValueError("mounts.hole_diameter must be positive when mounts are enabled")
+
+        sleeve_style = str(sleeve.style)
+        if sleeve_style not in {"none", "short", "full"}:
+            raise ValueError("sleeve.style must be one of none, short, or full")
+        sleeve_depth = float(sleeve.depth) if sleeve.depth is not None else duct_depth
+        sleeve_wall = float(sleeve.wall) if sleeve.wall is not None else duct_wall
+        if sleeve_style == "short" and sleeve.depth is None:
+            sleeve_depth = max(face_t * 1.8, duct_depth * 0.45)
+        if sleeve_style == "none":
+            sleeve_depth = 0.0
+        if sleeve_style != "none" and sleeve_depth <= 0.0:
+            raise ValueError("sleeve.depth must be positive when sleeve.style is not none")
+        if sleeve_style != "none" and sleeve_wall <= 0.0:
+            raise ValueError("sleeve.wall must be positive when sleeve.style is not none")
+
         opening_w = panel_w - 2.0 * frame
         opening_h = panel_h - 2.0 * frame
-        if opening_w <= 2.0 * duct_wall or opening_h <= 2.0 * duct_wall:
+        if sleeve_style != "none" and (
+            opening_w <= 2.0 * sleeve_wall or opening_h <= 2.0 * sleeve_wall
+        ):
             raise ValueError("frame/duct_wall leave no open sleeve area")
         y = -opening_h * 0.5 + slat_pitch * 0.5
         limit = opening_h * 0.5 - slat_pitch * 0.5
@@ -2815,12 +2930,42 @@ class VentGrilleGeometry(MeshGeometry):
             y += slat_pitch
         if not slat_rows:
             raise ValueError("No slat rows fit panel; increase panel height or reduce slat_pitch")
+
+        if divider_count > 0:
+            usable_divider_span = opening_w - divider_width
+            if usable_divider_span <= 0.0:
+                raise ValueError("slats.divider_width leaves no grille opening")
+            divider_pitch = usable_divider_span / float(divider_count + 1)
+            if divider_pitch <= divider_width:
+                raise ValueError("slats.divider_count/divider_width leave no usable openings")
+
+        mount_positions = [
+            (panel_w * 0.5 - mount_inset, panel_h * 0.5 - mount_inset),
+            (-panel_w * 0.5 + mount_inset, panel_h * 0.5 - mount_inset),
+            (panel_w * 0.5 - mount_inset, -panel_h * 0.5 + mount_inset),
+            (-panel_w * 0.5 + mount_inset, -panel_h * 0.5 + mount_inset),
+        ]
+        if mount_style != "none":
+            hole_radius = mount_hole_diameter * 0.5
+            if hole_radius >= frame * 0.80:
+                raise ValueError("mounts.hole_diameter is too large for the frame width")
+            for hole_x, hole_y in mount_positions:
+                if (
+                    abs(hole_x) + hole_radius > panel_w * 0.5
+                    or abs(hole_y) + hole_radius > panel_h * 0.5
+                ):
+                    raise ValueError("mounts.inset places holes outside the face")
+
         cq = require_cadquery(feature="VentGrilleGeometry")
         shape = cq.Workplane("XY").box(panel_w, panel_h, face_t)
         if corner_radius > 0.0:
             shape = shape.edges("|Z").fillet(
                 min(corner_radius, panel_w * 0.5 - frame, panel_h * 0.5 - frame)
             )
+        if frame_style == "beveled" and frame_depth > 1.0e-9:
+            shape = shape.edges(">Z").chamfer(min(frame_depth, frame * 0.7, face_t * 0.7))
+        elif frame_style == "radiused" and frame_depth > 1.0e-9:
+            shape = shape.edges(">Z").fillet(min(frame_depth, frame * 0.7, face_t * 0.48))
 
         shape = shape.cut(
             cq.Workplane("XY").box(
@@ -2830,27 +2975,85 @@ class VentGrilleGeometry(MeshGeometry):
             )
         )
 
-        duct_outer = cq.Workplane("XY").box(opening_w, opening_h, duct_depth)
-        duct_inner = cq.Workplane("XY").box(
-            opening_w - 2.0 * duct_wall,
-            opening_h - 2.0 * duct_wall,
-            duct_depth + face_t + 0.004,
-        )
-        duct_shell = duct_outer.cut(duct_inner).translate(
-            (0.0, 0.0, -face_t * 0.5 - duct_depth * 0.5 + min(face_t * 0.25, 0.001))
-        )
-        shape = shape.union(duct_shell)
+        if sleeve_style != "none":
+            duct_outer = cq.Workplane("XY").box(opening_w, opening_h, sleeve_depth)
+            duct_inner = cq.Workplane("XY").box(
+                opening_w - 2.0 * sleeve_wall,
+                opening_h - 2.0 * sleeve_wall,
+                sleeve_depth + face_t + 0.004,
+            )
+            duct_shell = duct_outer.cut(duct_inner).translate(
+                (0.0, 0.0, -face_t * 0.5 - sleeve_depth * 0.5 + min(face_t * 0.25, 0.001))
+            )
+            shape = shape.union(duct_shell)
 
         slat_embed = min(frame * 0.5, 0.002)
-        slat_chord = opening_w + 2.0 * slat_embed
-        slat_z = -face_t * 0.25
+        slat_clear_w = opening_w - max(0.0, divider_count * divider_width)
+        slat_chord = max(1.0e-4, slat_clear_w + 2.0 * slat_embed)
+        slat_z = -face_t * 0.25 - slat_inset
+        slat_angle = abs(float(slat_angle_deg)) * (-1.0 if slat_direction == "down" else 1.0)
+
+        def _make_slat():
+            if slat_profile == "flat":
+                return cq.Workplane("XY").box(slat_chord, slat_w, slat_t)
+            if slat_profile == "boxed":
+                box_t = max(slat_t * 1.35, slat_w * 0.42)
+                return cq.Workplane("XY").box(slat_chord, slat_w, box_t)
+
+            section_points = [
+                (-0.50 * slat_w, 0.00),
+                (-0.22 * slat_w, 0.56 * slat_t),
+                (0.08 * slat_w, 0.64 * slat_t),
+                (0.44 * slat_w, 0.10 * slat_t),
+                (0.34 * slat_w, -0.22 * slat_t),
+                (-0.10 * slat_w, -0.38 * slat_t),
+                (-0.44 * slat_w, -0.14 * slat_t),
+            ]
+            return (
+                cq.Workplane("YZ")
+                .workplane(offset=-slat_chord * 0.5)
+                .polyline(section_points)
+                .close()
+                .extrude(slat_chord)
+            )
+
         for row_y in slat_rows:
-            slat = cq.Workplane("XY").box(slat_chord, slat_w, slat_t)
-            slat = slat.rotate((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), -float(slat_angle_deg))
+            slat = _make_slat()
+            slat = slat.rotate((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), slat_angle)
             slat = slat.translate((0.0, row_y, slat_z))
             shape = shape.union(slat)
 
+        if divider_count > 0:
+            divider_positions = _centered_axis_positions(
+                opening_w * 0.5 - divider_width * 0.5,
+                (opening_w - divider_width) / float(divider_count + 1),
+            )
+            divider_positions = (
+                divider_positions[1:-1]
+                if len(divider_positions) > divider_count
+                else divider_positions
+            )
+            divider_depth = max(face_t * 0.90, slat_t * 1.10)
+            divider_span_y = opening_h + min(frame * 0.35, 0.003)
+            for x_pos in divider_positions[:divider_count]:
+                divider = cq.Workplane("XY").box(divider_width, divider_span_y, divider_depth)
+                divider = divider.translate((x_pos, 0.0, -face_t * 0.18))
+                shape = shape.union(divider)
+
+        if mount_style != "none":
+            hole_depth = face_t + max(sleeve_depth, 0.0) + 0.01
+            for hole_x, hole_y in mount_positions:
+                hole = (
+                    cq.Workplane("XY")
+                    .circle(mount_hole_diameter * 0.5)
+                    .extrude(hole_depth * 0.5, both=True)
+                    .translate((hole_x, hole_y, -max(sleeve_depth, 0.0) * 0.5))
+                )
+                shape = shape.cut(hole)
+
         geom = _mesh_geometry_from_cadquery_model(shape)
+        if not center:
+            geom = _mesh_geometry_shifted_to_z0(geom)
         self.vertices = [tuple(vertex) for vertex in geom.vertices]
         self.faces = [tuple(face) for face in geom.faces]
         _copy_manifold_provenance(geom, self)
@@ -3344,6 +3547,9 @@ class FanRotorGeometry(MeshGeometry):
         blade_sweep_deg: float = 20.0,
         blade_root_chord: Optional[float] = None,
         blade_tip_chord: Optional[float] = None,
+        blade: Optional[FanRotorBlade] = None,
+        hub: Optional[FanRotorHub] = None,
+        shroud: Optional[FanRotorShroud] = None,
         center: bool = True,
     ):
         super().__init__()
@@ -3353,6 +3559,8 @@ class FanRotorGeometry(MeshGeometry):
         blade_pitch_deg = float(blade_pitch_deg)
         blade_sweep_deg = float(blade_sweep_deg)
         blade_count = int(blade_count)
+        blade = blade or FanRotorBlade()
+        hub = hub or FanRotorHub()
 
         if outer_radius <= 0.0 or hub_radius <= 0.0 or thickness <= 0.0:
             raise ValueError("outer_radius, hub_radius, and thickness must be positive")
@@ -3381,6 +3589,77 @@ class FanRotorGeometry(MeshGeometry):
         if max(root_chord, tip_chord) >= outer_radius * 1.6:
             raise ValueError("blade chords are too large for the rotor envelope")
 
+        blade_shape = str(blade.shape)
+        if blade_shape not in {"straight", "scimitar", "broad", "narrow"}:
+            raise ValueError("blade.shape must be one of straight, scimitar, broad, or narrow")
+        hub_style = str(hub.style)
+        if hub_style not in {"flat", "domed", "capped", "spinner"}:
+            raise ValueError("hub.style must be one of flat, domed, capped, or spinner")
+
+        tip_pitch_deg = (
+            float(blade.tip_pitch_deg)
+            if blade.tip_pitch_deg is not None
+            else blade_pitch_deg * 0.56
+        )
+        if abs(tip_pitch_deg) >= 85.0:
+            raise ValueError("abs(blade.tip_pitch_deg) must be < 85")
+        camber = float(blade.camber)
+        if abs(camber) > 0.50:
+            raise ValueError("abs(blade.camber) must be <= 0.5")
+        tip_clearance = float(blade.tip_clearance)
+        if tip_clearance < 0.0:
+            raise ValueError("blade.tip_clearance must be non-negative")
+
+        shroud_thickness = 0.0
+        shroud_depth = 0.0
+        ring_inner_radius: Optional[float] = None
+        ring_outer_radius: Optional[float] = None
+        shroud_lip_depth = 0.0
+        if shroud is not None:
+            shroud_thickness = float(shroud.thickness)
+            shroud_depth = (
+                float(shroud.depth) if shroud.depth is not None else max(thickness * 0.80, 1.0e-4)
+            )
+            shroud_clearance = float(shroud.clearance)
+            shroud_lip_depth = float(shroud.lip_depth)
+            if shroud_thickness <= 0.0:
+                raise ValueError("shroud.thickness must be positive")
+            if shroud_depth <= 0.0:
+                raise ValueError("shroud.depth must be positive")
+            if shroud_clearance < 0.0:
+                raise ValueError("shroud.clearance must be non-negative")
+            if shroud_lip_depth < 0.0:
+                raise ValueError("shroud.lip_depth must be non-negative")
+            if tip_clearance > 1.0e-9:
+                raise ValueError("blade.tip_clearance cannot be used with shroud")
+            ring_outer_radius = outer_radius - shroud_clearance
+            ring_inner_radius = ring_outer_radius - shroud_thickness
+            if ring_outer_radius <= 0.0 or ring_inner_radius <= 0.0:
+                raise ValueError("shroud dimensions exceed the rotor envelope")
+            if ring_inner_radius <= hub_radius + max(thickness * 0.25, 1.0e-4):
+                raise ValueError("shroud leaves no usable blade span")
+
+        def lerp(a: float, b: float, t: float) -> float:
+            return float(a) + (float(b) - float(a)) * float(t)
+
+        def chord_scale(t: float) -> float:
+            if blade_shape == "straight":
+                return 1.00
+            if blade_shape == "scimitar":
+                return 1.08 - 0.16 * t + 0.05 * sin(pi * t)
+            if blade_shape == "broad":
+                return 1.05 + 0.10 * sin(pi * t) - 0.03 * t
+            return 0.92 - 0.12 * t
+
+        def sweep_factor(t: float) -> float:
+            if blade_shape == "straight":
+                return t
+            if blade_shape == "scimitar":
+                return min(1.25, 0.52 * t + 0.76 * t * t)
+            if blade_shape == "broad":
+                return min(1.08, 0.82 * t + 0.22 * sin(pi * t))
+            return 0.82 * t
+
         cq = require_cadquery(feature="FanRotorGeometry")
 
         def rotate_section_points(
@@ -3396,84 +3675,149 @@ class FanRotorGeometry(MeshGeometry):
             section_thickness: float,
             pitch_deg: float,
             sweep_y: float,
+            span_t: float,
         ) -> list[tuple[float, float]]:
-            half_t = max(section_thickness * 0.5, chord * 0.012)
-            raw = [
-                (-0.50 * chord, 0.00 * half_t),
-                (-0.28 * chord, 0.56 * half_t),
-                (-0.05 * chord, 0.76 * half_t),
-                (0.22 * chord, 0.54 * half_t),
-                (0.52 * chord, 0.10 * half_t),
-                (0.46 * chord, -0.24 * half_t),
-                (0.10 * chord, -0.58 * half_t),
-                (-0.24 * chord, -0.42 * half_t),
-            ]
+            half_t = max(section_thickness * 0.5, chord * 0.011)
+            camber_amplitude = camber * chord * 0.060
+            skew_gain = 0.0
+            if blade_shape == "scimitar":
+                skew_gain = chord * (0.05 + 0.08 * span_t)
+            elif blade_shape == "broad":
+                skew_gain = chord * 0.03 * span_t
+            elif blade_shape == "narrow":
+                skew_gain = -chord * 0.04 * span_t
+
+            upper: list[tuple[float, float]] = []
+            lower: list[tuple[float, float]] = []
+            for u in (0.00, 0.10, 0.24, 0.42, 0.62, 0.82, 1.00):
+                chord_pos = (u - 0.5) * chord
+                thickness_scale = max(0.12, sin(pi * u) ** 0.82)
+                thickness_z = half_t * thickness_scale
+                camber_z = camber_amplitude * sin(pi * u)
+                skew_y = skew_gain * sin(pi * u) * (u - 0.20)
+                upper.append((chord_pos + skew_y, camber_z + thickness_z))
+                lower.append((chord_pos + skew_y, camber_z - thickness_z * 0.90))
+
+            raw = upper + list(reversed(lower[1:-1]))
             rotated = rotate_section_points(raw, pitch_deg * pi / 180.0)
             return [(sweep_y + y, z) for (y, z) in rotated]
 
         hub_body_height = thickness * 0.36
-        rear_collar_height = thickness * 0.18
-        rear_collar_radius = hub_radius * 0.78
-        hub = cq.Workplane("XY").circle(hub_radius).extrude(hub_body_height * 0.5, both=True)
-        rear_collar = (
-            cq.Workplane("XY")
-            .circle(rear_collar_radius)
-            .extrude(rear_collar_height * 0.5, both=True)
-            .translate((0.0, 0.0, -thickness * 0.24))
+        rear_collar_height = (
+            float(hub.rear_collar_height)
+            if hub.rear_collar_height is not None
+            else thickness * 0.18
         )
-        front_cap = (
-            cq.Workplane("XY")
-            .workplane(offset=thickness * 0.08)
-            .circle(hub_radius * 0.90)
-            .workplane(offset=thickness * 0.42)
-            .circle(max(hub_radius * 0.28, 1.0e-4))
-            .loft(combine=True, ruled=False)
+        rear_collar_radius = (
+            float(hub.rear_collar_radius)
+            if hub.rear_collar_radius is not None
+            else hub_radius * 0.78
         )
+        if rear_collar_height < 0.0:
+            raise ValueError("hub.rear_collar_height must be non-negative")
+        if rear_collar_height > 1.0e-9 and rear_collar_radius <= 0.0:
+            raise ValueError("hub.rear_collar_radius must be positive when rear_collar_height > 0")
+        if rear_collar_radius >= hub_radius * 1.05:
+            raise ValueError("hub.rear_collar_radius must fit within the hub radius")
+
+        hub_body = cq.Workplane("XY").circle(hub_radius).extrude(hub_body_height * 0.5, both=True)
+        shape = hub_body
+        if rear_collar_height > 1.0e-9:
+            rear_collar = (
+                cq.Workplane("XY")
+                .circle(rear_collar_radius)
+                .extrude(rear_collar_height * 0.5, both=True)
+                .translate((0.0, 0.0, -thickness * 0.24))
+            )
+            shape = shape.union(rear_collar)
+
+        if hub_style == "capped":
+            front_cap = (
+                cq.Workplane("XY")
+                .circle(hub_radius * 0.82)
+                .extrude(max(thickness * 0.18, 1.0e-4))
+                .translate((0.0, 0.0, hub_body_height * 0.5))
+            )
+            shape = shape.union(front_cap)
+        elif hub_style in {"domed", "spinner"}:
+            front_cap_height = thickness * (0.34 if hub_style == "domed" else 0.52)
+            front_top_radius = hub_radius * (0.40 if hub_style == "domed" else 0.05)
+            front_cap = (
+                cq.Workplane("XY")
+                .workplane(offset=hub_body_height * 0.5)
+                .circle(hub_radius * 0.92)
+                .workplane(offset=front_cap_height)
+                .circle(max(front_top_radius, 1.0e-4))
+                .loft(combine=True, ruled=False)
+            )
+            shape = shape.union(front_cap)
+
+        if hub.bore_diameter is not None:
+            bore_diameter = float(hub.bore_diameter)
+            if bore_diameter <= 0.0:
+                raise ValueError("hub.bore_diameter must be positive")
+            bore_radius = bore_diameter * 0.5
+            bore_limit = min(
+                hub_radius, rear_collar_radius if rear_collar_height > 0.0 else hub_radius
+            )
+            if bore_radius >= bore_limit * 0.92:
+                raise ValueError("hub.bore_diameter is too large for the hub")
+            bore = (
+                cq.Workplane("XY")
+                .circle(bore_radius)
+                .extrude(
+                    max(thickness * 1.8, hub_body_height + rear_collar_height + shroud_depth),
+                    both=True,
+                )
+            )
+            shape = shape.cut(bore)
 
         root_radius = hub_radius * 0.82
-        tip_radius = outer_radius * 0.96
-        stations = [
-            root_radius,
-            root_radius + radial_span * 0.22,
-            root_radius + radial_span * 0.52,
-            tip_radius,
-        ]
+        if shroud is not None:
+            assert ring_inner_radius is not None
+            tip_bridge = min(shroud_thickness * 0.18, max(thickness * 0.05, 5.0e-4))
+            tip_radius = ring_inner_radius + tip_bridge
+        else:
+            tip_radius = outer_radius - tip_clearance
+        if tip_radius <= root_radius + max(thickness * 0.22, 1.0e-4):
+            raise ValueError("blade.tip_clearance leaves no usable blade span")
+
+        blade_span = tip_radius - root_radius
+        station_fracs = (0.00, 0.18, 0.42, 0.70, 1.00)
+        stations = [root_radius + blade_span * frac for frac in station_fracs]
         section_chords = [
-            root_chord,
-            root_chord + (tip_chord - root_chord) * 0.28,
-            root_chord + (tip_chord - root_chord) * 0.70,
-            tip_chord,
+            lerp(root_chord, tip_chord, frac) * chord_scale(frac) for frac in station_fracs
         ]
+        root_pitch_deg = blade_pitch_deg * 1.16
         section_pitches = [
-            blade_pitch_deg * 1.18,
-            blade_pitch_deg,
-            blade_pitch_deg * 0.78,
-            blade_pitch_deg * 0.56,
+            lerp(root_pitch_deg, tip_pitch_deg, frac**0.82) for frac in station_fracs
         ]
+        root_section_t = max(thickness * 0.18, root_chord * 0.080)
+        tip_section_t = max(thickness * 0.08, tip_chord * 0.048)
+        thickness_shape_scale = {
+            "straight": 1.00,
+            "scimitar": 0.94,
+            "broad": 1.08,
+            "narrow": 0.88,
+        }[blade_shape]
         section_thicknesses = [
-            max(thickness * 0.16, root_chord * 0.080),
-            max(thickness * 0.13, root_chord * 0.066),
-            max(thickness * 0.10, tip_chord * 0.060),
-            max(thickness * 0.08, tip_chord * 0.050),
+            lerp(root_section_t, tip_section_t, frac**0.78) * thickness_shape_scale
+            for frac in station_fracs
         ]
-        sweep_amount = radial_span * sin(blade_sweep_deg * pi / 180.0) * 0.32
-        section_sweeps = [
-            0.0,
-            sweep_amount * 0.26,
-            sweep_amount * 0.62,
-            sweep_amount,
-        ]
+        sweep_amount = blade_span * sin(blade_sweep_deg * pi / 180.0) * 0.34
+        section_sweeps = [sweep_amount * sweep_factor(frac) for frac in station_fracs]
 
         blade_wp = None
         previous_station = 0.0
-        for station, chord, section_t, pitch_deg, sweep_y in zip(
+        for station, chord, section_t, pitch_deg, sweep_y, span_t in zip(
             stations,
             section_chords,
             section_thicknesses,
             section_pitches,
             section_sweeps,
+            station_fracs,
         ):
-            section = blade_section_points(chord, section_t, pitch_deg, sweep_y)
+            section = blade_section_points(chord, section_t, pitch_deg, sweep_y, span_t)
             if blade_wp is None:
                 blade_wp = cq.Workplane("YZ").workplane(offset=station).polyline(section).close()
             else:
@@ -3482,18 +3826,37 @@ class FanRotorGeometry(MeshGeometry):
                 )
             previous_station = station
         assert blade_wp is not None
-        blade = blade_wp.loft(combine=True, ruled=False)
+        blade_solid = blade_wp.loft(combine=True, ruled=False)
 
-        shape = hub.union(rear_collar).union(front_cap)
         angle_step = 360.0 / float(blade_count)
         for blade_index in range(blade_count):
             shape = shape.union(
-                blade.rotate(
+                blade_solid.rotate(
                     (0.0, 0.0, 0.0),
                     (0.0, 0.0, 1.0),
                     angle_step * float(blade_index),
                 )
             )
+
+        if shroud is not None:
+            assert ring_outer_radius is not None
+            assert ring_inner_radius is not None
+            tip_ring = (
+                cq.Workplane("XY")
+                .circle(ring_outer_radius)
+                .circle(ring_inner_radius)
+                .extrude(shroud_depth * 0.5, both=True)
+            )
+            shape = shape.union(tip_ring)
+            if shroud_lip_depth > 1.0e-9:
+                front_lip = (
+                    cq.Workplane("XY")
+                    .workplane(offset=shroud_depth * 0.5)
+                    .circle(ring_outer_radius)
+                    .circle(ring_inner_radius)
+                    .extrude(shroud_lip_depth)
+                )
+                shape = shape.union(front_lip)
 
         geom = _mesh_geometry_from_cadquery_model(shape)
         if not center:

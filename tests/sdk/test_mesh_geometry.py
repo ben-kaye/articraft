@@ -101,6 +101,30 @@ def _build_slot_pattern_panel_geometry(*, center: bool = True) -> sdk.MeshGeomet
     )
 
 
+def _build_vent_grille_geometry(*, center: bool = True) -> sdk.MeshGeometry:
+    return sdk.VentGrilleGeometry(
+        (0.18, 0.10),
+        frame=0.012,
+        face_thickness=0.004,
+        duct_depth=0.026,
+        duct_wall=0.003,
+        slat_pitch=0.018,
+        slat_width=0.009,
+        slat_angle_deg=30.0,
+        corner_radius=0.006,
+        slats=sdk.VentGrilleSlats(
+            profile="airfoil",
+            direction="down",
+            divider_count=2,
+            divider_width=0.004,
+        ),
+        frame_profile=sdk.VentGrilleFrame(style="beveled", depth=0.0012),
+        mounts=sdk.VentGrilleMounts(style="holes", inset=0.010, hole_diameter=0.0032),
+        sleeve=sdk.VentGrilleSleeve(style="full"),
+        center=center,
+    )
+
+
 def _build_clevis_bracket_geometry(*, center: bool = True) -> sdk.MeshGeometry:
     return sdk.ClevisBracketGeometry(
         (0.08, 0.04, 0.06),
@@ -141,10 +165,25 @@ def _build_fan_rotor_geometry(*, center: bool = True) -> sdk.MeshGeometry:
     return sdk.FanRotorGeometry(
         0.070,
         0.020,
-        5,
+        7,
         thickness=0.010,
-        blade_pitch_deg=24.0,
-        blade_sweep_deg=14.0,
+        blade_pitch_deg=31.0,
+        blade_sweep_deg=24.0,
+        blade=sdk.FanRotorBlade(
+            shape="scimitar",
+            tip_pitch_deg=12.0,
+            camber=0.16,
+        ),
+        hub=sdk.FanRotorHub(
+            style="spinner",
+            bore_diameter=0.005,
+        ),
+        shroud=sdk.FanRotorShroud(
+            thickness=0.004,
+            depth=0.012,
+            clearance=0.0015,
+            lip_depth=0.002,
+        ),
         center=center,
     )
 
@@ -859,6 +898,18 @@ def test_vent_grille_geometry_builds_with_expected_bounds(tmp_path: Path) -> Non
     assert maxs[2] > 0.0
 
 
+def test_vent_grille_geometry_supports_custom_profiles_mounts_and_dividers(tmp_path: Path) -> None:
+    exported = _assert_clean_export(tmp_path, _build_vent_grille_geometry(), "vent_grille_custom")
+
+    mins, maxs = exported.bounds
+    assert mins[0] == pytest.approx(-0.09, abs=1e-3)
+    assert maxs[0] == pytest.approx(0.09, abs=1e-3)
+    assert mins[1] == pytest.approx(-0.05, abs=1e-3)
+    assert maxs[1] == pytest.approx(0.05, abs=1e-3)
+    assert mins[2] <= -0.027
+    assert maxs[2] >= 0.001
+
+
 def test_vent_grille_geometry_requires_at_least_one_slat_row() -> None:
     with pytest.raises(ValueError, match="No slat rows fit panel"):
         sdk.VentGrilleGeometry(
@@ -869,9 +920,23 @@ def test_vent_grille_geometry_requires_at_least_one_slat_row() -> None:
         )
 
 
+def test_vent_grille_geometry_supports_center_false_z0_mount_frame() -> None:
+    geometry = _build_vent_grille_geometry(center=False)
+    mins, _maxs = _bounds(geometry)
+    assert mins[2] == pytest.approx(0.0, abs=1e-6)
+
+
 @pytest.mark.parametrize(
     ("builder", "logical_name", "expected_mins", "expected_maxs", "tol"),
     [
+        pytest.param(
+            _build_vent_grille_geometry,
+            "vent_grille",
+            (-0.090, -0.050, -0.027),
+            (0.090, 0.050, 0.002),
+            2.0e-3,
+            id="vent-grille",
+        ),
         pytest.param(
             _build_perforated_panel_geometry,
             "perforated_panel",
@@ -915,9 +980,9 @@ def test_vent_grille_geometry_requires_at_least_one_slat_row() -> None:
         pytest.param(
             _build_fan_rotor_geometry,
             "fan_rotor",
-            (-0.060, -0.065, -0.0038),
-            (0.067, 0.067, 0.0050),
-            2.5e-3,
+            (-0.0685, -0.0685, -0.0060),
+            (0.0685, 0.0685, 0.0080),
+            3.0e-3,
             id="fan-rotor",
         ),
         pytest.param(
@@ -1006,6 +1071,7 @@ def test_new_mesh_geometry_helpers_export_clean_single_body_meshes(
         ),
         pytest.param(_build_knob_geometry, "KnobGeometry", id="knob"),
         pytest.param(_build_bezel_geometry, "BezelGeometry", id="bezel"),
+        pytest.param(_build_fan_rotor_geometry, "FanRotorGeometry", id="fan-rotor"),
         pytest.param(_build_barrel_hinge_geometry, "BarrelHingeGeometry", id="barrel-hinge"),
         pytest.param(_build_piano_hinge_geometry, "PianoHingeGeometry", id="piano-hinge"),
         pytest.param(_build_blower_wheel_geometry, "BlowerWheelGeometry", id="blower-wheel"),
@@ -1098,6 +1164,30 @@ def test_new_rotational_geometry_helpers_support_center_false_x0_mount_frames(
             ),
             "leave no usable slot area",
             id="slot-no-rows",
+        ),
+        pytest.param(
+            lambda: sdk.VentGrilleGeometry(
+                (0.18, 0.10),
+                mounts=sdk.VentGrilleMounts(style="holes", hole_diameter=0.030),
+            ),
+            "mounts.hole_diameter",
+            id="vent-hole-too-large",
+        ),
+        pytest.param(
+            lambda: sdk.VentGrilleGeometry(
+                (0.18, 0.10),
+                slats=sdk.VentGrilleSlats(divider_count=8, divider_width=0.020),
+            ),
+            "leave no usable openings",
+            id="vent-dividers-too-dense",
+        ),
+        pytest.param(
+            lambda: sdk.VentGrilleGeometry(
+                (0.18, 0.10),
+                sleeve=sdk.VentGrilleSleeve(style="short", depth=-0.01),
+            ),
+            "sleeve.depth",
+            id="vent-invalid-sleeve-depth",
         ),
     ],
 )
@@ -1232,6 +1322,40 @@ def test_new_bracket_geometry_helpers_validate_invalid_inputs(builder, message: 
             lambda: sdk.FanRotorGeometry(0.07, 0.02, 5, thickness=0.01, blade_root_chord=0.20),
             "blade chords",
             id="fan-invalid-chord",
+        ),
+        pytest.param(
+            lambda: sdk.FanRotorGeometry(
+                0.07,
+                0.02,
+                5,
+                thickness=0.01,
+                hub=sdk.FanRotorHub(style="domed", bore_diameter=0.04),
+            ),
+            "hub.bore_diameter",
+            id="fan-invalid-bore",
+        ),
+        pytest.param(
+            lambda: sdk.FanRotorGeometry(
+                0.07,
+                0.02,
+                5,
+                thickness=0.01,
+                blade=sdk.FanRotorBlade(shape="scimitar", tip_clearance=0.003),
+                shroud=sdk.FanRotorShroud(thickness=0.004),
+            ),
+            "tip_clearance cannot be used with shroud",
+            id="fan-invalid-tip-clearance-with-shroud",
+        ),
+        pytest.param(
+            lambda: sdk.FanRotorGeometry(
+                0.07,
+                0.02,
+                5,
+                thickness=0.01,
+                blade=sdk.FanRotorBlade(tip_pitch_deg=86.0),
+            ),
+            "tip_pitch_deg",
+            id="fan-invalid-tip-pitch",
         ),
         pytest.param(
             lambda: sdk.BlowerWheelGeometry(0.08, 0.04, 0.05, 1, blade_thickness=0.004),
@@ -1618,6 +1742,13 @@ def test_sdk_and_v0_expose_new_mesh_geometry_helpers(name: str) -> None:
         "WheelBore",
         "WheelFlange",
         "BoltPattern",
+        "FanRotorBlade",
+        "FanRotorHub",
+        "FanRotorShroud",
+        "VentGrilleSlats",
+        "VentGrilleFrame",
+        "VentGrilleMounts",
+        "VentGrilleSleeve",
         "TireCarcass",
         "TireTread",
         "TireGroove",

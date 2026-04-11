@@ -1,4 +1,4 @@
-# Wires, Tubes, and Frames (`sdk.mesh`)
+# Wires, Tubes, and Frames
 
 ## Purpose
 

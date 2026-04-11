@@ -60,9 +60,22 @@ Always available in `docs/sdk/references/`:
 Additional geometry references:
 
 - `geometry/mesh-geometry.md`: mesh generation flow, managed meshes, and mesh-based
-  geometry helpers.
+  low-level geometry helpers.
+- `geometry/panels-and-grilles.md`: perforated panels, slotted panels, and full vent
+  grilles.
+- `geometry/brackets-and-mounts.md`: clevises, forks, and yoke-style support members.
+- `geometry/fans-and-rotors.md`: axial fan rotors and blower wheels.
+- `geometry/knobs-and-controls.md`: knobs, dial caps, grip details, and shaft bores.
 - `geometry/wires.md`: wire and path construction helpers.
 - `geometry/section-lofts.md`: section lofts, repairs, and section-driven geometry.
+- `geometry/bezels-and-frames.md`: bezels, framed openings, recesses, and trim
+  surrounds.
+- `geometry/wheels-and-tires.md`: wheel structure, tire carcasses, tread, and sidewalls.
+- `geometry/hinges.md`: exposed barrel and piano hinge helpers.
+
+If a prompt clearly names a semantic part family such as a knob, bezel, wheel,
+tire, vent grille, bracket, or hinge, read that focused geometry page before
+falling back to the low-level mesh page.
 
 Read the exact document you need. Do not guess helper names or signatures from memory.
 
@@ -225,5 +238,7 @@ export consumer needs explicit mass properties.
 - If you need testing details, read `docs/sdk/references/testing.md`.
 - If you need lower-level CadQuery geometry, read the relevant
   `docs/sdk/references/cadquery/*.md` document.
-- If you need mesh, wire, or loft helpers, read the relevant
+- If you need semantic geometry families, read the relevant
+  `docs/sdk/references/geometry/*.md` family page first.
+- If you need low-level mesh, wire, or loft helpers, read the relevant
   `docs/sdk/references/geometry/*.md` document.
