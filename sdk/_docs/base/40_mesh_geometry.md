@@ -293,7 +293,11 @@ cut_opening_on_face(
 ) -> MeshGeometry
 ```
 
-- Cuts an opening into the chosen box-like face of an existing mesh shell.
+- Builds the internal opening throat on the chosen box-like face of an
+  existing mesh shell.
+- This helper does not perform boolean subtraction.
+- It adds the internal side walls for an opening throat and works best when the
+  target face is already open, as in a shell-like model.
 - `face`: one of `"+x"`, `"-x"`, `"+y"`, `"-y"`, `"+z"`, `"-z"`.
 
 ## Exporting to `sdk.Mesh`
