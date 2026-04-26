@@ -1,17 +1,24 @@
-import { useState, type JSX } from "react";
+import { lazy, Suspense, useState, type JSX } from "react";
 
 import type { InspectorTab } from "@/lib/types";
 import { useViewer, useViewerDispatch } from "@/lib/viewer-context";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InspectPanel } from "@/components/inspector/InspectPanel";
-import { MetadataPanel } from "@/components/inspector/MetadataPanel";
-import {
-  RenderOptionsPanel,
-  defaultRenderOptions,
-  type RenderOptions,
-} from "@/components/inspector/RenderOptionsPanel";
-import { CodePanel } from "@/components/inspector/CodePanel";
+import { RenderOptionsPanel } from "@/components/inspector/RenderOptionsPanel";
+import { defaultRenderOptions, type RenderOptions } from "@/components/viewer3d/useRenderOptions";
 import type { UrdfJoint } from "@/components/inspector/JointSlider";
+
+const CodePanel = lazy(() =>
+  import("@/components/inspector/CodePanel").then((module) => ({
+    default: module.CodePanel,
+  })),
+);
+
+const MetadataPanel = lazy(() =>
+  import("@/components/inspector/MetadataPanel").then((module) => ({
+    default: module.MetadataPanel,
+  })),
+);
 
 type InspectorTabsProps = {
   urdfSpec?: { joints: UrdfJoint[] } | null;
@@ -27,6 +34,14 @@ type InspectorTabsProps = {
     compileCommand: string | null;
   } | null;
 };
+
+function InspectorTabFallback(): JSX.Element {
+  return (
+    <div className="flex h-32 items-center justify-center">
+      <p className="text-[10px] text-[var(--text-quaternary)]">Loading...</p>
+    </div>
+  );
+}
 
 export function InspectorTabs({
   urdfSpec = null,
@@ -91,11 +106,19 @@ export function InspectorTabs({
       </TabsContent>
 
       <TabsContent value="code" className="min-h-0 flex-1 overflow-hidden px-3 pb-3 pt-3">
-        <CodePanel />
+        {selectedInspectorTab === "code" ? (
+          <Suspense fallback={<InspectorTabFallback />}>
+            <CodePanel />
+          </Suspense>
+        ) : null}
       </TabsContent>
 
       <TabsContent value="metadata" className="min-h-0 flex-1 overflow-hidden px-3 pb-3 pt-3">
-        <MetadataPanel />
+        {selectedInspectorTab === "metadata" ? (
+          <Suspense fallback={<InspectorTabFallback />}>
+            <MetadataPanel />
+          </Suspense>
+        ) : null}
       </TabsContent>
 
       {!selection && (

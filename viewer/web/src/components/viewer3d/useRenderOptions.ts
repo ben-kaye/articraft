@@ -27,7 +27,7 @@ const RENDER_OPTION_KEYS: Array<keyof RenderOptions> = [
   'showSurfaceSamples',
 ];
 
-const DEFAULT_OPTIONS: RenderOptions = {
+export const defaultRenderOptions: RenderOptions = {
   showEdges: true,
   showGrid: true,
   showCollisions: false,
@@ -38,7 +38,7 @@ const DEFAULT_OPTIONS: RenderOptions = {
   showJointOverlay: false,
 };
 
-const DEFAULT_RENDER_QUERY_VALUE = serializeOptions(DEFAULT_OPTIONS);
+const DEFAULT_RENDER_QUERY_VALUE = serializeOptions(defaultRenderOptions);
 
 export interface RenderOptionsState {
   options: RenderOptions;
@@ -50,17 +50,17 @@ export interface RenderOptionsState {
  * Read persisted render options from localStorage, falling back to defaults.
  */
 function loadOptions(): RenderOptions {
-  let options = { ...DEFAULT_OPTIONS };
+  let options = { ...defaultRenderOptions };
 
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<RenderOptions> & { schemaVersion?: number };
       if (parsed.schemaVersion === STORAGE_SCHEMA_VERSION) {
-        options = { ...DEFAULT_OPTIONS, ...parsed };
+        options = { ...defaultRenderOptions, ...parsed };
       } else {
         options = {
-          ...DEFAULT_OPTIONS,
+          ...defaultRenderOptions,
           ...parsed,
           showSegmentColors: false,
           doubleSided: true,
@@ -97,7 +97,7 @@ function parseOptions(value: string | null): RenderOptions | null {
     return null;
   }
 
-  const nextOptions = { ...DEFAULT_OPTIONS };
+  const nextOptions = { ...defaultRenderOptions };
   const keys =
     value.length === RENDER_OPTION_KEYS.length
       ? RENDER_OPTION_KEYS
@@ -163,7 +163,7 @@ export function useRenderOptions(): RenderOptionsState {
   );
 
   const resetOptions = useCallback(() => {
-    setOptions({ ...DEFAULT_OPTIONS });
+    setOptions({ ...defaultRenderOptions });
   }, []);
 
   return { options, setOption, resetOptions };

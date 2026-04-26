@@ -1,9 +1,5 @@
 import { type JSX, type ComponentPropsWithoutRef } from "react";
 import Markdown from "react-markdown";
-import { LightAsync as SyntaxHighlighter } from "react-syntax-highlighter";
-import json from "react-syntax-highlighter/dist/esm/languages/hljs/json";
-import python from "react-syntax-highlighter/dist/esm/languages/hljs/python";
-import { atomOneLight } from "react-syntax-highlighter/dist/esm/styles/hljs";
 import remarkGfm from "remark-gfm";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,18 +16,11 @@ import {
   formatCount,
   fullMessageText,
 } from "./trajectory-types";
-
-SyntaxHighlighter.registerLanguage("json", json);
-SyntaxHighlighter.registerLanguage("python", python);
-
-const codeTheme = {
-  ...atomOneLight,
-  hljs: {
-    ...atomOneLight.hljs,
-    background: "transparent",
-    color: "#1f2937",
-  },
-};
+import {
+  codeTheme,
+  normalizeHighlightLanguage,
+  SyntaxHighlighter,
+} from "@/components/inspector/syntax-highlighting";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -449,11 +438,12 @@ function MarkdownBlock({
           }: ComponentPropsWithoutRef<"code"> & { inline?: boolean }) => {
             const langMatch = /language-(\w+)/.exec(className || "");
             const codeStr = String(children).replace(/\n$/, "");
-            if (langMatch) {
+            const language = normalizeHighlightLanguage(langMatch?.[1]);
+            if (language) {
               return (
                 <div className="my-2 overflow-auto rounded bg-[var(--surface-1)]">
                   <SyntaxHighlighter
-                    language={langMatch[1]}
+                    language={language}
                     style={codeTheme}
                     wrapLongLines
                     customStyle={{

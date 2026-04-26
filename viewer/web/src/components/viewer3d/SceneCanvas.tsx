@@ -6,7 +6,7 @@ import { useUrdfLoader } from './useUrdfLoader';
 import { createEdgeLines } from './materials';
 import { attachJointOverlay, disposeOverlayObjects } from './joint-overlay';
 import { createSurfaceSamplePoints, disposeSurfaceSamplePoints } from './surface-sampling';
-import type { RenderOptions } from '@/components/inspector/RenderOptionsPanel';
+import type { RenderOptions } from '@/components/viewer3d/useRenderOptions';
 import { describeLinkVisuals, type UrdfSpec } from './urdf-parser';
 
 const ROBOT_GROUP_NAME = '__articraft_robot__';

@@ -1,7 +1,6 @@
-import { useMemo, useState, type JSX } from "react";
+import { lazy, Suspense, useMemo, useState, type JSX } from "react";
 import { Maximize2 } from "lucide-react";
 
-import { TrajectoryInspectorModal } from "./TrajectoryInspectorModal";
 import {
   asRecord,
   formatUsd,
@@ -9,6 +8,12 @@ import {
   overallTraceTotals,
   parseEnrichedTurns,
 } from "./trajectory-types";
+
+const TrajectoryInspectorModal = lazy(() =>
+  import("./TrajectoryInspectorModal").then((module) => ({
+    default: module.TrajectoryInspectorModal,
+  })),
+);
 
 type TracePanelProps = {
   cost: Record<string, unknown> | null;
@@ -62,12 +67,16 @@ export function TracePanel({ cost, traceText }: TracePanelProps): JSX.Element | 
         View full trajectory
       </button>
 
-      <TrajectoryInspectorModal
-        open={inspectorOpen}
-        onOpenChange={setInspectorOpen}
-        cost={cost}
-        traceText={traceText}
-      />
+      {inspectorOpen ? (
+        <Suspense fallback={null}>
+          <TrajectoryInspectorModal
+            open={inspectorOpen}
+            onOpenChange={setInspectorOpen}
+            cost={cost}
+            traceText={traceText}
+          />
+        </Suspense>
+      ) : null}
     </section>
   );
 }

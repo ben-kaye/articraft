@@ -14,7 +14,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { Inspector } from "@/components/layout/Inspector";
 import { ViewportPanel } from "@/components/layout/ViewportPanel";
 import { InspectorTabs } from "@/components/inspector/InspectorTabs";
-import type { RenderOptions as InspectorRenderOptions } from "@/components/inspector/RenderOptionsPanel";
+import type { RenderOptions as InspectorRenderOptions } from "@/components/viewer3d/useRenderOptions";
 import { RecordBrowser } from "@/components/browser/RecordBrowser";
 import { Button } from "@/components/ui/button";
 import { useRenderOptions } from "@/components/viewer3d/useRenderOptions";

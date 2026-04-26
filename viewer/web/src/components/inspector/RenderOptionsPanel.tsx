@@ -4,29 +4,8 @@ import { AlertTriangle, Check, Copy } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
+import type { RenderOptions } from "@/components/viewer3d/useRenderOptions";
 import { copyTextToClipboard } from "@/lib/record-path";
-
-export type RenderOptions = {
-  showEdges: boolean;
-  showGrid: boolean;
-  showCollisions: boolean;
-  showSegmentColors: boolean;
-  showSurfaceSamples: boolean;
-  doubleSided: boolean;
-  autoAnimate: boolean;
-  showJointOverlay: boolean;
-};
-
-export const defaultRenderOptions: RenderOptions = {
-  showEdges: true,
-  showGrid: true,
-  showCollisions: false,
-  showSegmentColors: false,
-  showSurfaceSamples: false,
-  doubleSided: true,
-  autoAnimate: false,
-  showJointOverlay: false,
-};
 
 type RenderOptionsPanelProps = {
   options: RenderOptions;
