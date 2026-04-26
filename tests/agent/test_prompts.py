@@ -8,7 +8,6 @@ from agent.prompts import (
     OPENAI_DESIGNER_PROMPT_NAME,
     load_prompt_section_text,
     load_system_prompt_text,
-    provider_system_prompt_suffix,
     resolve_system_prompt_path,
 )
 from agent.tools import (
@@ -44,22 +43,18 @@ def test_system_prompt_resolution_variants() -> None:
     assert gemini_resolved.name == GEMINI_DESIGNER_PROMPT_NAME
 
 
-def test_provider_system_prompt_suffixes() -> None:
-    assert provider_system_prompt_suffix("openai") == ""
-    assert provider_system_prompt_suffix("gemini") == ""
+def test_first_turn_runtime_guidance_is_shared() -> None:
+    expected = (
+        "<runtime_task_guidance>\n"
+        "- Read the current `model.py` before editing.\n"
+        "- Make one small coherent change at a time.\n"
+        "- Run `compile_model` to check your latest revision.\n"
+        "- If compile is clean and you cannot name one specific remaining defect, conclude.\n"
+        "</runtime_task_guidance>"
+    )
 
-
-def test_first_turn_runtime_guidance_is_provider_specific() -> None:
-    openai_guidance = build_first_turn_runtime_guidance("openai")
-    gemini_guidance = build_first_turn_runtime_guidance("gemini")
-
-    assert "read_file" in openai_guidance
-    assert "apply_patch" in openai_guidance
-    assert "docs/..." in openai_guidance
-    assert "read_file" in gemini_guidance
-    assert "replace" in gemini_guidance
-    assert "write_file" in gemini_guidance
-    assert "multiple independent read-only lookups" not in gemini_guidance
+    assert build_first_turn_runtime_guidance("openai") == expected
+    assert build_first_turn_runtime_guidance("gemini") == expected
 
 
 def test_prepend_runtime_guidance_supports_text_only_content() -> None:
@@ -71,6 +66,10 @@ def test_prepend_runtime_guidance_supports_text_only_content() -> None:
     assert isinstance(content, str)
     assert content.startswith("<runtime_task_guidance>")
     assert content.endswith("make a hinge")
+
+
+def test_prepend_runtime_guidance_returns_original_content_when_empty() -> None:
+    assert prepend_runtime_guidance("make a hinge", runtime_guidance_text="") == "make a hinge"
 
 
 def test_build_initial_user_content_can_append_runtime_guidance_for_multimodal(

@@ -118,11 +118,6 @@ def load_sdk_docs_reference(
     )
 
 
-def provider_system_prompt_suffix(provider: str, *, sdk_package: str = "sdk") -> str:
-    normalize_sdk_package(sdk_package)
-    return ""
-
-
 @dataclass(slots=True, frozen=True)
 class PromptFiles:
     """Resolved prompt-related files for a run."""

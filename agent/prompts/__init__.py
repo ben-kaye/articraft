@@ -16,7 +16,6 @@ from .loader import (
     load_system_prompt_text,
     normalize_sdk_docs_mode,
     normalize_sdk_package,
-    provider_system_prompt_suffix,
     resolve_system_prompt_path,
 )
 
@@ -37,5 +36,4 @@ __all__ = [
     "load_sdk_docs_reference",
     "resolve_system_prompt_path",
     "load_system_prompt_text",
-    "provider_system_prompt_suffix",
 ]

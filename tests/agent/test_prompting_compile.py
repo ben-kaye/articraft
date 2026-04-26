@@ -7,7 +7,6 @@ from agent.prompts.spec import iter_prompt_variants
 
 REQUIRED_TAGS = (
     "<role>",
-    "<process>",
     "<tools>",
     "<modeling>",
     "<link_naming>",
@@ -26,7 +25,7 @@ def _opening_tag_count(text: str) -> int:
 def _assert_shared_contract(text: str) -> None:
     for tag in REQUIRED_TAGS:
         assert tag in text
-    assert _opening_tag_count(text) >= 5
+    assert _opening_tag_count(text) >= 4
     assert "<compile_signals>" in text
 
     # Three hard requirements
@@ -36,27 +35,30 @@ def _assert_shared_contract(text: str) -> None:
     assert "small local hidden overlap is acceptable" in text
     assert "Keep intentional overlap local and element-scoped when possible" in text
 
-    # Shared process stub stays compact
-    assert "Start with a short context pass:" in text
-    assert "preloaded SDK quickstart/router" in text
-    assert "Read only the specific `docs/` references needed for the next change" in text
-    assert "read the full file once, not a small slice" in text
-    assert "Do not re-read it if it is already in context." in text
-    assert "Prefer evidence over introspection." in text
-    assert "Start with the smallest coherent backbone or subassembly" in text
-    assert "Expand one coherent region at a time" in text
-    assert "Treat `compile_model` and `probe_model` as feedback tools." in text
-    assert "Prefer the smallest action that gives decisive evidence." in text
-    assert "If the cause is obvious from `model.py` and compile output, fix it directly." in text
-    assert "When a spatial issue is ambiguous, use `probe_model` to gather evidence." in text
-    assert "After a first ambiguous repair does not resolve the issue" in text
-    assert "Always run `compile_model` on the latest revision before concluding." in text
+    # Workflow guidance is intentionally omitted from the compiled system prompts.
+    assert "<process>" not in text
+    assert "Start with a short context pass:" not in text
+    assert "preloaded SDK quickstart/router" not in text
+    assert "Read only the specific `docs/` references needed for the next change" not in text
+    assert "read the full file once, not a small slice" not in text
+    assert "Do not re-read it if it is already in context." not in text
+    assert "Prefer evidence over introspection." not in text
+    assert "Start with the smallest coherent backbone or subassembly" not in text
+    assert "Expand one coherent region at a time" not in text
+    assert "Treat `compile_model` and `probe_model` as feedback tools." not in text
+    assert "Prefer the smallest action that gives decisive evidence." not in text
+    assert (
+        "If the cause is obvious from `model.py` and compile output, fix it directly." not in text
+    )
+    assert "When a spatial issue is ambiguous, use `probe_model` to gather evidence." not in text
+    assert "After a first ambiguous repair does not resolve the issue" not in text
+    assert "Always run `compile_model` on the latest revision before concluding." not in text
     assert "PHASE 1" not in text
 
     # Core tool references
     assert "probe_model" in text
     assert "find_examples" in text
-    assert "inspection-only" in text
+    assert "read-only Python inspection" in text
     assert "Never answer with code directly in the assistant response." in text
     assert "Do not ask the user for feedback, confirmation, or permission to continue." in text
 
@@ -85,7 +87,7 @@ def test_prompt_outputs_are_current() -> None:
     assert "write_code" not in openai_text
     assert "FREEFORM tool" in openai_text
     assert "Prefer several small `apply_patch` edits over one giant patch" in openai_text
-    assert "lexical search over curated examples for the active SDK" in openai_text
+    assert "searches curated SDK examples for patterns" in openai_text
     assert "[weakly relevant]" in openai_text
     assert (
         "Prefer Articraft-native primitives and placement helpers when they represent the form credibly."
@@ -116,7 +118,7 @@ def test_prompt_outputs_are_current() -> None:
     assert 'Use `read_file(path="model.py")` for the current editable code section' in gemini_text
     assert "write_code" not in gemini_text
     assert "Prefer small exact `replace` edits over broad rewrites" in gemini_text
-    assert "lexical search over curated examples for the active SDK" in gemini_text
+    assert "searches curated SDK examples for patterns" in gemini_text
     assert "[weakly relevant]" in gemini_text
     assert (
         "Prefer Articraft-native primitives and placement helpers when they represent the form credibly."

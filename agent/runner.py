@@ -52,7 +52,6 @@ from agent.tools import (
 )
 from agent.tools import (
     build_tool_registry,
-    provider_system_prompt_suffix,
 )
 from agent.tools import (
     resolve_image_path as _resolve_image_path,
@@ -1212,9 +1211,6 @@ def build_provider_payload_preview(
         sdk_package=sdk_package,
         repo_root=repo_root,
     )
-    suffix = provider_system_prompt_suffix(provider, sdk_package=sdk_package)
-    if suffix:
-        system_prompt = f"{system_prompt.rstrip()}\n\n{suffix}\n"
 
     docs = load_sdk_docs_reference(
         repo_root,

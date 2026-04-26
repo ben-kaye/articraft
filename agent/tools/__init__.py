@@ -41,51 +41,12 @@ SUPPORTED_IMAGE_MIME_TYPES_BY_PROVIDER: dict[str, set[str]] = {
 
 _FIRST_TURN_RUNTIME_GUIDANCE_SHARED = (
     "<runtime_task_guidance>\n"
-    "- Start with a small coherent backbone or subassembly, then expand incrementally.\n"
-    "- For unfamiliar geometry or mechanisms, use `find_examples` before improvising.\n"
-    "- Check your work as you go. Do not batch the whole object into one edit.\n"
-    "- After each coherent chunk, run `compile_model` before moving on.\n"
-    "- Use tools deliberately. Prefer the smallest action that gives decisive evidence.\n"
-    "- If the cause is obvious from `model.py` and `compile_model` output, fix it directly.\n"
-    "- Use `probe_model` when geometry, pose, support path, or exact-element identity is ambiguous. After a first ambiguous spatial repair does not resolve the issue, `probe_model` is often the best next step to gather evidence before patching again.\n"
-    "- Do not do blind self-correction passes without new evidence.\n"
+    "- Read the current `model.py` before editing.\n"
+    "- Make one small coherent change at a time.\n"
+    "- Run `compile_model` to check your latest revision.\n"
+    "- If compile is clean and you cannot name one specific remaining defect, conclude.\n"
     "</runtime_task_guidance>"
 )
-
-_FIRST_TURN_RUNTIME_GUIDANCE_BY_PROVIDER: dict[str, str] = {
-    "openai": (
-        "<runtime_task_guidance>\n"
-        "- Start with a small coherent backbone or subassembly, then expand incrementally.\n"
-        '- Read the exact current code with `read_file(path="model.py")` before editing.\n'
-        "- Start with a short context pass: decide the next coherent edit, then read only the docs/examples needed for it.\n"
-        '- The SDK quickstart/router is preloaded. If a `docs/sdk/references/...` file is relevant, read the full file with `read_file(path="docs/...")`.\n'
-        "- Do not front-load unrelated docs, and do not re-read a reference file that is already in context.\n"
-        "- Use `find_examples` for unfamiliar geometry, mechanisms, placement patterns, or testing structure, and adapt examples against current SDK docs.\n"
-        "- Prefer multiple small `apply_patch` edits over one giant patch.\n"
-        "- After each coherent chunk, run `compile_model` before moving on.\n"
-        "- Use tools deliberately. Prefer the smallest action that gives decisive evidence.\n"
-        "- If the cause is obvious from `model.py` and `compile_model` output, fix it directly.\n"
-        "- Use `probe_model` when geometry, pose, support path, or exact-element identity is ambiguous. After a first ambiguous spatial repair does not resolve the issue, `probe_model` is often the best next step to gather evidence before patching again.\n"
-        "</runtime_task_guidance>"
-    ),
-    "gemini": (
-        "<runtime_task_guidance>\n"
-        "- Start with a small coherent backbone or subassembly, then expand incrementally.\n"
-        '- Read the exact current editable code with `read_file(path="model.py")` before editing.\n'
-        "- Start with a short context pass: decide the next coherent edit, then read only the docs/examples needed for it.\n"
-        '- The SDK quickstart/router is preloaded. If a `docs/sdk/references/...` file is relevant, read the full file with `read_file(path="docs/...")`.\n'
-        "- Do not front-load unrelated docs, and do not re-read a reference file that is already in context.\n"
-        "- Use `find_examples` for unfamiliar geometry, mechanisms, placement patterns, or testing structure, and adapt examples against current SDK docs.\n"
-        "- Prefer small exact `replace` edits over broad rewrites.\n"
-        '- If `replace` fails because `old_string` did not match, reread `read_file(path="model.py")` and retry with a smaller exact snippet.\n'
-        "- Use `write_file` when you intentionally want to rewrite the full editable section.\n"
-        "- After each coherent chunk, run `compile_model` before moving on.\n"
-        "- Use tools deliberately. Prefer the smallest action that gives decisive evidence.\n"
-        "- If the cause is obvious from `model.py` and `compile_model` output, fix it directly.\n"
-        "- Use `probe_model` when geometry, pose, support path, or exact-element identity is ambiguous. After a first ambiguous spatial repair does not resolve the issue, `probe_model` is often the best next step to gather evidence before patching again.\n"
-        "</runtime_task_guidance>"
-    ),
-}
 
 
 def build_tool_registry(
@@ -115,17 +76,8 @@ def build_tool_registry(
     return ToolRegistry(tools)
 
 
-def provider_system_prompt_suffix(provider: str, *, sdk_package: str = "sdk") -> str:
-    normalize_sdk_package(sdk_package)
-    return ""
-
-
-def build_first_turn_runtime_guidance(provider: str) -> str:
-    provider_norm = (provider or "").strip().lower()
-    return _FIRST_TURN_RUNTIME_GUIDANCE_BY_PROVIDER.get(
-        provider_norm,
-        _FIRST_TURN_RUNTIME_GUIDANCE_SHARED,
-    )
+def build_first_turn_runtime_guidance(_provider: str) -> str:
+    return _FIRST_TURN_RUNTIME_GUIDANCE_SHARED
 
 
 def prepend_runtime_guidance(
@@ -249,7 +201,6 @@ __all__ = [
     "ToolRegistry",
     "SUPPORTED_IMAGE_MIME_TYPES_BY_PROVIDER",
     "build_tool_registry",
-    "provider_system_prompt_suffix",
     "build_first_turn_runtime_guidance",
     "prepend_runtime_guidance",
     "build_first_turn_messages",

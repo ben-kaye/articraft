@@ -43,7 +43,6 @@ from agent.tools import (
 )
 from agent.tools import (
     build_tool_registry,
-    provider_system_prompt_suffix,
 )
 from agent.tools.base import ToolResult
 from agent.tools.code_region import extract_editable_code
@@ -409,11 +408,7 @@ class ArticraftAgent:
             self.loaded_system_prompt_path,
             base_system_prompt,
         ) = self._build_system_prompt(system_prompt_path)
-        suffix = provider_system_prompt_suffix(provider_norm, sdk_package=self.sdk_package)
-        if suffix:
-            self.system_prompt = f"{base_system_prompt.rstrip()}\n\n{suffix}\n"
-        else:
-            self.system_prompt = base_system_prompt
+        self.system_prompt = base_system_prompt
         repo_root = Path(__file__).resolve().parents[1]
         self.virtual_workspace = build_virtual_workspace(
             repo_root,

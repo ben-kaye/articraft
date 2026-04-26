@@ -67,8 +67,8 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
 
     # Section tags
     assert "<tools>" in instructions
-    assert "<process>" in instructions
     assert "<modeling>" in instructions
+    assert "<process>" not in instructions
 
     # Tool contract
     assert (
@@ -78,29 +78,33 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "FREEFORM tool" in instructions
     assert "write_code" not in instructions
     assert "Prefer several small `apply_patch` edits over one giant patch" in instructions
-    assert "Prefer the smallest action that gives decisive evidence." in instructions
 
     # Three hard requirements
     assert "NO FLOATING PARTS" in instructions
     assert "NO UNINTENTIONAL OVERLAPS" in instructions
     assert "REALISTIC GEOMETRY" in instructions
 
-    # Compact workflow + moved SDK guidance
-    assert "Start with a short context pass:" in instructions
-    assert "preloaded SDK quickstart/router" in instructions
-    assert "Read only the specific `docs/` references needed for the next change" in instructions
-    assert "read the full file once, not a small slice" in instructions
-    assert "Do not re-read it if it is already in context." in instructions
-    assert "Start with the smallest coherent backbone or subassembly" in instructions
+    # Workflow section is intentionally omitted from the compiled system prompt.
+    assert "Start with a short context pass:" not in instructions
+    assert "preloaded SDK quickstart/router" not in instructions
     assert (
-        "When a spatial issue is ambiguous, use `probe_model` to gather evidence." in instructions
+        "Read only the specific `docs/` references needed for the next change" not in instructions
     )
-    assert "Always run `compile_model` on the latest revision before concluding." in instructions
+    assert "read the full file once, not a small slice" not in instructions
+    assert "Do not re-read it if it is already in context." not in instructions
+    assert "Start with the smallest coherent backbone or subassembly" not in instructions
+    assert (
+        "When a spatial issue is ambiguous, use `probe_model` to gather evidence."
+        not in instructions
+    )
+    assert (
+        "Always run `compile_model` on the latest revision before concluding." not in instructions
+    )
     assert "PHASE 1" not in instructions
 
     # Provider/system guidance
-    assert "inspection-only" in instructions
-    assert "lexical search over curated examples for the active SDK" in instructions
+    assert "read-only Python inspection" in instructions
+    assert "searches curated SDK examples for patterns" in instructions
     assert "<compile_signals>" in instructions
     assert "Match the visible construction logic of the object." in instructions
     assert (
@@ -110,19 +114,15 @@ def test_openai_prompt_resolution_and_payload_preview() -> None:
     assert "missing exact geometry" not in instructions
     assert "means a gap, not an overlap" not in instructions
 
-    # Runtime first-turn task guidance
+    # Shared runtime first-turn task guidance
     assert task_message.startswith("<runtime_task_guidance>")
+    assert "Read the current `model.py` before editing." in task_message
+    assert "Make one small coherent change at a time." in task_message
+    assert "Run `compile_model` to check your latest revision." in task_message
     assert (
-        'Read the exact current code with `read_file(path="model.py")` before editing.'
+        "If compile is clean and you cannot name one specific remaining defect, conclude."
         in task_message
     )
-    assert (
-        "Start with a short context pass: decide the next coherent edit, then read only the docs/examples needed for it."
-        in task_message
-    )
-    assert "After a first ambiguous spatial repair does not resolve the issue" in task_message
-    assert 'read the full file with `read_file(path="docs/...")`' in task_message
-    assert "do not re-read a reference file that is already in context" in task_message
     assert task_message.endswith("a pair of scissors")
 
     # Cache key
@@ -172,7 +172,7 @@ def test_openai_payload_preview_includes_find_examples_tool() -> None:
         "Available tools: `read_file`, `apply_patch`, `compile_model`, `probe_model`, and `find_examples`."
         in payload["instructions"]
     )
-    assert "lexical search over curated examples for the active SDK" in payload["instructions"]
+    assert "searches curated SDK examples for patterns" in payload["instructions"]
 
 
 def test_openai_multimodal_payload_preview_keeps_image_and_appends_guidance(
@@ -192,7 +192,7 @@ def test_openai_multimodal_payload_preview_keeps_image_and_appends_guidance(
 
     assert task_parts[0]["type"] == "input_text"
     assert task_parts[0]["text"].startswith("<runtime_task_guidance>")
-    assert "apply_patch" in task_parts[0]["text"]
+    assert "Run `compile_model` to check your latest revision." in task_parts[0]["text"]
     assert task_parts[1] == {"type": "input_text", "text": "a table lamp"}
     assert task_parts[2]["type"] == "input_image"
     assert task_parts[2]["detail"] == "high"
@@ -329,10 +329,10 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     gemini_task_message = gemini_payload["contents"][1]["parts"][0]["text"]
 
     # Section tags
-    assert "<process>" in gemini_instructions
     assert "<tools>" in gemini_instructions
     assert "<modeling>" in gemini_instructions
     assert "<compile_signals>" in gemini_instructions
+    assert "<process>" not in gemini_instructions
 
     # Tool contract
     assert (
@@ -341,57 +341,50 @@ def test_gemini_prompt_resolution_and_payload_preview() -> None:
     )
     assert "write_code" not in gemini_instructions
     assert "Prefer small exact `replace` edits over broad rewrites" in gemini_instructions
-    assert "Prefer the smallest action that gives decisive evidence." in gemini_instructions
 
     # Three hard requirements
     assert "NO FLOATING PARTS" in gemini_instructions
     assert "NO UNINTENTIONAL OVERLAPS" in gemini_instructions
     assert "REALISTIC GEOMETRY" in gemini_instructions
 
-    # Compact workflow
-    assert "Start with a short context pass:" in gemini_instructions
-    assert "preloaded SDK quickstart/router" in gemini_instructions
+    # Workflow section is intentionally omitted from the compiled system prompt.
+    assert "Start with a short context pass:" not in gemini_instructions
+    assert "preloaded SDK quickstart/router" not in gemini_instructions
     assert (
         "Read only the specific `docs/` references needed for the next change"
-        in gemini_instructions
+        not in gemini_instructions
     )
-    assert "read the full file once, not a small slice" in gemini_instructions
-    assert "Do not re-read it if it is already in context." in gemini_instructions
-    assert "Start with the smallest coherent backbone or subassembly" in gemini_instructions
+    assert "read the full file once, not a small slice" not in gemini_instructions
+    assert "Do not re-read it if it is already in context." not in gemini_instructions
+    assert "Start with the smallest coherent backbone or subassembly" not in gemini_instructions
     assert (
         "When a spatial issue is ambiguous, use `probe_model` to gather evidence."
-        in gemini_instructions
+        not in gemini_instructions
     )
     assert (
         "Always run `compile_model` on the latest revision before concluding."
-        in gemini_instructions
+        not in gemini_instructions
     )
     assert "PHASE 1" not in gemini_instructions
 
     # Provider/system guidance
-    assert "inspection-only" in gemini_instructions
-    assert "lexical search over curated examples for the active SDK" in gemini_instructions
+    assert "read-only Python inspection" in gemini_instructions
+    assert "searches curated SDK examples for patterns" in gemini_instructions
     assert "Match the visible construction logic of the object." in gemini_instructions
     assert (
         "Preserve correct joint origins, axes, limits, and articulation behavior."
         in gemini_instructions
     )
 
-    # Runtime first-turn task guidance
+    # Shared runtime first-turn task guidance
     assert gemini_task_message.startswith("<runtime_task_guidance>")
+    assert "Read the current `model.py` before editing." in gemini_task_message
+    assert "Make one small coherent change at a time." in gemini_task_message
+    assert "Run `compile_model` to check your latest revision." in gemini_task_message
     assert (
-        'Read the exact current editable code with `read_file(path="model.py")` before editing.'
+        "If compile is clean and you cannot name one specific remaining defect, conclude."
         in gemini_task_message
     )
-    assert (
-        "Start with a short context pass: decide the next coherent edit, then read only the docs/examples needed for it."
-        in gemini_task_message
-    )
-    assert (
-        "After a first ambiguous spatial repair does not resolve the issue" in gemini_task_message
-    )
-    assert 'read_file(path="docs/...")' in gemini_task_message
-    assert "do not re-read a reference file that is already in context" in gemini_task_message
     assert gemini_task_message.endswith("a pair of scissors")
 
     assert "## docs/sdk/references/quickstart.md" in gemini_docs_message
@@ -419,10 +412,7 @@ def test_gemini_payload_preview_includes_find_examples_tool() -> None:
         "Available tools: `read_file`, `replace`, `write_file`, `compile_model`, `probe_model`, and `find_examples`."
         in payload["config"]["system_instruction"]
     )
-    assert (
-        "lexical search over curated examples for the active SDK"
-        in payload["config"]["system_instruction"]
-    )
+    assert "searches curated SDK examples for patterns" in payload["config"]["system_instruction"]
 
 
 def test_gemini_multimodal_payload_preview_keeps_image_and_appends_guidance(
@@ -450,4 +440,3 @@ def test_gemini_multimodal_payload_preview_keeps_image_and_appends_guidance(
         for part in task_parts
     )
     assert any(part == {"text": "a table lamp"} for part in task_parts if isinstance(part, dict))
-    assert "replace" in task_parts[0]["text"]
