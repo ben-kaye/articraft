@@ -45,6 +45,16 @@ OPENAI_GPT_5_4_PRICING: dict[str, float] = {
     "output_above_threshold": 22.50,
 }
 
+OPENAI_GPT_5_5_PRICING: dict[str, float] = {
+    "input_uncached": 5.00,
+    "input_cached": 0.50,
+    "output": 30.00,
+    "prompt_tier_threshold_tokens": 272_000,
+    "input_uncached_above_threshold": 10.00,
+    "input_cached_above_threshold": 1.00,
+    "output_above_threshold": 45.00,
+}
+
 
 @dataclass(slots=True)
 class CostBreakdown:
@@ -281,7 +291,9 @@ def pricing_for_provider_model(provider: str, model_id: str) -> dict[str, float]
         return GEMINI_FLASH_PRICING
     if provider_norm == "gemini" and is_gemini_3_pro_model(model_id):
         return GEMINI_3_PRO_PRICING
-    if provider_norm == "openai" and (is_gpt_5_4_model(model_id) or is_gpt_5_5_model(model_id)):
+    if provider_norm == "openai" and is_gpt_5_5_model(model_id):
+        return OPENAI_GPT_5_5_PRICING
+    if provider_norm == "openai" and is_gpt_5_4_model(model_id):
         return OPENAI_GPT_5_4_PRICING
     if provider_norm == "openai" and (
         is_gpt_5_3_codex_model(model_id) or is_gpt_5_2_model(model_id)
