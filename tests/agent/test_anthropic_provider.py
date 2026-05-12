@@ -4,16 +4,42 @@ import asyncio
 import urllib.error
 from types import SimpleNamespace
 
+import anthropic
+import httpx
+
 from agent.providers.anthropic import (
     ANTHROPIC_VERSION,
     DEFAULT_ANTHROPIC_MODEL,
     AnthropicAPIError,
     AnthropicLLM,
+    _api_error_from_sdk_exception,
     _async_retry,
     _should_retry_anthropic_exception,
     anthropic_api_key_from_env,
     anthropic_api_keys_from_env,
 )
+
+
+class _FakeAnthropicMessages:
+    def __init__(self, responses: list[object]):
+        self.responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class _FakeAnthropicClient:
+    def __init__(self, responses: list[object]):
+        self.messages = _FakeAnthropicMessages(responses)
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_anthropic_api_keys_from_env_prefers_primary_key_and_dedupes() -> None:
@@ -282,21 +308,66 @@ def test_anthropic_response_converts_text_thinking_tool_use_and_usage() -> None:
     }
 
 
+def test_anthropic_generate_uses_official_sdk_messages_create() -> None:
+    response = {
+        "content": [
+            {"type": "thinking", "thinking": "Planned compile.", "signature": "sig"},
+            {"type": "text", "text": "I will compile."},
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "cache_read_input_tokens": 7,
+            "output_tokens": 5,
+        },
+    }
+    client = _FakeAnthropicClient([response])
+    provider = AnthropicLLM(dry_run=True)
+    provider._client = client
+
+    converted = asyncio.run(
+        provider.generate_with_tools(
+            system_prompt="system",
+            messages=[{"role": "user", "content": "task"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "compile_model",
+                        "description": "Compile",
+                        "parameters": {"type": "object", "properties": {}, "required": []},
+                    },
+                }
+            ],
+        )
+    )
+
+    assert converted["content"] == "I will compile."
+    assert converted["thought_summary"] == "Planned compile."
+    assert len(client.messages.calls) == 1
+    call = client.messages.calls[0]
+    assert call["model"] == "claude-opus-4-7"
+    assert call["cache_control"] == {"type": "ephemeral"}
+    assert call["system"] == [
+        {"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert call["thinking"] == {"type": "adaptive"}
+    assert call["output_config"] == {"effort": "high"}
+    assert call["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_anthropic_thinking_rejection_does_not_retry_without_thinking() -> None:
     provider = AnthropicLLM(model_id="claude-opus-4-7", dry_run=True)
-    provider.api_key = "sk-ant-test"
     provider.max_attempts = 1
-    calls: list[dict] = []
-
-    def fake_post_json(payload: dict) -> dict:
-        calls.append(payload)
-        raise AnthropicAPIError(
-            status_code=400,
-            error_type="invalid_request_error",
-            message="thinking is not supported for this model",
-        )
-
-    provider._post_json = fake_post_json  # type: ignore[method-assign]
+    client = _FakeAnthropicClient(
+        [
+            AnthropicAPIError(
+                status_code=400,
+                error_type="invalid_request_error",
+                message="thinking is not supported for this model",
+            )
+        ]
+    )
+    provider._client = client
 
     try:
         asyncio.run(
@@ -311,9 +382,136 @@ def test_anthropic_thinking_rejection_does_not_retry_without_thinking() -> None:
     else:  # pragma: no cover - defensive assertion branch
         raise AssertionError("expected AnthropicAPIError")
 
-    assert len(calls) == 1
-    assert calls[0]["thinking"] == {"type": "adaptive"}
-    assert calls[0]["output_config"] == {"effort": "high"}
+    assert len(client.messages.calls) == 1
+    assert client.messages.calls[0]["thinking"] == {"type": "adaptive"}
+    assert client.messages.calls[0]["output_config"] == {"effort": "high"}
+
+
+def test_anthropic_sdk_status_errors_are_normalized() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(
+        429,
+        headers={"request-id": "req_123", "retry-after": "2"},
+        json={"error": {"type": "rate_limit_error", "message": "rate limited"}},
+        request=request,
+    )
+    sdk_error = anthropic.RateLimitError(
+        "rate limited",
+        response=response,
+        body=response.json(),
+    )
+
+    normalized = _api_error_from_sdk_exception(sdk_error)
+
+    assert isinstance(normalized, AnthropicAPIError)
+    assert normalized.status_code == 429
+    assert normalized.error_type == "rate_limit_error"
+    assert normalized.message == "rate limited"
+    assert normalized.request_id == "req_123"
+    assert normalized.retry_after == 2
+
+
+def test_anthropic_generate_retries_normalized_sdk_rate_limit_error() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(
+        429,
+        headers={"request-id": "req_123", "retry-after": "0"},
+        json={"error": {"type": "rate_limit_error", "message": "rate limited"}},
+        request=request,
+    )
+    sdk_error = anthropic.RateLimitError(
+        "rate limited",
+        response=response,
+        body=response.json(),
+    )
+    client = _FakeAnthropicClient(
+        [
+            sdk_error,
+            {
+                "content": [{"type": "text", "text": "done"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ]
+    )
+    provider = AnthropicLLM(dry_run=True)
+    provider._client = client
+    provider.max_attempts = 2
+    provider.retry_base_seconds = 0
+    provider.retry_max_seconds = 0
+
+    converted = asyncio.run(
+        provider.generate_with_tools(
+            system_prompt="system",
+            messages=[{"role": "user", "content": "task"}],
+            tools=[],
+        )
+    )
+
+    assert converted["content"] == "done"
+    assert len(client.messages.calls) == 2
+
+
+def test_anthropic_close_closes_sdk_client() -> None:
+    client = _FakeAnthropicClient([])
+    provider = AnthropicLLM(dry_run=True)
+    provider._client = client
+
+    asyncio.run(provider.close())
+
+    assert client.closed is True
+
+
+def test_anthropic_thinking_rejection_from_sdk_does_not_retry_without_thinking() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(
+        400,
+        headers={"request-id": "req_123"},
+        json={
+            "error": {
+                "type": "invalid_request_error",
+                "message": "thinking is not supported for this model",
+            }
+        },
+        request=request,
+    )
+    client = _FakeAnthropicClient(
+        [
+            anthropic.BadRequestError(
+                "thinking is not supported for this model",
+                response=response,
+                body=response.json(),
+            )
+        ]
+    )
+    provider = AnthropicLLM(model_id="claude-opus-4-7", dry_run=True)
+    provider._client = client
+    provider.max_attempts = 1
+
+    try:
+        asyncio.run(
+            provider.generate_with_tools(
+                system_prompt="system",
+                messages=[{"role": "user", "content": "task"}],
+                tools=[],
+            )
+        )
+    except AnthropicAPIError:
+        pass
+    else:  # pragma: no cover - defensive assertion branch
+        raise AssertionError("expected AnthropicAPIError")
+
+    assert len(client.messages.calls) == 1
+    assert client.messages.calls[0]["thinking"] == {"type": "adaptive"}
+    assert client.messages.calls[0]["output_config"] == {"effort": "high"}
+
+
+def test_anthropic_retry_predicate_treats_sdk_connection_errors_as_transient() -> None:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    exc = anthropic.APIConnectionError(request=request)
+
+    normalized = _api_error_from_sdk_exception(exc)
+
+    assert _should_retry_anthropic_exception(normalized) is True
 
 
 def test_anthropic_retry_predicate_treats_rate_limits_as_transient() -> None:

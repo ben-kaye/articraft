@@ -1,9 +1,10 @@
 """
 Anthropic Claude Messages API provider.
 
-This module uses the REST API directly to avoid adding another SDK dependency.
-It preserves Anthropic-native message blocks in conversation history because
-extended thinking with tool use requires round-tripping thinking blocks exactly.
+This module uses the official Anthropic Python SDK for transport while keeping
+the repository's provider-normalized payload and response handling. It preserves
+Anthropic-native message blocks in conversation history because extended
+thinking with tool use requires round-tripping thinking blocks exactly.
 """
 
 from __future__ import annotations
@@ -17,10 +18,8 @@ import os
 import random
 import socket
 import urllib.error
-import urllib.request
 import uuid
 from dataclasses import dataclass
-from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,6 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-ANTHROPIC_MESSAGES_PATH = "/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-7"
 DEFAULT_ANTHROPIC_CONTEXT_TOKENS = 1_000_000
@@ -138,6 +136,7 @@ class AnthropicLLM:
         self.retry_max_seconds = _env_float("ANTHROPIC_RETRY_MAX_SECONDS", 20.0)
         self.base_url = os.environ.get("ANTHROPIC_BASE_URL", ANTHROPIC_BASE_URL).rstrip("/")
         self.api_key: str | None = None
+        self._client: Any = None
         if not dry_run:
             _load_cwd_dotenv_override()
             self.api_key = anthropic_api_key_from_env()
@@ -145,6 +144,7 @@ class AnthropicLLM:
                 raise ValueError(
                     "Anthropic credentials not found. Set ANTHROPIC_API_KEY or ANTHROPIC_API_KEYS."
                 )
+            self._client = self._create_sdk_client(self.api_key)
 
     def build_request_preview(
         self,
@@ -187,7 +187,7 @@ class AnthropicLLM:
         messages: list[dict],
         tools: list[dict],
     ) -> dict[str, Any]:
-        if not self.api_key:
+        if self._client is None:
             raise RuntimeError("Anthropic transport is unavailable in dry_run mode")
 
         payload = self._build_messages_payload(
@@ -196,8 +196,8 @@ class AnthropicLLM:
             tools=tools,
         )
 
-        async def _request_once() -> dict[str, Any]:
-            return await asyncio.to_thread(self._post_json, payload)
+        async def _request_once() -> Any:
+            return await self._create_message(payload)
 
         response = await _async_retry(
             _request_once,
@@ -213,7 +213,49 @@ class AnthropicLLM:
         return self._convert_response(response)
 
     async def close(self) -> None:
+        client = getattr(self, "_client", None)
+        if client is None:
+            return None
+        close_method = getattr(client, "close", None)
+        if close_method is None:
+            return None
+        result = close_method()
+        if asyncio.iscoroutine(result):
+            await result
         return None
+
+    def _create_sdk_client(self, api_key: str) -> Any:
+        try:
+            from anthropic import AsyncAnthropic  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Anthropic provider selected but the `anthropic` package is not installed. "
+                "Install it (e.g. `uv add anthropic`), then try again."
+            ) from exc
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": self.base_url,
+            # Disable SDK-managed retries so request timing and retry policy are
+            # controlled by this wrapper rather than hidden nested backoff.
+            "max_retries": 0,
+        }
+        if self.request_timeout_seconds and self.request_timeout_seconds > 0:
+            client_kwargs["timeout"] = float(self.request_timeout_seconds)
+        else:
+            client_kwargs["timeout"] = None
+        return AsyncAnthropic(**client_kwargs)
+
+    async def _create_message(self, payload: dict[str, Any]) -> Any:
+        if self._client is None:
+            raise RuntimeError("Anthropic transport is unavailable in dry_run mode")
+        try:
+            return await self._client.messages.create(**payload)
+        except Exception as exc:
+            normalized = _api_error_from_sdk_exception(exc)
+            if normalized is exc:
+                raise
+            raise normalized from exc
 
     def _build_messages_payload(
         self,
@@ -283,28 +325,6 @@ class AnthropicLLM:
         if available <= 0:
             return min(self.max_tokens, 16)
         return max(1, min(self.max_tokens, available))
-
-    def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
-        assert self.api_key is not None
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}{ANTHROPIC_MESSAGES_PATH}",
-            data=body,
-            method="POST",
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "content-type": "application/json",
-                "accept": "application/json",
-                "user-agent": "articraft/anthropic-provider",
-            },
-        )
-        timeout = self.request_timeout_seconds if self.request_timeout_seconds > 0 else None
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return _decode_json_response(response.read(), response.headers)
-        except urllib.error.HTTPError as exc:
-            raise _api_error_from_http_error(exc) from exc
 
     def _convert_response(self, response: Any) -> dict[str, Any]:
         return _convert_response(response)
@@ -668,7 +688,7 @@ def _extract_usage(response: Any) -> dict[str, int] | None:
         cleaned["cache_creation_input_tokens"] = cache_creation
     if isinstance(cache_read, int):
         cleaned["cache_read_input_tokens"] = cache_read
-    if isinstance(cache_creation_detail, dict):
+    if cache_creation_detail is not None:
         cache_creation_5m = _get(cache_creation_detail, "ephemeral_5m_input_tokens")
         cache_creation_1h = _get(cache_creation_detail, "ephemeral_1h_input_tokens")
         if isinstance(cache_creation_5m, int):
@@ -697,56 +717,61 @@ def _effort_from_thinking_level(thinking_level: str) -> str | None:
     return None
 
 
-def _decode_json_response(body: bytes, headers: Message) -> dict[str, Any]:
+def _api_error_from_sdk_exception(exc: BaseException) -> BaseException:
+    if isinstance(exc, AnthropicAPIError):
+        return exc
+
     try:
-        payload = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        request_id = headers.get("request-id")
-        raise AnthropicAPIError(
-            status_code=None,
-            error_type="invalid_json_response",
-            message=str(exc),
+        import anthropic  # type: ignore
+    except Exception:  # pragma: no cover
+        return exc
+
+    if isinstance(exc, anthropic.APIStatusError):
+        body = getattr(exc, "body", None)
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        error_type = getattr(exc, "type", None)
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", {}) if response is not None else {}
+        request_id = getattr(exc, "request_id", None)
+        if not isinstance(request_id, str):
+            request_id = headers.get("request-id") if hasattr(headers, "get") else None
+        return AnthropicAPIError(
+            status_code=getattr(exc, "status_code", None),
+            error_type=error_type if isinstance(error_type, str) else None,
+            message=(
+                message
+                if isinstance(message, str) and message
+                else (getattr(exc, "message", None) or str(exc))
+            ),
             request_id=request_id,
-        ) from exc
-    if not isinstance(payload, dict):
-        raise AnthropicAPIError(
-            status_code=None,
-            error_type="invalid_json_response",
-            message="Anthropic response JSON was not an object",
-            request_id=headers.get("request-id"),
+            retry_after=(
+                _parse_retry_after(headers.get("retry-after")) if hasattr(headers, "get") else None
+            ),
         )
-    return payload
 
+    if isinstance(exc, anthropic.APITimeoutError):
+        return AnthropicAPIError(
+            status_code=None,
+            error_type="timeout_error",
+            message=getattr(exc, "message", None) or str(exc),
+        )
 
-def _api_error_from_http_error(exc: urllib.error.HTTPError) -> AnthropicAPIError:
-    raw = exc.read()
-    payload: dict[str, Any] = {}
-    if raw:
-        try:
-            decoded = json.loads(raw.decode("utf-8"))
-            if isinstance(decoded, dict):
-                payload = decoded
-        except Exception:
-            payload = {}
-    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-    message = error.get("message") if isinstance(error, dict) else None
-    error_type = error.get("type") if isinstance(error, dict) else None
-    retry_after = _parse_retry_after(exc.headers.get("retry-after"))
-    return AnthropicAPIError(
-        status_code=exc.code,
-        error_type=error_type if isinstance(error_type, str) else None,
-        message=(
-            message
-            if isinstance(message, str) and message
-            else (raw.decode("utf-8", "ignore") or exc.reason)
-        ),
-        request_id=(
-            payload.get("request_id")
-            if isinstance(payload.get("request_id"), str)
-            else exc.headers.get("request-id")
-        ),
-        retry_after=retry_after,
-    )
+    if isinstance(exc, anthropic.APIConnectionError):
+        return AnthropicAPIError(
+            status_code=None,
+            error_type="connection_error",
+            message=getattr(exc, "message", None) or str(exc),
+        )
+
+    if isinstance(exc, anthropic.APIError):
+        return AnthropicAPIError(
+            status_code=None,
+            error_type="api_error",
+            message=getattr(exc, "message", None) or str(exc),
+        )
+
+    return exc
 
 
 def _should_retry_anthropic_exception(exc: BaseException) -> bool:
