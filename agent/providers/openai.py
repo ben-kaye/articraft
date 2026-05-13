@@ -31,7 +31,7 @@ from articraft.values import ThinkingLevel, provider_reasoning_level
 
 try:
     from dotenv import load_dotenv  # type: ignore
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
 
     def load_dotenv(*args: Any, **kwargs: Any) -> None:  # type: ignore
         return None
