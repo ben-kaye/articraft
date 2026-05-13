@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from shutil import which
 
@@ -22,6 +23,10 @@ from storage.repo import StorageRepo
 
 DEFAULT_MODEL = "gpt-5.5-2026-04-23"
 DEFAULT_THINKING = "high"
+
+DatasetDispatchKey = tuple[str, str | None]
+DatasetArgBuilder = Callable[[argparse.Namespace], list[str]]
+DatasetDispatchEntry = tuple[str, ...] | DatasetArgBuilder
 
 
 def _infer_provider(model_id: str) -> str:
@@ -359,7 +364,37 @@ def _run_dataset_batch(args: argparse.Namespace) -> int:
     return _dataset(args, argv)
 
 
-def _run_dataset_record_delete(args: argparse.Namespace) -> int:
+def _dataset_promote_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "promote-record",
+        args.record,
+        args.category_title,
+        *(["--dataset-id", args.dataset_id] if args.dataset_id else []),
+    ]
+
+
+def _dataset_category_upsert_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "upsert-category",
+        "--category-slug",
+        args.category_slug,
+        *(["--title", args.title] if args.title else []),
+        *(["--description", args.description] if args.description else []),
+        *(["--target-sdk-version", args.target_sdk_version] if args.target_sdk_version else []),
+    ]
+
+
+def _dataset_category_delete_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "delete-category",
+        "--category-slug",
+        args.category_slug,
+        *(["--execute"] if args.execute else []),
+        *(["--confirm-slug", args.confirm_slug] if args.confirm_slug else []),
+    ]
+
+
+def _dataset_record_delete_args(args: argparse.Namespace) -> list[str]:
     argv = ["delete-record"]
     candidate = Path(args.record).expanduser()
     if candidate.exists() or "/" in args.record:
@@ -370,7 +405,84 @@ def _run_dataset_record_delete(args: argparse.Namespace) -> int:
         argv.append("--execute")
     if args.confirm_record_id:
         argv.extend(["--confirm-record-id", args.confirm_record_id])
+    return argv
+
+
+def _dataset_supercategory_upsert_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "upsert-supercategory",
+        "--supercategory-slug",
+        args.supercategory_slug,
+        *(["--title", args.title] if args.title else []),
+        *(["--description", args.description] if args.description else []),
+    ]
+
+
+def _dataset_supercategory_set_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "set-supercategory",
+        "--category-slug",
+        args.category_slug,
+        "--supercategory-slug",
+        args.supercategory_slug,
+    ]
+
+
+def _dataset_supercategory_clear_args(args: argparse.Namespace) -> list[str]:
+    return ["clear-supercategory", "--category-slug", args.category_slug]
+
+
+def _dataset_supercategory_delete_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "delete-supercategory",
+        "--supercategory-slug",
+        args.supercategory_slug,
+        *(["--execute"] if args.execute else []),
+        *(["--confirm-slug", args.confirm_slug] if args.confirm_slug else []),
+    ]
+
+
+_DATASET_DISPATCH: dict[DatasetDispatchKey, DatasetDispatchEntry] = {
+    ("status", None): ("status",),
+    ("validate", None): ("validate",),
+    ("manifest", None): ("build-manifest",),
+    ("promote", None): _dataset_promote_args,
+    ("category", "upsert"): _dataset_category_upsert_args,
+    ("category", "delete"): _dataset_category_delete_args,
+    ("record", "delete"): _dataset_record_delete_args,
+    ("supercategory", "list"): ("list-supercategories",),
+    ("supercategory", "upsert"): _dataset_supercategory_upsert_args,
+    ("supercategory", "set"): _dataset_supercategory_set_args,
+    ("supercategory", "clear"): _dataset_supercategory_clear_args,
+    ("supercategory", "delete"): _dataset_supercategory_delete_args,
+}
+
+
+def _dataset_dispatch_key(args: argparse.Namespace) -> DatasetDispatchKey:
+    command = args.dataset_command
+    match command:
+        case "category":
+            return (command, args.category_command)
+        case "record":
+            return (command, args.record_command)
+        case "supercategory":
+            return (command, args.supercategory_command)
+        case _:
+            return (command, None)
+
+
+def _run_dataset_dispatch(args: argparse.Namespace) -> int:
+    key = _dataset_dispatch_key(args)
+    entry = _DATASET_DISPATCH.get(key)
+    if entry is None:
+        print(f"Unsupported dataset command: {key[0]} {key[1] or ''}".rstrip())
+        return 1
+    argv = list(entry) if isinstance(entry, tuple) else entry(args)
     return _dataset(args, argv)
+
+
+def _run_data_check(args: argparse.Namespace) -> int:
+    return _dataset(args, ["validate-format"])
 
 
 def _run_env_bootstrap(args: argparse.Namespace) -> int:
@@ -502,7 +614,7 @@ def _build_parser() -> argparse.ArgumentParser:
     data_sub = data.add_subparsers(dest="data_command", required=True)
     data_check = data_sub.add_parser("check", help="Validate checked-in data format.")
     _add_repo_root(data_check)
-    data_check.set_defaults(func=lambda args: _dataset(args, ["validate-format"]))
+    data_check.set_defaults(func=_run_data_check)
 
     external = subparsers.add_parser(
         "external",
@@ -515,14 +627,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     dataset = subparsers.add_parser("dataset", help="Dataset commands.")
     dataset_sub = dataset.add_subparsers(dest="dataset_command", required=True)
-    for name, old_name, help_text in (
-        ("status", "status", "Show dataset status."),
-        ("validate", "validate", "Validate dataset entries."),
-        ("manifest", "build-manifest", "Build the dataset manifest."),
+    for name, help_text in (
+        ("status", "Show dataset status."),
+        ("validate", "Validate dataset entries."),
+        ("manifest", "Build the dataset manifest."),
     ):
         child = dataset_sub.add_parser(name, help=help_text)
         _add_repo_root(child)
-        child.set_defaults(func=lambda args, old_name=old_name: _dataset(args, [old_name]))
+        child.set_defaults(func=_run_dataset_dispatch)
 
     dataset_run = dataset_sub.add_parser("run", help="Generate one dataset record.")
     _add_repo_root(dataset_run)
@@ -560,17 +672,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dataset_promote.add_argument("record")
     dataset_promote.add_argument("category_title")
     dataset_promote.add_argument("--dataset-id", default=None)
-    dataset_promote.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "promote-record",
-                args.record,
-                args.category_title,
-                *(["--dataset-id", args.dataset_id] if args.dataset_id else []),
-            ],
-        )
-    )
+    dataset_promote.set_defaults(func=_run_dataset_dispatch)
 
     category = dataset_sub.add_parser("category", help="Dataset category admin.")
     category_sub = category.add_subparsers(dest="category_command", required=True)
@@ -580,40 +682,13 @@ def _build_parser() -> argparse.ArgumentParser:
     category_upsert.add_argument("--title", default=None)
     category_upsert.add_argument("--description", default=None)
     category_upsert.add_argument("--target-sdk-version", default=None)
-    category_upsert.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "upsert-category",
-                "--category-slug",
-                args.category_slug,
-                *(["--title", args.title] if args.title else []),
-                *(["--description", args.description] if args.description else []),
-                *(
-                    ["--target-sdk-version", args.target_sdk_version]
-                    if args.target_sdk_version
-                    else []
-                ),
-            ],
-        )
-    )
+    category_upsert.set_defaults(func=_run_dataset_dispatch)
     category_delete = category_sub.add_parser("delete")
     _add_repo_root(category_delete)
     category_delete.add_argument("category_slug")
     category_delete.add_argument("--execute", action="store_true")
     category_delete.add_argument("--confirm-slug", default=None)
-    category_delete.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "delete-category",
-                "--category-slug",
-                args.category_slug,
-                *(["--execute"] if args.execute else []),
-                *(["--confirm-slug", args.confirm_slug] if args.confirm_slug else []),
-            ],
-        )
-    )
+    category_delete.set_defaults(func=_run_dataset_dispatch)
 
     record = dataset_sub.add_parser("record", help="Dataset record admin.")
     record_sub = record.add_subparsers(dest="record_command", required=True)
@@ -622,71 +697,34 @@ def _build_parser() -> argparse.ArgumentParser:
     record_delete.add_argument("record")
     record_delete.add_argument("--execute", action="store_true")
     record_delete.add_argument("--confirm-record-id", default=None)
-    record_delete.set_defaults(func=_run_dataset_record_delete)
+    record_delete.set_defaults(func=_run_dataset_dispatch)
 
     supercategory = dataset_sub.add_parser("supercategory", help="Dataset supercategory admin.")
     super_sub = supercategory.add_subparsers(dest="supercategory_command", required=True)
     super_list = super_sub.add_parser("list")
     _add_repo_root(super_list)
-    super_list.set_defaults(func=lambda args: _dataset(args, ["list-supercategories"]))
+    super_list.set_defaults(func=_run_dataset_dispatch)
     super_upsert = super_sub.add_parser("upsert")
     _add_repo_root(super_upsert)
     super_upsert.add_argument("supercategory_slug")
     super_upsert.add_argument("--title", default=None)
     super_upsert.add_argument("--description", default=None)
-    super_upsert.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "upsert-supercategory",
-                "--supercategory-slug",
-                args.supercategory_slug,
-                *(["--title", args.title] if args.title else []),
-                *(["--description", args.description] if args.description else []),
-            ],
-        )
-    )
+    super_upsert.set_defaults(func=_run_dataset_dispatch)
     super_set = super_sub.add_parser("set")
     _add_repo_root(super_set)
     super_set.add_argument("category_slug")
     super_set.add_argument("supercategory_slug")
-    super_set.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "set-supercategory",
-                "--category-slug",
-                args.category_slug,
-                "--supercategory-slug",
-                args.supercategory_slug,
-            ],
-        )
-    )
+    super_set.set_defaults(func=_run_dataset_dispatch)
     super_clear = super_sub.add_parser("clear")
     _add_repo_root(super_clear)
     super_clear.add_argument("category_slug")
-    super_clear.set_defaults(
-        func=lambda args: _dataset(
-            args, ["clear-supercategory", "--category-slug", args.category_slug]
-        )
-    )
+    super_clear.set_defaults(func=_run_dataset_dispatch)
     super_delete = super_sub.add_parser("delete")
     _add_repo_root(super_delete)
     super_delete.add_argument("supercategory_slug")
     super_delete.add_argument("--execute", action="store_true")
     super_delete.add_argument("--confirm-slug", default=None)
-    super_delete.set_defaults(
-        func=lambda args: _dataset(
-            args,
-            [
-                "delete-supercategory",
-                "--supercategory-slug",
-                args.supercategory_slug,
-                *(["--execute"] if args.execute else []),
-                *(["--confirm-slug", args.confirm_slug] if args.confirm_slug else []),
-            ],
-        )
-    )
+    super_delete.set_defaults(func=_run_dataset_dispatch)
 
     workbench = subparsers.add_parser("workbench", help="Workbench commands.")
     workbench_sub = workbench.add_subparsers(dest="workbench_command", required=True)
