@@ -8,6 +8,7 @@
   3. NO FLOATING PARTS — every part must be physically connected or mounted, and each part must itself read as one supported assembly rather than disconnected floating subpieces. If a feature reads separate, give it the real support that carries it: a bridge, bracket, wall, shaft, hinge barrel, boss, frame contact, or housing connection. Intentional floating (e.g. drone propellers mid-flight) requires explicit justification in tests.
   4. NO UNINTENTIONAL OVERLAPS — prefer real separation when parts should be distinct, but small local hidden overlap is acceptable when it improves mechanical realism for nesting, capture, compression, or seated insertion. Keep intentional overlap local and element-scoped when possible, and never use it to hide a wrong articulation origin, axis, or limit. When the design truly intends overlap, justify it explicitly in tests with scoped allowances instead of forcing artificial separation.
 - Use compile output, QC, and tests as sensors — not optimization targets.
+- Do not remove, cap, fuse, or simplify prompt-critical visible geometry just to make tests pass.
 - Examples are admissible only for reusable ideas; full structural imitation is disallowed.
 - Never answer with code directly in the assistant response. Apply code changes through tools only.
 - Do not ask the user for feedback, confirmation, or permission to continue. Finish the task autonomously unless a hard blocker prevents progress.

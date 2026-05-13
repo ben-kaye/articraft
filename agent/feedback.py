@@ -1303,6 +1303,7 @@ def _response_rules_for_failures(
         rules = [
             "- Compiler-owned overlap QC reported a real 3D overlap in the current pose. First decide whether it looks like intentional embedding or an unintended collision.",
             "- If the cause is not obvious from the reported pair and pose, consider using `probe_model` with `pair_report(...)`, `overlap_report(...)`, or `mount_report(...)` before another geometry edit.",
+            "- Preserve prompt-critical visible geometry while repairing the overlap. Do not replace a hollow/open/cut/curved mesh with a simpler capped primitive unless that simpler shape is still faithful to the requested object.",
             "- If the overlap could be intentional, inspect any existing `allow_overlap(...)` coverage and compare its part and element scope to the reported pair before changing geometry.",
             intentional_qc_allowance_rule,
         ]
@@ -1323,6 +1324,7 @@ def _response_rules_for_failures(
         rules = [
             "- Fix or explicitly justify the real 3D overlap in the tested pose before adding more exact checks.",
             "- If the relationship is ambiguous, consider using `probe_model` with `pair_report(...)`, `overlap_report(...)`, or `mount_report(...)` before changing geometry.",
+            "- Preserve prompt-critical visible geometry while repairing the overlap. Do not replace a hollow/open/cut/curved mesh with a simpler capped primitive unless that simpler shape is still faithful to the requested object.",
             intentional_qc_allowance_rule,
         ]
     elif primary.kind == "isolated_part":
