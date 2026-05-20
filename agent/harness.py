@@ -391,6 +391,20 @@ class ArticraftAgent:
             trace_writer=self.trace_writer,
         )
 
+    def _append_final_response_required_reminder(self, conversation: list[dict]) -> None:
+        msg = {
+            "role": "user",
+            "content": (
+                "<final_response_required>\n"
+                "The latest code has already compiled successfully.\n"
+                "Return a visible final response, or call a tool if further work is needed.\n"
+                "</final_response_required>"
+            ),
+        }
+        conversation.append(msg)
+        if self.trace_writer:
+            self.trace_writer.write_message(msg)
+
     def _scan_current_code_contracts(self):
         return self._ensure_guidance_injector()._scan_current_code_contracts()
 
@@ -1242,19 +1256,18 @@ class ArticraftAgent:
             if isinstance(thinking, str) and thinking.strip():
                 self.display.add_thinking_summary(thinking)
 
-            is_empty_response = not tool_calls and not text.strip()
-            if is_empty_response:
-                finish_result = await self._handle_finish_attempt(
-                    conversation,
-                    message="Compile succeeded and model returned no further actions",
-                    turn_count=completed_turns,
-                    tool_call_count=tool_call_count,
-                    usage=usage_totals,
-                    display_turn_override=completed_turns,
-                )
-                if finish_result is not None:
-                    logger.info("Empty response after fresh compile; terminating run.")
-                    return finish_result
+            is_no_action_response = not tool_calls and not text.strip()
+            if is_no_action_response:
+                completed_turns += 1
+                if self._latest_code_is_fresh():
+                    logger.info(
+                        "No-action response after fresh compile; requesting visible final response."
+                    )
+                    self._append_final_response_required_reminder(conversation)
+                else:
+                    logger.info("No-action response before fresh compile; requesting compile.")
+                    self._append_compile_required_reminder(conversation)
+                self.display.end_turn(success=True)
                 continue
 
             completed_turns += 1

@@ -702,22 +702,15 @@ def run_tests():
     assert sum("<compile_required>" in content for content in user_messages) == 1
 
 
-@pytest.mark.parametrize(
-    "finish_response",
-    [
-        {"content": "Done.", "tool_calls": []},
-        {},
-    ],
-)
-def test_finish_attempt_paths_end_turn_and_share_compile_gate(
+def test_visible_finish_attempt_ends_turn_and_shares_compile_gate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    finish_response: dict[str, object],
 ) -> None:
     class _SequenceLLM:
         model_id = "gemini-2.5-pro"
 
         def __init__(self, *args: object, **kwargs: object) -> None:
+            finish_response = {"content": "Done.", "tool_calls": []}
             self._responses = [
                 dict(finish_response),
                 {
@@ -780,6 +773,136 @@ def test_finish_attempt_paths_end_turn_and_share_compile_gate(
         if message.get("role") == "user"
     ]
     assert sum("<compile_required>" in content for content in user_messages) == 1
+
+
+@pytest.mark.parametrize(
+    "no_action_response",
+    [
+        {"content": "", "tool_calls": [], "thought_summary": "Still considering dimensions."},
+        {},
+    ],
+)
+def test_no_action_response_counts_turn_and_requires_compile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_action_response: dict[str, object],
+) -> None:
+    class _NoActionLLM:
+        model_id = "gpt-5.5"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.calls = 0
+
+        async def generate_with_tools(
+            self, *, system_prompt: str, messages: list[dict], tools: list[dict]
+        ) -> dict:
+            self.calls += 1
+            return dict(no_action_response)
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(harness, "OpenAILLM", _NoActionLLM)
+    agent = ArticraftAgent(
+        file_path=str(tmp_path / "model.py"),
+        provider="openai",
+        max_turns=2,
+        display_enabled=False,
+    )
+    agent.display = _CountingDisplay()
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is False
+    assert result.reason == TerminateReason.MAX_TURNS
+    assert result.turn_count == 2
+    assert getattr(agent.llm, "calls") == 2
+    assert agent.display.end_turn_calls == 2
+
+    user_messages = [
+        str(message.get("content", ""))
+        for message in result.conversation
+        if message.get("role") == "user"
+    ]
+    assert sum("<compile_required>" in content for content in user_messages) == 2
+    assert all("<final_response_required>" not in content for content in user_messages)
+
+
+def test_fresh_code_no_action_requires_visible_final_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _SequenceLLM:
+        model_id = "gpt-5.5"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._responses = [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_compile",
+                            "type": "function",
+                            "function": {"name": "compile_model", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "content": "",
+                    "tool_calls": [],
+                    "thought_summary": "Compile passed, considering final wording.",
+                },
+                {"content": "Done.", "tool_calls": []},
+            ]
+
+        async def generate_with_tools(
+            self, *, system_prompt: str, messages: list[dict], tools: list[dict]
+        ) -> dict:
+            assert tools
+            return self._responses.pop(0)
+
+        async def close(self) -> None:
+            return None
+
+    report = CompileReport(
+        urdf_xml="<robot />",
+        warnings=[],
+        signal_bundle=build_compile_signal_bundle(status="success"),
+    )
+
+    monkeypatch.setattr(harness, "OpenAILLM", _SequenceLLM)
+    agent = ArticraftAgent(
+        file_path=str(tmp_path / "model.py"),
+        provider="openai",
+        max_turns=4,
+        display_enabled=False,
+    )
+    agent.tool_registry = ToolRegistry([CompileModelTool()])
+    agent.display = _CountingDisplay()
+
+    async def fake_compile() -> CompileReport:
+        return report
+
+    async def fake_persist(_: str) -> None:
+        return None
+
+    agent._compile_urdf_report_async = fake_compile
+    agent._persist_compile_success_checkpoint_async = fake_persist
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is True
+    assert result.reason == TerminateReason.CODE_VALID
+    assert result.turn_count == 3
+    assert agent.display.end_turn_calls == 3
+
+    user_messages = [
+        str(message.get("content", ""))
+        for message in result.conversation
+        if message.get("role") == "user"
+    ]
+    assert sum("<final_response_required>" in content for content in user_messages) == 1
+    assert all("<compile_required>" not in content for content in user_messages)
 
 
 def test_code_paste_response_uses_normal_finish_rules_without_nudge(
