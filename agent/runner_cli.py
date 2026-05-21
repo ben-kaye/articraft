@@ -17,13 +17,23 @@ from dotenv import load_dotenv
 from agent.cost import max_cost_usd_from_env, parse_max_cost_usd
 from agent.payload_preview import build_provider_payload_preview
 from agent.prompts import normalize_sdk_package
-from agent.providers.factory import validate_provider_credentials
+from agent.providers.factory import infer_provider_from_model_id, validate_provider_credentials
 from agent.run_context import _default_model_id
 from agent.single_run import run_from_input
 from agent.tools import build_initial_user_content as _build_initial_user_content
 from agent.tools import resolve_image_path as _resolve_image_path
 from agent.tui.single_run import LLMWaitAwareStreamHandler
-from articraft.values import PROVIDER_VALUES, THINKING_LEVEL_VALUES, ProviderName
+from articraft.env_defaults import (
+    default_model_from_env,
+    default_thinking_level_from_env,
+    load_repo_env,
+)
+from articraft.values import (
+    PROVIDER_VALUES,
+    THINKING_LEVEL_VALUE_SET,
+    THINKING_LEVEL_VALUES,
+    ProviderName,
+)
 
 
 def _load_qc_blurb_text(qc_blurb_path: Optional[str], *, repo_root: Path) -> Optional[str]:
@@ -54,6 +64,32 @@ def _build_prompt_with_qc(prompt: str, qc_blurb_text: Optional[str]) -> str:
     )
 
 
+def _resolve_model_and_provider(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[str | None, str]:
+    model_id = args.model
+    provider = args.provider
+    if model_id is None and provider is None:
+        model_id = default_model_from_env()
+    if provider is None:
+        provider = infer_provider_from_model_id(model_id)
+        if provider is None:
+            parser.error(
+                f"Unable to infer provider for model '{model_id}'. "
+                "Pass --provider explicitly or use a known OpenAI, Gemini, Anthropic, "
+                "or OpenRouter model ID."
+            )
+    return model_id, provider
+
+
+def _resolve_thinking_level(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
+    thinking_level = args.thinking or default_thinking_level_from_env()
+    if thinking_level not in THINKING_LEVEL_VALUE_SET:
+        parser.error("ARTICRAFT_THINKING_LEVEL must be one of: " + ", ".join(THINKING_LEVEL_VALUES))
+    return thinking_level
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -79,7 +115,7 @@ def main(
     )
     parser.add_argument(
         "--provider",
-        default="openai",
+        default=None,
         choices=PROVIDER_VALUES,
         help="LLM provider.",
     )
@@ -123,7 +159,7 @@ def main(
     )
     parser.add_argument(
         "--thinking",
-        default="high",
+        default=None,
         choices=THINKING_LEVEL_VALUES,
         help="Thinking budget level.",
     )
@@ -169,6 +205,9 @@ def main(
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
+    load_repo_env(args.repo_root)
+    model_id_arg, provider = _resolve_model_and_provider(args, parser)
+    thinking_level = _resolve_thinking_level(args, parser)
     if args.collection == "dataset":
         if not args.dataset_id:
             parser.error("--dataset-id is required when --collection dataset.")
@@ -190,7 +229,7 @@ def main(
 
     openai_reasoning_summary = "auto"
 
-    if args.provider != ProviderName.OPENAI.value and args.openai_transport != "http":
+    if provider != ProviderName.OPENAI.value and args.openai_transport != "http":
         print("--openai-transport is only supported for --provider openai.", file=sys.stderr)
         return 1
 
@@ -202,7 +241,7 @@ def main(
         return 1
 
     try:
-        image_path = _resolve_image_path(args.image, provider=args.provider)
+        image_path = _resolve_image_path(args.image, provider=provider)
     except Exception as exc:
         print(f"Failed to load image: {exc}", file=sys.stderr)
         return 1
@@ -212,19 +251,19 @@ def main(
 
     if args.dump_provider_payload:
         model_id = _default_model_id(
-            provider=args.provider,
-            model_id=args.model,
-            thinking_level=args.thinking,
+            provider=provider,
+            model_id=model_id_arg,
+            thinking_level=thinking_level,
             openai_transport=args.openai_transport,
             openai_reasoning_summary=openai_reasoning_summary,
         )
 
         payload = build_provider_payload_preview_func(
             user_content,
-            provider=args.provider,
+            provider=provider,
             model_id=model_id,
             openai_transport=args.openai_transport,
-            thinking_level=args.thinking,
+            thinking_level=thinking_level,
             system_prompt_path=args.system_prompt,
             sdk_package=sdk_package,
             openai_reasoning_summary=openai_reasoning_summary,
@@ -241,7 +280,7 @@ def main(
         return 0
 
     try:
-        validate_provider_credentials(args.provider)
+        validate_provider_credentials(provider)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -253,10 +292,10 @@ def main(
             display_prompt=args.prompt,
             repo_root=args.repo_root.resolve(),
             image_path=image_path,
-            provider=args.provider,
-            model_id=args.model,
+            provider=provider,
+            model_id=model_id_arg,
             openai_transport=args.openai_transport,
-            thinking_level=args.thinking,
+            thinking_level=thinking_level,
             max_turns=args.max_turns,
             system_prompt_path=args.system_prompt,
             sdk_package=sdk_package,
