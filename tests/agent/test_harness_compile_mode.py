@@ -10,6 +10,7 @@ import pytest
 import agent.harness as harness
 from agent.feedback import build_compile_signal_bundle
 from agent.harness import ArticraftAgent
+from agent.harness_compile import CompileFeedbackLoop
 from agent.models import CompileReport, TerminateReason
 from agent.tools.compile_model import CompileModelTool
 from agent.tools.registry import ToolRegistry
@@ -200,6 +201,37 @@ def test_execute_compile_model_failure_leaves_latest_revision_stale() -> None:
     }
     assert "<compile_signals>" in str(result.output)
     assert "bad loft" in str(result.output)
+
+
+def test_compile_required_reminder_distinguishes_never_compiled_from_stale_edit() -> None:
+    loop = CompileFeedbackLoop(
+        file_path="model.py",
+        sdk_package="sdk",
+        runtime_limits=None,
+        checkpoint_urdf_path=None,
+    )
+    conversation: list[dict] = []
+
+    loop.append_compile_required_reminder(conversation, trace_writer=None)
+
+    first_content = str(conversation[-1]["content"])
+    assert "No successful compile has completed yet." in first_content
+    assert "changed since the last successful compile" not in first_content
+
+    loop._last_successful_compile_report = CompileReport(
+        urdf_xml="<robot />",
+        warnings=[],
+        signal_bundle=build_compile_signal_bundle(status="success"),
+    )
+    loop._last_successful_compile_revision = 0
+    loop.mark_code_mutated("replace")
+    conversation = []
+
+    loop.append_compile_required_reminder(conversation, trace_writer=None)
+
+    stale_content = str(conversation[-1]["content"])
+    assert "The latest code has changed since the last successful compile." in stale_content
+    assert "No successful compile has completed yet." not in stale_content
 
 
 def test_execute_tool_calls_batch_runs_parallel_safe_gemini_calls_concurrently() -> None:
