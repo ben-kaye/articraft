@@ -10,6 +10,7 @@ from storage.repo import StorageRepo
 from storage.revisions import active_cost_path, active_provenance_path, active_traces_dir
 
 RECORDS_INDEX_SCHEMA_VERSION = 1
+EXTERNAL_AGENT_HARNESSES = frozenset({"codex", "claude-code", "cursor"})
 
 
 class RecordsIndexError(ValueError):
@@ -261,7 +262,7 @@ def _agent_harness_from_creator(creator: Any) -> str:
     if not isinstance(creator, dict) or creator.get("mode") != "external_agent":
         return "articraft"
     agent = creator.get("agent")
-    return agent if agent in {"codex", "claude-code"} else "articraft"
+    return agent if agent in EXTERNAL_AGENT_HARNESSES else "articraft"
 
 
 def _string_or_none(value: Any) -> str | None:

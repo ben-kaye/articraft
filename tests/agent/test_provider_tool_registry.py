@@ -12,6 +12,7 @@ from agent.workspace_docs import build_virtual_workspace
 
 def test_provider_tool_registry_schemas() -> None:
     openai_registry = build_tool_registry("openai", sdk_package="sdk")
+    codex_cli_registry = build_tool_registry("codex-cli", sdk_package="sdk")
     gemini_registry = build_tool_registry("gemini", sdk_package="sdk")
 
     assert set(openai_registry.get_all_tool_names()) == {
@@ -23,6 +24,15 @@ def test_provider_tool_registry_schemas() -> None:
     }
     assert set(gemini_registry.get_all_tool_names()) == {
         "read_file",
+        "replace",
+        "write_file",
+        "compile_model",
+        "probe_model",
+        "find_examples",
+    }
+    assert set(codex_cli_registry.get_all_tool_names()) == {
+        "read_file",
+        "apply_patch",
         "replace",
         "write_file",
         "compile_model",
@@ -44,6 +54,7 @@ def test_provider_tool_registry_schemas() -> None:
         s for s in openai_schemas if s.get("function", {}).get("name") == "find_examples"
     )
     gemini_schemas = gemini_registry.get_tool_schemas()
+    codex_cli_schemas = codex_cli_registry.get_tool_schemas()
     replace_schema = next(
         s for s in gemini_schemas if s.get("function", {}).get("name") == "replace"
     )
@@ -51,6 +62,12 @@ def test_provider_tool_registry_schemas() -> None:
         s for s in gemini_schemas if s.get("function", {}).get("name") == "write_file"
     )
     assert apply_patch_schema.get("type") == "custom"
+    codex_apply_patch_schema = next(
+        s for s in codex_cli_schemas if s.get("function", {}).get("name") == "apply_patch"
+    )
+    assert codex_apply_patch_schema.get("type") == "function"
+    assert set(codex_apply_patch_schema["function"]["parameters"]["properties"].keys()) == {"input"}
+    assert codex_apply_patch_schema["function"]["parameters"]["required"] == ["input"]
     apply_patch_description = apply_patch_schema["description"]
     assert "current bound file" in apply_patch_description
     assert "Single-file mode only" in apply_patch_description

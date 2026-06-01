@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-AGENT_HARNESS_VALUES = ("articraft", "codex", "claude-code")
-EXTERNAL_AGENT_HARNESSES = frozenset({"codex", "claude-code"})
+AGENT_HARNESS_VALUES = ("articraft", "codex", "claude-code", "cursor")
+EXTERNAL_AGENT_HARNESSES = frozenset({"codex", "claude-code", "cursor"})
 
 
 def agent_harness_from_record(record: dict[str, Any]) -> str:

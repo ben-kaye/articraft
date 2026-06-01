@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from storage.data_validation import validate_data_format
 from storage.lfs_pointers import LFS_POINTER_HEADER
 from storage.records import WORKBENCH_RECORD_GITIGNORE_TEXT
@@ -248,6 +250,30 @@ def test_validate_data_format_skips_unhydrated_index_records_by_default(
     assert result.skipped_unhydrated_record_count == 1
 
 
+def test_validate_data_format_skips_partial_lfs_pointer_payload_by_default(
+    tmp_path: Path,
+) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    prompt_sha = _write_system_prompt(repo)
+    _write_category(repo)
+    _write_batch_spec(repo)
+    _write_record(repo, "rec_hinge_0001", prompt_sha, "ds_hinge_0001")
+    repo.layout.record_dataset_entry_path("rec_hinge_0001").write_text(
+        f"{LFS_POINTER_HEADER}\n"
+        "oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "size 123\n",
+        encoding="utf-8",
+    )
+
+    result = validate_data_format(repo)
+
+    assert result.errors == []
+    assert result.record_count == 0
+    assert result.dataset_entry_count == 0
+    assert result.skipped_unhydrated_record_count == 1
+
+
 def test_validate_data_format_require_record_fails_when_unhydrated(tmp_path: Path) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()
@@ -281,7 +307,11 @@ def test_validate_data_format_rejects_malformed_records_index(tmp_path: Path) ->
     assert any("records_index.jsonl: line 1: invalid JSON" in error for error in result.errors)
 
 
-def test_validate_data_format_accepts_external_dataset_record(tmp_path: Path) -> None:
+@pytest.mark.parametrize("agent", ["codex", "cursor"])
+def test_validate_data_format_accepts_external_dataset_record(
+    tmp_path: Path,
+    agent: str,
+) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()
     _write_system_prompt(repo)
@@ -294,14 +324,17 @@ def test_validate_data_format_accepts_external_dataset_record(tmp_path: Path) ->
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     record["provider"] = None
     record["model_id"] = None
+    record["source"]["run_id"] = None
+    record["artifacts"]["cost_json"] = None
     record["creator"] = {
         "mode": "external_agent",
-        "agent": "codex",
+        "agent": agent,
         "trace_available": False,
     }
     provenance["generation"]["provider"] = None
     provenance["generation"]["model_id"] = None
     provenance["generation"]["thinking_level"] = None
+    (record_dir / "revisions" / "rev_000001" / "cost.json").unlink()
     _write_json(record_dir / "record.json", record)
     _write_json(provenance_path, provenance)
 
@@ -324,6 +357,7 @@ def test_validate_data_format_rejects_external_trace_claims(tmp_path: Path) -> N
         "agent": "codex",
         "trace_available": True,
     }
+    record["source"]["run_id"] = "run_1"
     _write_json(record_dir / "record.json", record)
     traces_dir = repo.layout.record_revision_traces_dir("rec_hinge_0001", "rev_000001")
     traces_dir.mkdir(exist_ok=True)
@@ -333,3 +367,6 @@ def test_validate_data_format_rejects_external_trace_claims(tmp_path: Path) -> N
 
     assert any("creator.trace_available must be false" in error for error in result.errors)
     assert any("external records must not include traces" in error for error in result.errors)
+    assert any("source.run_id must be null" in error for error in result.errors)
+    assert any("artifacts.cost_json must be unset" in error for error in result.errors)
+    assert any("must not include Articraft cost telemetry" in error for error in result.errors)

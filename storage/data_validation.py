@@ -17,7 +17,12 @@ from storage.lfs_pointers import is_lfs_pointer_file
 from storage.records import WORKBENCH_RECORD_GITIGNORE_TEXT
 from storage.records_index import RECORDS_INDEX_SCHEMA_VERSION
 from storage.repo import StorageRepo
-from storage.revisions import REVISION_ID_RE, active_provenance_path, active_traces_dir
+from storage.revisions import (
+    REVISION_ID_RE,
+    active_cost_path,
+    active_provenance_path,
+    active_traces_dir,
+)
 
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _ALLOWED_COLLECTIONS = {"dataset", "workbench"}
@@ -25,7 +30,7 @@ _ALLOWED_PROMPT_KINDS = {"single_prompt", "prompt_series"}
 _ALLOWED_PROVIDERS = PROVIDER_VALUE_SET
 _ALLOWED_THINKING_LEVELS = THINKING_LEVEL_VALUE_SET
 _ALLOWED_CREATOR_MODES = {"internal_agent", "external_agent"}
-_ALLOWED_EXTERNAL_AGENTS = {"codex", "claude-code"}
+_ALLOWED_EXTERNAL_AGENTS = {"codex", "claude-code", "cursor"}
 _BATCH_REQUIRED_COLUMNS = {
     "category_slug",
     "prompt",
@@ -603,8 +608,10 @@ class _DataFormatValidator:
         source = record.get("source")
         if not isinstance(source, dict):
             self._add_error(record_path, "source must be an object")
+        elif is_external_record and source.get("run_id") is not None:
+            self._add_error(record_path, "source.run_id must be null for external records")
         if creator is not None:
-            self._validate_creator(record_path, creator)
+            self._validate_creator(record_path, creator, record=record)
         display = record.get("display")
         if not isinstance(display, dict):
             self._add_error(record_path, "display must be an object")
@@ -613,7 +620,7 @@ class _DataFormatValidator:
                 if not isinstance(display.get(key), str):
                     self._add_error(record_path, f"display.{key} must be a string")
 
-    def _validate_creator(self, record_path: Path, creator: Any) -> None:
+    def _validate_creator(self, record_path: Path, creator: Any, *, record: dict[str, Any]) -> None:
         if not isinstance(creator, dict):
             self._add_error(record_path, "creator must be an object")
             return
@@ -623,12 +630,24 @@ class _DataFormatValidator:
             return
         if mode == "external_agent":
             if creator.get("agent") not in _ALLOWED_EXTERNAL_AGENTS:
-                self._add_error(record_path, "creator.agent must be 'codex' or 'claude-code'")
+                self._add_error(
+                    record_path, "creator.agent must be 'codex', 'claude-code', or 'cursor'"
+                )
             if creator.get("trace_available") is not False:
                 self._add_error(record_path, "creator.trace_available must be false")
             trace_dir = active_traces_dir(self.repo, record_path.parent.name)
             if trace_dir.exists() and any(trace_dir.iterdir()):
                 self._add_error(record_path, "external records must not include traces")
+            artifacts = record.get("artifacts")
+            if isinstance(artifacts, dict) and artifacts.get("cost_json") not in (None, ""):
+                self._add_error(
+                    record_path, "artifacts.cost_json must be unset for external records"
+                )
+            cost_path = active_cost_path(self.repo, record_path.parent.name, record=record)
+            if cost_path.exists():
+                self._add_error(
+                    record_path, "external records must not include Articraft cost telemetry"
+                )
         else:
             if "agent" in creator and creator.get("agent") is not None:
                 self._add_error(record_path, "creator.agent is only supported for external records")
@@ -744,8 +763,16 @@ class _DataFormatValidator:
                     )
         if not isinstance(provenance.get("environment"), dict):
             self._add_error(path, "environment must be an object")
-        if not isinstance(provenance.get("run_summary"), dict):
+        run_summary = provenance.get("run_summary")
+        if not isinstance(run_summary, dict):
             self._add_error(path, "run_summary must be an object")
+        elif (
+            isinstance(record.get("creator"), dict)
+            and record["creator"].get("mode") == "external_agent"
+        ):
+            for key in ("turn_count", "tool_call_count", "compile_attempt_count"):
+                if run_summary.get(key) is not None:
+                    self._add_error(path, f"run_summary.{key} must be null for external records")
 
     def _validate_revisions(
         self, record_dir: Path, record_path: Path, record: dict[str, Any]

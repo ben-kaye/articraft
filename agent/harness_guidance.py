@@ -22,6 +22,26 @@ BASELINE_QC_CALLS = frozenset(
         "fail_if_parts_overlap_in_current_pose",
     }
 )
+COMPILE_REPAIR_KEYWORDS = frozenset(
+    {
+        "floating disconnected parts",
+        "part overlap",
+        "parts overlap",
+        "overlaps detected",
+        "disconnected geometry islands",
+    }
+)
+API_ERROR_KEYWORDS = frozenset(
+    {
+        "attributeerror",
+        "unexpected keyword argument",
+        "missing 1 required positional argument",
+        "missing required positional argument",
+        "got multiple values for argument",
+        "cannot include lower/upper limits",
+        "no suitable edges for chamfer or fillet",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +53,38 @@ class CodeContractScan:
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _compile_repair_detail_lines(output: str) -> list[str]:
+    selected_lines: list[str] = []
+    for line in output.splitlines():
+        normalized = " ".join(line.split())
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if (
+            "pair=" in lowered
+            or "part=" in lowered
+            or "elem_a=" in lowered
+            or "elem_b=" in lowered
+            or "floating" in lowered
+            or "disconnected" in lowered
+            or "overlap" in lowered
+        ):
+            selected_lines.append(normalized[:500])
+        if len(selected_lines) >= 12:
+            break
+    return selected_lines
+
+
+def _compile_repair_signature(output: str, matched_keywords: tuple[str, ...]) -> str:
+    selected_lines = _compile_repair_detail_lines(output)
+    return _sha256_text(
+        json.dumps(
+            {"keywords": matched_keywords, "lines": selected_lines},
+            sort_keys=True,
+        )
+    )
 
 
 def _constant_string(node: ast.AST) -> str | None:
@@ -112,19 +164,25 @@ class GuidanceInjector:
         self,
         *,
         file_path: str,
+        provider: str = "",
         trace_writer: object | None,
         tool_call_name: Callable[[dict], str],
     ) -> None:
         self.file_path = file_path
+        self.provider = provider
         self.trace_writer = trace_writer
         self.tool_call_name = tool_call_name
         self._seen_tool_error_sigs: set[str] = set()
         self._seen_exact_geometry_contract_sigs: set[str] = set()
         self._seen_baseline_qc_guidance_sigs: set[str] = set()
+        self._seen_compile_repair_guidance_sigs: set[str] = set()
+        self._seen_api_error_guidance_sigs: set[str] = set()
 
     def reset(self) -> None:
         self._seen_exact_geometry_contract_sigs = set()
         self._seen_baseline_qc_guidance_sigs = set()
+        self._seen_compile_repair_guidance_sigs = set()
+        self._seen_api_error_guidance_sigs = set()
 
     def _append_guidance_message(self, conversation: list[dict], content: str) -> None:
         msg = {"role": "user", "content": content}
@@ -225,6 +283,159 @@ class GuidanceInjector:
                 return True
         return False
 
+    def maybe_inject_compile_repair_guidance(
+        self,
+        conversation: list[dict],
+        *,
+        tool_calls: list[dict],
+        tool_results: list[ToolResult],
+    ) -> None:
+        if self.provider != "codex-cli":
+            return
+
+        for tool_call, result in zip(tool_calls, tool_results, strict=False):
+            if self.tool_call_name(tool_call) != "compile_model":
+                continue
+            compilation = result.compilation if isinstance(result.compilation, dict) else {}
+            if compilation.get("status") != "error":
+                continue
+            output = result.output if isinstance(result.output, str) else str(result.output or "")
+            output_lower = output.lower()
+            matched_keywords = tuple(
+                sorted(keyword for keyword in COMPILE_REPAIR_KEYWORDS if keyword in output_lower)
+            )
+            if not matched_keywords:
+                continue
+
+            sig = _compile_repair_signature(output, matched_keywords)
+            if sig in self._seen_compile_repair_guidance_sigs:
+                return
+            self._seen_compile_repair_guidance_sigs.add(sig)
+            detail_lines = _compile_repair_detail_lines(output)
+            reported_pairs = []
+            if detail_lines:
+                reported_pairs = [
+                    "<reported_pairs>",
+                    *[f"- {line}" for line in detail_lines[:6]],
+                    "</reported_pairs>",
+                ]
+
+            self._append_guidance_message(
+                conversation,
+                "\n".join(
+                    [
+                        "<codex_cli_compile_repair_guidance>",
+                        *reported_pairs,
+                        (
+                            "- The latest compile failed on floating/disconnected or overlap "
+                            "geometry. Make the next edit a small repair to the named defect."
+                        ),
+                        (
+                            "- For floating/disconnected parts, attach the named detail to an "
+                            "existing semantic parent part/link or remove the separate helper part."
+                        ),
+                        (
+                            "- For overlaps, reduce/remove decorative collision geometry, add "
+                            "clearance, or keep small details visual-only when collisions are the "
+                            "source of the failure."
+                        ),
+                        (
+                            "- If the named overlap is an intentional local embedding, retained "
+                            "shaft, seated trim, or captured pin/boss, add a scoped "
+                            "`ctx.allow_overlap(...)` for the exact elements plus an exact proof "
+                            "check such as `expect_overlap`, `expect_contact`, or `expect_within`."
+                        ),
+                        (
+                            "- Door/frame rails, lips, hinge sleeves, knob shafts/bosses, and "
+                            "closed-position nested trim are usually local intentional interfaces; "
+                            "prefer one exact scoped allowance plus proof over broad geometry churn."
+                        ),
+                        (
+                            "- If existing `expect_*` checks already prove the same mechanical "
+                            "interface, add the missing `ctx.allow_overlap(...)` for the exact "
+                            "reported pair instead of inventing a neighboring allowance."
+                        ),
+                        (
+                            "- Use the exact `elem_a` and `elem_b` names from the compile signal. "
+                            "Do not authorize a nearby element while leaving the reported pair "
+                            "unhandled."
+                        ),
+                        (
+                            "- If the same pair keeps failing after one allowance/proof attempt, "
+                            "make the smallest geometry edit to the reported elements instead: "
+                            "shorten, thin, offset, or split the colliding feature."
+                        ),
+                        "- Do not add new visual detail until the named compile defect is gone.",
+                        "- After that one repair, run `compile_model` again.",
+                        "</codex_cli_compile_repair_guidance>",
+                    ]
+                ),
+            )
+            return
+
+    def maybe_inject_api_error_guidance(
+        self,
+        conversation: list[dict],
+        *,
+        tool_calls: list[dict],
+        tool_results: list[ToolResult],
+    ) -> None:
+        if self.provider != "codex-cli":
+            return
+
+        for tool_call, result in zip(tool_calls, tool_results, strict=False):
+            if self.tool_call_name(tool_call) != "compile_model":
+                continue
+            compilation = result.compilation if isinstance(result.compilation, dict) else {}
+            if compilation.get("status") != "error":
+                continue
+            output = result.output if isinstance(result.output, str) else str(result.output or "")
+            output_lower = output.lower()
+            matched_keywords = tuple(
+                sorted(keyword for keyword in API_ERROR_KEYWORDS if keyword in output_lower)
+            )
+            if not matched_keywords:
+                continue
+
+            sig = _sha256_text(json.dumps({"keywords": matched_keywords, "output": output[:800]}))
+            if sig in self._seen_api_error_guidance_sigs:
+                return
+            self._seen_api_error_guidance_sigs.add(sig)
+
+            self._append_guidance_message(
+                conversation,
+                "\n".join(
+                    [
+                        "<codex_cli_api_error_guidance>",
+                        (
+                            "- The latest compile failed on an SDK/Python API mismatch. Do not "
+                            "guess replacement attributes, dataclass fields, or kwargs."
+                        ),
+                        (
+                            "- Read the current `model.py`, then use `probe_model` with "
+                            "`inspect.signature(...)` or a tiny read-only snippet for the exact "
+                            "SDK object before editing."
+                        ),
+                        (
+                            "- Make one small edit that removes the nonexistent call/kwarg or "
+                            "replaces it with a documented constructor/signature, then run "
+                            "`compile_model` again."
+                        ),
+                        (
+                            "- If a continuous articulation has lower/upper limits, remove the "
+                            "limits or switch to bounded `REVOLUTE` only if the real mechanism is "
+                            "not freely rotating."
+                        ),
+                        (
+                            "- If CadQuery reports no suitable edges for chamfer/fillet, remove "
+                            "or reduce that fillet/chamfer before changing the overall shape."
+                        ),
+                        "</codex_cli_api_error_guidance>",
+                    ]
+                ),
+            )
+            return
+
     def maybe_inject_code_contract_guidance(
         self,
         conversation: list[dict],
@@ -250,6 +461,27 @@ class GuidanceInjector:
         for tool_call, result in zip(tool_calls, tool_results, strict=False):
             func = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
             func_name = func.get("name")
+            if (
+                self.provider == "codex-cli"
+                and getattr(result, "error", None)
+                and "Invalid JSON in tool arguments" in result.error
+            ):
+                sig = f"{func_name}_invalid_json_arguments"
+                if sig in self._seen_tool_error_sigs:
+                    return
+                self._seen_tool_error_sigs.add(sig)
+                self._append_guidance_message(
+                    conversation,
+                    (
+                        "<codex_cli_tool_json_guidance>\n"
+                        f"- Your last {func_name or 'tool'} call had invalid JSON arguments.\n"
+                        "- Do not retry a large `write_file` payload. Prefer a focused `apply_patch` "
+                        "or `replace` call with a valid JSON-encoded arguments string.\n"
+                        "- Escape newlines and quotes correctly, or make the edit smaller.\n"
+                        "</codex_cli_tool_json_guidance>"
+                    ),
+                )
+                return
             if func_name != "replace":
                 continue
             if not getattr(result, "error", None):

@@ -20,6 +20,7 @@ from rich.console import Console
 
 from agent.cost import max_cost_usd_from_env, parse_max_cost_usd
 from agent.open_file_limits import open_file_worker_cap
+from agent.providers.codex_cli import DEFAULT_CODEX_CLI_MODEL
 from agent.runner import (
     _build_prompt_with_qc,
     _build_single_run_context,
@@ -33,6 +34,7 @@ from agent.tui.batch_run import BatchRunDisplay
 from articraft.values import (
     PROVIDER_VALUE_SET,
     THINKING_LEVEL_VALUE_SET,
+    ProviderName,
     infer_provider_from_model_id,
 )
 from storage.batch_specs import BatchSpecStore
@@ -633,9 +635,17 @@ def _parse_batch_row(
         raise ValueError(f"Row {row_index} has invalid provider: {provider or '(empty)'}")
     if not model_id:
         raise ValueError(f"Row {row_index} is missing model_id")
+    if provider == ProviderName.CODEX_CLI.value and model_id == DEFAULT_CODEX_CLI_MODEL:
+        raise ValueError(
+            f"Row {row_index} uses legacy codex-cli-default; set an explicit Codex CLI model_id"
+        )
 
     inferred_provider = _infer_provider_from_model_id(model_id)
-    if inferred_provider is not None and inferred_provider != provider:
+    if (
+        inferred_provider is not None
+        and inferred_provider != provider
+        and provider != ProviderName.CODEX_CLI.value
+    ):
         raise ValueError(
             f"Row {row_index} has provider/model mismatch: provider={provider} model_id={model_id}"
         )

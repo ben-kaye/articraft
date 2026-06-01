@@ -15,7 +15,9 @@ def test_runner_help_text(capsys: pytest.CaptureFixture[str]) -> None:
     help_text = capsys.readouterr().out
     assert "--prompt" in help_text
     assert "--image" in help_text
-    assert "--provider {anthropic,dashscope,gemini,openai,openrouter,deepseek}" in help_text
+    assert (
+        "--provider {anthropic,codex-cli,dashscope,gemini,openai,openrouter,deepseek}" in help_text
+    )
     assert "--openai-transport {http,websocket}" in help_text
     assert "--collection {workbench,dataset}" in help_text
     assert "--dataset-id DATASET_ID" in help_text
@@ -90,6 +92,32 @@ def test_runner_accepts_openai_api_keys_env(
     assert exit_code == 0
     assert captured["max_cost_usd"] == 1.25
     assert captured["thinking_level"] == "xhigh"
+
+
+def test_runner_rejects_codex_cli_without_explicit_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def _fake_run_from_input(*args, **kwargs) -> int:  # type: ignore[no-untyped-def]
+        raise AssertionError("run_from_input should not be called")
+
+    monkeypatch.setattr(runner, "run_from_input", _fake_run_from_input)
+    monkeypatch.delenv("ARTICRAFT_CODEX_MODEL", raising=False)
+
+    exit_code = runner.main(
+        [
+            "--prompt",
+            "test prompt",
+            "--provider",
+            "codex-cli",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert "requires an explicit model" in capsys.readouterr().err
 
 
 def test_runner_dump_provider_payload_supports_openrouter(

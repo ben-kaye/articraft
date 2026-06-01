@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -10,6 +11,7 @@ from agent.providers.anthropic import (
     anthropic_api_key_from_env,
 )
 from agent.providers.base import ProviderClient
+from agent.providers.codex_cli import DEFAULT_CODEX_CLI_MODEL, CodexCliLLM
 from agent.providers.dashscope import (
     DEFAULT_DASHSCOPE_MODEL,
     DashScopeLLM,
@@ -65,6 +67,7 @@ class ProviderConfig:
 @dataclass(slots=True, frozen=True)
 class ProviderConstructors:
     anthropic: Callable[..., ProviderClient] = AnthropicLLM
+    codex_cli: Callable[..., ProviderClient] = CodexCliLLM
     dashscope: Callable[..., ProviderClient] = DashScopeLLM
     deepseek: Callable[..., ProviderClient] = DeepSeekLLM
     gemini: Callable[..., ProviderClient] = GeminiLLM
@@ -82,11 +85,24 @@ def infer_provider_from_model_id(model_id: str | None) -> str | None:
 
 
 def default_model_id(config: ProviderConfig) -> str:
-    if config.model_id:
-        return config.model_id
     provider = _normalize_provider_name(config.provider)
+    if config.model_id:
+        if provider is ProviderName.CODEX_CLI and config.model_id == DEFAULT_CODEX_CLI_MODEL:
+            raise ValueError(
+                "Codex CLI provider requires an explicit model. Pass `--model <codex-model-id>` "
+                "or set ARTICRAFT_CODEX_MODEL; `codex-cli-default` is only a legacy sentinel."
+            )
+        return config.model_id
     if provider is ProviderName.ANTHROPIC:
         return DEFAULT_ANTHROPIC_MODEL
+    if provider is ProviderName.CODEX_CLI:
+        env_model = os.environ.get("ARTICRAFT_CODEX_MODEL", "").strip()
+        if env_model:
+            return env_model
+        raise ValueError(
+            "Codex CLI provider requires an explicit model. Pass `--model <codex-model-id>` "
+            "or set ARTICRAFT_CODEX_MODEL so runs do not silently inherit the local Codex CLI default."
+        )
     if provider is ProviderName.DASHSCOPE:
         return os.environ.get("DASHSCOPE_MODEL") or DEFAULT_DASHSCOPE_MODEL
     if provider is ProviderName.DEEPSEEK:
@@ -115,8 +131,8 @@ def create_provider_client(
             thinking_level=config.thinking_level,
             dry_run=dry_run,
         )
-    if provider is ProviderName.DASHSCOPE:
-        return provider_constructors.dashscope(
+    if provider is ProviderName.CODEX_CLI:
+        return provider_constructors.codex_cli(
             model_id=model_id,
             thinking_level=config.thinking_level,
             dry_run=dry_run,
@@ -129,6 +145,12 @@ def create_provider_client(
         )
     if provider is ProviderName.DEEPSEEK:
         return provider_constructors.deepseek(
+            model_id=model_id,
+            thinking_level=config.thinking_level,
+            dry_run=dry_run,
+        )
+    if provider is ProviderName.DASHSCOPE:
+        return provider_constructors.dashscope(
             model_id=model_id,
             thinking_level=config.thinking_level,
             dry_run=dry_run,
@@ -158,6 +180,14 @@ def validate_provider_credentials(provider: str) -> None:
         if not anthropic_api_key_from_env():
             raise ValueError(
                 "Anthropic credentials are required. Set ANTHROPIC_API_KEY or ANTHROPIC_API_KEYS."
+            )
+        return
+    if provider_norm is ProviderName.CODEX_CLI:
+        binary = os.environ.get("ARTICRAFT_CODEX_CLI_BIN", "codex").strip() or "codex"
+        if shutil.which(binary) is None:
+            raise ValueError(
+                "Codex CLI provider requires the `codex` executable. "
+                "Install/login to Codex CLI or set ARTICRAFT_CODEX_CLI_BIN."
             )
         return
     if provider_norm is ProviderName.DASHSCOPE:

@@ -310,6 +310,22 @@ def test_build_batch_config_validates_csv_rows(tmp_path: Path) -> None:
             ],
             "max_turns > 0",
         ),
+        (
+            [
+                {
+                    "row_id": "a",
+                    "category_slug": "hinge",
+                    "category_title": "Hinge",
+                    "prompt": "x",
+                    "provider": "codex-cli",
+                    "model_id": "codex-cli-default",
+                    "thinking_level": "high",
+                    "max_turns": "10",
+                    "sdk_package": "sdk",
+                }
+            ],
+            "legacy codex-cli-default",
+        ),
     ]
 
     for index, (rows, message) in enumerate(cases, start=1):
@@ -329,6 +345,49 @@ def test_build_batch_config_validates_csv_rows(tmp_path: Path) -> None:
                 pause_poll_seconds=1.0,
                 keyboard_pause_enabled=False,
             )
+
+
+def test_build_batch_config_allows_codex_cli_openai_named_model(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    CategoryStore(repo).save(
+        CategoryRecord(schema_version=1, slug="hinge", title="Hinge", description="")
+    )
+
+    spec_path = tmp_path / "source_specs" / "codex_cli_batch.csv"
+    _write_csv(
+        spec_path,
+        [
+            {
+                "row_id": "a",
+                "category_slug": "hinge",
+                "category_title": "Hinge",
+                "prompt": "make hinge",
+                "provider": "codex-cli",
+                "model_id": "gpt-5.5",
+                "thinking_level": "high",
+                "max_turns": "10",
+                "sdk_package": "sdk",
+            }
+        ],
+    )
+
+    config = batch_runner.build_batch_config(
+        repo_root=tmp_path,
+        spec_arg=str(spec_path),
+        concurrency=1,
+        system_prompt_path="designer_system_prompt.txt",
+        qc_blurb_path=None,
+        resume=False,
+        resume_policy="failed_or_pending",
+        keep_awake=False,
+        pause_file=None,
+        pause_poll_seconds=1.0,
+        keyboard_pause_enabled=False,
+    )
+
+    assert config.rows[0].provider == "codex-cli"
+    assert config.rows[0].model_id == "gpt-5.5"
 
 
 def test_build_batch_config_resolves_auto_concurrency_to_logical_cpu_count(

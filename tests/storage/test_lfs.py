@@ -67,6 +67,23 @@ def test_lfs_pointer_detection_and_payload_status(tmp_path: Path) -> None:
     assert record_payload_status(repo, "rec_missing") == "missing"
 
 
+def test_record_payload_status_detects_partial_lfs_pointer_payload(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    record_dir = repo.layout.record_dir("rec_alpha")
+    record_dir.mkdir(parents=True)
+    repo.write_json(repo.layout.record_metadata_path("rec_alpha"), {"record_id": "rec_alpha"})
+    repo.layout.record_dataset_entry_path("rec_alpha").parent.mkdir(parents=True)
+    repo.layout.record_dataset_entry_path("rec_alpha").write_text(
+        f"{LFS_POINTER_HEADER}\n"
+        "oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "size 123\n",
+        encoding="utf-8",
+    )
+
+    assert record_payload_status(repo, "rec_alpha") == "unhydrated"
+
+
 def test_select_records_for_hydration_intersects_category_and_time(tmp_path: Path) -> None:
     repo = StorageRepo(tmp_path)
     repo.ensure_layout()

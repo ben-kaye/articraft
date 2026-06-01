@@ -9,7 +9,7 @@ PromptKind = Literal["single_prompt", "prompt_series"]
 RunMode = Literal["dataset_batch", "dataset_single", "workbench_batch", "workbench_single"]
 MaterializationStatus = Literal["missing", "available"]
 CreatorMode = Literal["internal_agent", "external_agent"]
-ExternalAgentName = Literal["codex", "claude-code"]
+ExternalAgentName = Literal["codex", "claude-code", "cursor"]
 
 
 @dataclass(slots=True, frozen=True)

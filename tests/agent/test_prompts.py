@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent.prompts import (
+    CODEX_CLI_DESIGNER_PROMPT_NAME,
     DESIGNER_PROMPT_NAME,
     GEMINI_DESIGNER_PROMPT_NAME,
     OPENAI_DESIGNER_PROMPT_NAME,
@@ -42,15 +43,22 @@ def test_system_prompt_resolution_variants() -> None:
     )
     assert gemini_resolved.name == GEMINI_DESIGNER_PROMPT_NAME
 
+    codex_cli_resolved = resolve_system_prompt_path(
+        str(Path("agent/prompts/generated") / DESIGNER_PROMPT_NAME),
+        provider="codex-cli",
+        repo_root=repo_root,
+    )
+    assert codex_cli_resolved.name == CODEX_CLI_DESIGNER_PROMPT_NAME
+
 
 def test_first_turn_runtime_guidance_is_shared() -> None:
     expected = (
         "<runtime_task_guidance>\n"
         "- Read the current `model.py` before editing.\n"
-        "- Make one small coherent change at a time.\n"
+        "- Start with a realism-first structure plan. Use one coherent scaffold when the real object needs layered bodies, hollow forms, mechanisms, or repeated features; otherwise make small focused edits.\n"
         "- Treat visual realism as part of the deliverable: make the object read clearly as the requested thing, with believable proportions, silhouette, colors/materials, and major visible surface treatment.\n"
         "- Run `compile_model` to check your latest revision.\n"
-        "- If compile is clean and you cannot name one specific remaining defect, conclude.\n"
+        "- If compile is clean and the model already satisfies the realism/mechanism brief, conclude.\n"
         "</runtime_task_guidance>"
     )
 

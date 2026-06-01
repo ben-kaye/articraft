@@ -78,6 +78,29 @@ def test_prompt_outputs_are_current() -> None:
     )
     assert "FREEFORM tool" in openai_text
 
+    codex_cli_text = compiled_by_name["designer_system_prompt_codex_cli.txt"]
+    _assert_shared_contract(codex_cli_text)
+    _assert_tool_capabilities(
+        codex_cli_text,
+        {
+            "read_file",
+            "apply_patch",
+            "replace",
+            "write_file",
+            "compile_model",
+            "probe_model",
+            "find_examples",
+        },
+        absent={"write_code"},
+    )
+    assert "Codex CLI behind Articraft's internal harness" in codex_cli_text
+    assert "do not try to edit files, run shell commands" in codex_cli_text
+    assert "JSON `input` string" in codex_cli_text
+    assert "Default to realism-first structure" in codex_cli_text
+    assert "internal structure plan" in codex_cli_text
+    assert "Complexity must be justified by the real object" in codex_cli_text
+    assert "one coherent `write_file` scaffold" in codex_cli_text
+
     gemini_text = compiled_by_name["designer_system_prompt_gemini.txt"]
     _assert_shared_contract(gemini_text)
     _assert_tool_capabilities(

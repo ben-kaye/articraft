@@ -13,8 +13,12 @@ TRAJECTORY_FILENAME = "trajectory.jsonl"
 COMPRESSED_TRAJECTORY_FILENAME = "trajectory.jsonl.zst"
 SYSTEM_PROMPT_FILENAMES = {
     "designer_system_prompt.txt",
+    "designer_system_prompt_anthropic.txt",
     "designer_system_prompt_openai.txt",
+    "designer_system_prompt_codex_cli.txt",
+    "designer_system_prompt_deepseek.txt",
     "designer_system_prompt_gemini.txt",
+    "designer_system_prompt_openrouter.txt",
 }
 _ZSTD_LEVEL = 19
 

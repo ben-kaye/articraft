@@ -35,6 +35,7 @@ from viewer.api.store_values import (
     _coerce_rating,
     _coerce_string,
     _cost_totals,
+    _cost_turn_count,
     _effective_rating,
     _normalize_sdk_package_value,
     _thinking_level_from_provenance,
@@ -801,6 +802,8 @@ class DatasetBrowseIndex:
             thinking_level = _thinking_level_from_provenance(provenance)
 
         total_cost_usd, input_tokens, output_tokens = _cost_totals(cost)
+        if turn_count is None:
+            turn_count = _cost_turn_count(cost)
         primary_rating = _coerce_rating(record.get("rating"))
         secondary_rating = _coerce_rating(record.get("secondary_rating"))
         collections = record.get("collections")
@@ -890,7 +893,7 @@ def _maximum_cost(rows: list[BrowseIndexRecord] | tuple[BrowseIndexRecord, ...])
 
 
 def _sorted_agent_harnesses(values: set[str]) -> list[str]:
-    order = {"articraft": 0, "codex": 1, "claude-code": 2}
+    order = {"articraft": 0, "codex": 1, "claude-code": 2, "cursor": 3}
     return sorted(values, key=lambda value: (order.get(value, len(order)), value))
 
 

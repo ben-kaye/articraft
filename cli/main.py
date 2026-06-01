@@ -42,7 +42,7 @@ def _infer_provider(model_id: str) -> str:
     raise ValueError(
         f"Unable to infer provider for model '{model_id}'. "
         "Pass --provider explicitly or use a known OpenAI, Gemini, Anthropic, DashScope, "
-        "OpenRouter, or DeepSeek model ID."
+        "OpenRouter, DeepSeek, or Codex CLI model ID."
     )
 
 

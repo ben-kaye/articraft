@@ -8,6 +8,7 @@ from sdk._profiles import get_sdk_profile
 
 DESIGNER_PROMPT_NAME = "designer_system_prompt.txt"
 OPENAI_DESIGNER_PROMPT_NAME = "designer_system_prompt_openai.txt"
+CODEX_CLI_DESIGNER_PROMPT_NAME = "designer_system_prompt_codex_cli.txt"
 GEMINI_DESIGNER_PROMPT_NAME = "designer_system_prompt_gemini.txt"
 OPENROUTER_DESIGNER_PROMPT_NAME = "designer_system_prompt_openrouter.txt"
 ANTHROPIC_DESIGNER_PROMPT_NAME = "designer_system_prompt_anthropic.txt"
@@ -48,6 +49,7 @@ def resolve_system_prompt_path(
     default_names = {
         DESIGNER_PROMPT_NAME,
         OPENAI_DESIGNER_PROMPT_NAME,
+        CODEX_CLI_DESIGNER_PROMPT_NAME,
         GEMINI_DESIGNER_PROMPT_NAME,
         OPENROUTER_DESIGNER_PROMPT_NAME,
         ANTHROPIC_DESIGNER_PROMPT_NAME,

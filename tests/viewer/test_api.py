@@ -137,6 +137,15 @@ def test_viewer_api_surfaces_external_creator_metadata(tmp_path: Path) -> None:
         record_id="rec_external_001",
         added_at="2026-03-18T08:01:00Z",
     )
+    trace_dir = repo.layout.record_dir("rec_external_001") / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "trajectory.jsonl").write_text('{"message": "hidden"}\n', encoding="utf-8")
+    revision_trace_dir = repo.layout.record_revision_traces_dir("rec_external_001", "rev_000001")
+    revision_trace_dir.mkdir(parents=True, exist_ok=True)
+    (revision_trace_dir / "trajectory.jsonl").write_text(
+        '{"message": "hidden"}\n',
+        encoding="utf-8",
+    )
 
     client = TestClient(create_app(repo_root=tmp_path))
     response = client.get("/api/bootstrap")
@@ -149,6 +158,85 @@ def test_viewer_api_surfaces_external_creator_metadata(tmp_path: Path) -> None:
     assert external_record["has_traces"] is False
     assert external_record["provider"] == "openai"
     assert external_record["model_id"] == "gpt-5.5-2026-04-23"
+    assert client.get("/api/records/rec_external_001/traces/trajectory.jsonl").status_code == 404
+    assert (
+        client.get(
+            "/api/records/rec_external_001/revisions/rev_000001/traces/trajectory.jsonl"
+        ).status_code
+        == 404
+    )
+
+
+def test_viewer_api_infers_record_turn_count_from_cost_turns(tmp_path: Path) -> None:
+    repo = StorageRepo(tmp_path)
+    repo.ensure_layout()
+    _write_record(
+        repo,
+        record_id="rec_turns_001",
+        title="Turn counted record",
+        prompt="create a two turn object",
+        category_slug="hinges",
+        collections=["workbench", "dataset"],
+    )
+    CollectionStore(repo).append_workbench_entry(
+        record_id="rec_turns_001",
+        added_at="2026-03-18T08:01:00Z",
+    )
+    DatasetStore(repo).promote_record(
+        record_id="rec_turns_001",
+        dataset_id="dataset_turns_001",
+        promoted_at="2026-03-18T08:02:00Z",
+        category_slug="hinges",
+    )
+    record_dir = repo.layout.record_dir("rec_turns_001")
+    repo.write_json(
+        record_dir / "provenance.json",
+        {
+            "schema_version": 2,
+            "record_id": "rec_turns_001",
+            "generation": {
+                "provider": "openai",
+                "model_id": "gpt-5.4",
+                "thinking_level": "high",
+            },
+            "run_summary": {"final_status": "success"},
+        },
+    )
+    repo.write_json(
+        record_dir / "cost.json",
+        {
+            "turns": [
+                {"costs_usd": {"total": 0.01}},
+                {"costs_usd": {"total": 0.02}},
+            ],
+            "total": {
+                "costs_usd": {"total": 0.03},
+                "tokens": {"prompt_tokens": 100, "candidates_tokens": 50},
+            },
+        },
+    )
+    trace_dir = record_dir / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "trajectory.jsonl").write_text(
+        '{"message":{"role":"assistant","content":"first"}}\n',
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(repo_root=tmp_path))
+
+    bootstrap_record = client.get("/api/bootstrap").json()["workbench_entries"][0]["record"]
+    assert bootstrap_record["turn_count"] == 2
+
+    summary = client.get("/api/records/rec_turns_001/summary").json()
+    assert summary["turn_count"] == 2
+    assert summary["has_traces"] is True
+
+    dataset_browse = client.get("/api/records/browse?source=dataset").json()
+    assert dataset_browse["records"][0]["turn_count"] == 2
+
+    trace_response = client.get("/api/records/rec_turns_001/traces/trajectory.jsonl")
+    assert trace_response.status_code == 200
+    assert "first" in trace_response.text
 
 
 def test_viewer_api_filters_dataset_by_agent_harness(tmp_path: Path) -> None:
@@ -167,6 +255,12 @@ def test_viewer_api_filters_dataset_by_agent_harness(tmp_path: Path) -> None:
             "Claude washer",
             "claude_washers",
             CreatorMetadata(mode="external_agent", agent="claude-code", trace_available=False),
+        ),
+        (
+            "rec_cursor_001",
+            "Cursor washer",
+            "cursor_washers",
+            CreatorMetadata(mode="external_agent", agent="cursor", trace_available=False),
         ),
     ]
     for index, (record_id, title, category_slug, creator) in enumerate(records, start=1):
@@ -190,11 +284,12 @@ def test_viewer_api_filters_dataset_by_agent_harness(tmp_path: Path) -> None:
     client = TestClient(create_app(repo_root=tmp_path))
 
     dataset_browse = client.get("/api/records/browse?source=dataset").json()
-    assert dataset_browse["total"] == 3
+    assert dataset_browse["total"] == 4
     assert dataset_browse["facets"]["agent_harnesses"] == [
         "articraft",
         "codex",
         "claude-code",
+        "cursor",
     ]
 
     articraft_browse = client.get(
@@ -216,6 +311,11 @@ def test_viewer_api_filters_dataset_by_agent_harness(tmp_path: Path) -> None:
     assert browse_ids["total"] == 1
     assert browse_ids["record_ids"] == ["rec_claude_001"]
 
+    cursor_browse = client.get("/api/records/browse?source=dataset&agent_harness=cursor").json()
+    assert cursor_browse["total"] == 1
+    assert cursor_browse["record_ids"] == ["rec_cursor_001"]
+    assert cursor_browse["records"][0]["external_agent"] == "cursor"
+
     search_results = client.get(
         "/api/records/search?q=washer&source=dataset&agent_harness=codex"
     ).json()
@@ -226,6 +326,7 @@ def test_viewer_api_filters_dataset_by_agent_harness(tmp_path: Path) -> None:
         "articraft",
         "codex",
         "claude-code",
+        "cursor",
     ]
     assert dashboard["overview"]["total_records"] == 1
     assert dashboard["overview"]["is_filtered"] is True

@@ -6,7 +6,7 @@ from typing import Any
 
 from agent.prompts import normalize_sdk_package
 from agent.runtime_limits import BatchRuntimeLimits
-from agent.tools.apply_patch import ApplyPatchFreeformTool
+from agent.tools.apply_patch import ApplyPatchFreeformTool, ApplyPatchJsonTool
 from agent.tools.base import (
     BaseDeclarativeTool,
     BaseToolInvocation,
@@ -42,6 +42,12 @@ SUPPORTED_IMAGE_MIME_TYPES_BY_PROVIDER: dict[str, set[str]] = {
         "image/webp",
         "image/gif",
     },
+    ProviderName.CODEX_CLI.value: {
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+    },
     ProviderName.GEMINI.value: {
         "image/png",
         "image/jpeg",
@@ -60,10 +66,10 @@ SUPPORTED_IMAGE_MIME_TYPES_BY_PROVIDER: dict[str, set[str]] = {
 _FIRST_TURN_RUNTIME_GUIDANCE_SHARED = (
     "<runtime_task_guidance>\n"
     "- Read the current `model.py` before editing.\n"
-    "- Make one small coherent change at a time.\n"
+    "- Start with a realism-first structure plan. Use one coherent scaffold when the real object needs layered bodies, hollow forms, mechanisms, or repeated features; otherwise make small focused edits.\n"
     "- Treat visual realism as part of the deliverable: make the object read clearly as the requested thing, with believable proportions, silhouette, colors/materials, and major visible surface treatment.\n"
     "- Run `compile_model` to check your latest revision.\n"
-    "- If compile is clean and you cannot name one specific remaining defect, conclude.\n"
+    "- If compile is clean and the model already satisfies the realism/mechanism brief, conclude.\n"
     "</runtime_task_guidance>"
 )
 
@@ -80,6 +86,15 @@ def build_tool_registry(
         tools: list[BaseDeclarativeTool] = [
             ReadFileTool(),
             ApplyPatchFreeformTool(),
+            CompileModelTool(),
+            ProbeModelTool(sdk_package=package, runtime_limits=runtime_limits),
+        ]
+    elif provider_norm is ProviderName.CODEX_CLI:
+        tools = [
+            ReadFileTool(editable_model_only=True),
+            ApplyPatchJsonTool(),
+            ReplaceTool(),
+            WriteFileTool(),
             CompileModelTool(),
             ProbeModelTool(sdk_package=package, runtime_limits=runtime_limits),
         ]
@@ -209,6 +224,7 @@ __all__ = [
     "ToolSchema",
     "make_tool_schema",
     "ApplyPatchFreeformTool",
+    "ApplyPatchJsonTool",
     "CompileModelTool",
     "FindExamplesTool",
     "ProbeModelTool",

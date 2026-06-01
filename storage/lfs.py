@@ -45,9 +45,32 @@ def record_payload_status(repo: StorageRepo, record_id: str) -> PayloadStatus:
     record_path = repo.layout.record_metadata_path(record_id)
     if not record_dir.exists() or not record_path.exists():
         return "missing"
-    if is_lfs_pointer_file(record_path):
+    if any(is_lfs_pointer_file(path) for path in _record_payload_status_paths(repo, record_id)):
         return "unhydrated"
     return "hydrated"
+
+
+def _record_payload_status_paths(repo: StorageRepo, record_id: str) -> list[Path]:
+    record_dir = repo.layout.record_dir(record_id)
+    paths = [
+        repo.layout.record_metadata_path(record_id),
+        repo.layout.record_dataset_entry_path(record_id),
+        repo.layout.record_workbench_entry_path(record_id),
+    ]
+    revisions_dir = repo.layout.record_revisions_dir(record_id)
+    if revisions_dir.is_dir():
+        for revision_dir in sorted(path for path in revisions_dir.iterdir() if path.is_dir()):
+            paths.extend(
+                [
+                    revision_dir / "revision.json",
+                    revision_dir / "prompt.txt",
+                    revision_dir / "model.py",
+                    revision_dir / "provenance.json",
+                    revision_dir / "cost.json",
+                    revision_dir / "prompt_series.json",
+                ]
+            )
+    return [path for path in paths if path.is_file() and path.is_relative_to(record_dir)]
 
 
 def hydration_guidance(record_id: str) -> str:

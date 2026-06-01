@@ -13,6 +13,8 @@ from agent.tools.base import (
     BoundFileToolInvocation,
     ToolParamsModel,
     ToolResult,
+    make_tool_schema,
+    validate_tool_params,
 )
 from agent.tools.code_region import map_syntax_error_line_to_editable
 
@@ -128,6 +130,35 @@ class ApplyPatchFreeformTool(BaseDeclarativeTool):
 
     async def build(self, params: dict) -> ApplyPatchInvocation:
         validated = ApplyPatchParams(**params)
+        return ApplyPatchInvocation(validated)
+
+
+class ApplyPatchJsonTool(BaseDeclarativeTool):
+    """JSON function variant of apply_patch for providers without freeform tools."""
+
+    def __init__(self) -> None:
+        schema = make_tool_schema(
+            name="apply_patch",
+            description=(
+                "Apply a Codex-style patch to the current bound `model.py` artifact.\n\n"
+                "Pass the entire patch text in `input`. Single-file mode only: do not use "
+                "`*** Add File`, `*** Delete File`, or `*** Move to`."
+            ),
+            parameters={
+                "input": {
+                    "type": "string",
+                    "description": (
+                        "Complete patch text, beginning with `*** Begin Patch` and ending with "
+                        "`*** End Patch`."
+                    ),
+                }
+            },
+            required=["input"],
+        )
+        super().__init__("apply_patch", schema)
+
+    async def build(self, params: dict) -> ApplyPatchInvocation:
+        validated = validate_tool_params(ApplyPatchParams, params)
         return ApplyPatchInvocation(validated)
 
 

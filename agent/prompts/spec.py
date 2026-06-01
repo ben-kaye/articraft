@@ -29,6 +29,17 @@ PROMPT_VARIANTS: tuple[PromptVariant, ...] = (
         description="OpenAI designer prompt for the unified SDK.",
     ),
     PromptVariant(
+        name="designer_codex_cli",
+        sections=(
+            SECTIONS_DIR / "designer_common.md",
+            SECTIONS_DIR / "link_naming.md",
+            SECTIONS_DIR / "provider_codex_cli.md",
+            SECTIONS_DIR / "sdk_base.md",
+        ),
+        output=GENERATED_DIR / "designer_system_prompt_codex_cli.txt",
+        description="Codex CLI transport designer prompt for the unified SDK.",
+    ),
+    PromptVariant(
         name="designer_gemini",
         sections=(
             SECTIONS_DIR / "designer_common.md",
