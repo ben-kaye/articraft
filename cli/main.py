@@ -41,13 +41,17 @@ def _infer_provider(model_id: str) -> str:
         return provider
     raise ValueError(
         f"Unable to infer provider for model '{model_id}'. "
-        "Pass --provider explicitly or use a known OpenAI, Gemini, Anthropic, or OpenRouter model ID."
+        "Pass --provider explicitly or use a known OpenAI, Gemini, Anthropic, OpenRouter, or DeepSeek model ID."
     )
 
 
-def _model_and_provider(args: argparse.Namespace) -> tuple[str, str]:
-    model_id = str(args.model or default_model_from_env())
-    provider = str(args.provider or _infer_provider(model_id))
+def _model_and_provider(args: argparse.Namespace) -> tuple[str | None, str]:
+    model_id: str | None = args.model
+    provider: str | None = args.provider
+    if model_id is None and provider is None:
+        model_id = default_model_from_env()
+    if provider is None:
+        provider = _infer_provider(model_id or "")
     return model_id, provider
 
 
@@ -110,11 +114,10 @@ def _run_generate(args: argparse.Namespace) -> int:
         args.prompt,
         "--provider",
         provider,
-        "--model",
-        model_id,
-        "--thinking",
-        thinking_level,
     ]
+    if model_id:
+        argv.extend(["--model", model_id])
+    argv.extend(["--thinking", thinking_level])
     if args.image:
         argv.extend(["--image", args.image])
     if args.max_cost_usd is not None:
@@ -134,11 +137,10 @@ def _run_draft(args: argparse.Namespace) -> int:
         args.prompt,
         "--provider",
         provider,
-        "--model-id",
-        model_id,
-        "--thinking-level",
-        thinking_level,
     ]
+    if model_id:
+        argv.extend(["--model-id", model_id])
+    argv.extend(["--thinking-level", thinking_level])
     if args.image:
         argv.extend(["--image", args.image])
     if args.max_cost_usd is not None:
@@ -400,11 +402,10 @@ def _run_dataset_run(args: argparse.Namespace) -> int:
         args.category_slug,
         "--provider",
         provider,
-        "--model-id",
-        model_id,
-        "--thinking-level",
-        thinking_level,
     ]
+    if model_id:
+        argv.extend(["--model-id", model_id])
+    argv.extend(["--thinking-level", thinking_level])
     if args.image:
         argv.extend(["--image", args.image])
     if args.dataset_id:
