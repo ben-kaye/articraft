@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from storage.lfs import record_payload_status
+from storage.models import record_endpoint, record_model, record_served_by
 from storage.records_index import find_record_index_row
 from storage.revisions import (
     active_cost_path,
@@ -177,6 +178,10 @@ class ViewerRecordsStore(ViewerStoreComponent):
             sdk_package=_normalize_sdk_package_value(row.get("sdk_package")),
             provider=_coerce_string(row.get("provider")),
             model_id=_coerce_string(row.get("model_id")),
+            protocol=_coerce_string(row.get("protocol")),
+            endpoint=_coerce_string(record_endpoint(row)),
+            served_by=_coerce_string(record_served_by(row)),
+            model=_coerce_string(record_model(row)),
             creator_mode=_coerce_string(row.get("creator_mode")),
             external_agent=_coerce_string(row.get("external_agent")),
             agent_harness=_coerce_string(row.get("agent_harness")) or "articraft",

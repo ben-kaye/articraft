@@ -17,6 +17,7 @@ from agent.compiler import (
 )
 from agent.defaults import resolve_max_turns
 from agent.prompts import resolve_system_prompt_path
+from agent.providers.endpoints import get_preset, served_by_from_base_url
 from agent.run_context import (
     SingleRunContext,
     _build_single_run_context,
@@ -43,9 +44,8 @@ from storage.materialize import (
     ensure_record_artifacts_exist,
 )
 from storage.models import (
-    CompileReport as StorageCompileReport,
-)
-from storage.models import (
+    PROVENANCE_SCHEMA_VERSION,
+    RECORD_SCHEMA_VERSION,
     CompileWarning,
     CreatorMetadata,
     DisplayMetadata,
@@ -59,6 +59,9 @@ from storage.models import (
     RunSummary,
     SdkSettings,
     SourceRef,
+)
+from storage.models import (
+    CompileReport as StorageCompileReport,
 )
 from storage.records import RecordStore
 from storage.repo import StorageRepo
@@ -363,6 +366,32 @@ class SuccessRecordWrite:
     revision_parent: dict[str, str] | None = None
     revision_seed: dict[str, str] | None = None
     inherited_inputs: list[dict[str, str]] | None = None
+    # Best-effort real serving backend (e.g. OpenRouter's downstream host). When None,
+    # served_by is derived from the endpoint preset at write time.
+    served_by: str | None = None
+
+
+def _attribution_fields(
+    provider: str | None, *, served_by_override: str | None = None
+) -> dict[str, str | None]:
+    """Derive protocol/endpoint/served_by from a legacy provider/endpoint name.
+
+    ``provider`` here is the legacy endpoint identifier (e.g. "openai", "openrouter").
+    Returns the new vocabulary fields; an explicit ``served_by_override`` (e.g. the real
+    downstream host reported by OpenRouter) wins over the preset default.
+    """
+
+    preset = get_preset(provider)
+    if preset is not None:
+        protocol = preset.protocol.value
+        endpoint = preset.name
+        served_by = served_by_override or preset.served_by
+    else:
+        # Ad-hoc endpoint (likely a base_url, e.g. a local server).
+        protocol = "openai-chat"
+        endpoint = provider
+        served_by = served_by_override or served_by_from_base_url(provider)
+    return {"protocol": protocol, "endpoint": endpoint, "served_by": served_by}
 
 
 def create_workbench_draft_record(
@@ -461,8 +490,9 @@ def create_workbench_draft_record(
         final_status="draft",
     )
 
+    draft_attribution = _attribution_fields(selected_provider)
     provenance = Provenance(
-        schema_version=2,
+        schema_version=PROVENANCE_SCHEMA_VERSION,
         record_id=context.record_id,
         generation=GenerationSettings(
             provider=selected_provider,
@@ -472,6 +502,10 @@ def create_workbench_draft_record(
             openai_reasoning_summary=selected_openai_reasoning_summary,
             max_turns=resolved_max_turns,
             max_cost_usd=max_cost_usd,
+            protocol=draft_attribution["protocol"],
+            endpoint=draft_attribution["endpoint"],
+            served_by=draft_attribution["served_by"],
+            model=selected_model_id,
         ),
         prompting=PromptingSettings(
             system_prompt_file=system_prompt_file,
@@ -504,6 +538,10 @@ def create_workbench_draft_record(
         openai_reasoning_summary=selected_openai_reasoning_summary,
         max_turns=resolved_max_turns,
         max_cost_usd=max_cost_usd,
+        protocol=draft_attribution["protocol"],
+        endpoint=draft_attribution["endpoint"],
+        served_by=draft_attribution["served_by"],
+        model=selected_model_id,
     ).to_dict()
     run_summary_payload = run_summary.to_dict()
     storage_repo.write_json(
@@ -523,7 +561,7 @@ def create_workbench_draft_record(
     )
 
     record = Record(
-        schema_version=3,
+        schema_version=RECORD_SCHEMA_VERSION,
         record_id=context.record_id,
         created_at=context.created_at,
         updated_at=context.created_at,
@@ -535,6 +573,10 @@ def create_workbench_draft_record(
         sdk_package=sdk_package,
         provider=selected_provider,
         model_id=selected_model_id,
+        protocol=draft_attribution["protocol"],
+        endpoint=draft_attribution["endpoint"],
+        served_by=draft_attribution["served_by"],
+        model=selected_model_id,
         display=DisplayMetadata(
             title=_display_title(normalized_prompt, label=label),
             prompt_preview=_prompt_preview(normalized_prompt),
@@ -601,6 +643,7 @@ def write_success_record(
     image_path = request.image_path
     provider = request.provider
     model_id = request.model_id
+    attribution = _attribution_fields(provider, served_by_override=request.served_by)
     openai_transport = request.openai_transport
     thinking_level = request.thinking_level
     max_turns = request.max_turns
@@ -724,7 +767,7 @@ def write_success_record(
     materializations.write_compile_report(context.record_id, compile_report)
 
     provenance = Provenance(
-        schema_version=2,
+        schema_version=PROVENANCE_SCHEMA_VERSION,
         record_id=context.record_id,
         generation=GenerationSettings(
             provider=provider,
@@ -736,6 +779,10 @@ def write_success_record(
             ),
             max_turns=max_turns,
             max_cost_usd=max_cost_usd,
+            protocol=attribution["protocol"],
+            endpoint=attribution["endpoint"],
+            served_by=attribution["served_by"],
+            model=model_id,
         ),
         prompting=PromptingSettings(
             system_prompt_file=system_prompt_path.name,
@@ -778,6 +825,10 @@ def write_success_record(
         ),
         max_turns=max_turns,
         max_cost_usd=max_cost_usd,
+        protocol=attribution["protocol"],
+        endpoint=attribution["endpoint"],
+        served_by=attribution["served_by"],
+        model=model_id,
     ).to_dict()
     run_summary_payload = RunSummary(
         turn_count=turn_count,
@@ -824,7 +875,7 @@ def write_success_record(
             }
 
     record = Record(
-        schema_version=3,
+        schema_version=RECORD_SCHEMA_VERSION,
         record_id=context.record_id,
         created_at=(
             _first_string(existing_record.get("created_at"), context.created_at)
@@ -857,6 +908,10 @@ def write_success_record(
         sdk_package=sdk_package,
         provider=provider,
         model_id=model_id,
+        protocol=attribution["protocol"],
+        endpoint=attribution["endpoint"],
+        served_by=attribution["served_by"],
+        model=model_id,
         display=_build_record_display(
             existing_record=existing_record,
             display_prompt=display_prompt,

@@ -5,10 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from storage.lfs_pointers import is_lfs_pointer_file
+from storage.models import record_endpoint, record_model, record_served_by
 from storage.records import WORKBENCH_RECORD_GITIGNORE_TEXT
 from storage.repo import StorageRepo
 from storage.revisions import active_cost_path, active_provenance_path, active_traces_dir
 
+# The committed index is authoritative for non-hydrated (LFS-excluded) records, so the
+# schema version is NOT bumped for additive fields: new protocol/endpoint/served_by/model
+# columns are optional and older rows fall back to provider/model_id at read time.
 RECORDS_INDEX_SCHEMA_VERSION = 1
 EXTERNAL_AGENT_HARNESSES = frozenset({"codex", "claude-code", "cursor"})
 
@@ -200,6 +204,10 @@ def _build_record_index_row(
         "sdk_package": _string_or_none(record.get("sdk_package")),
         "provider": _string_or_none(record.get("provider")),
         "model_id": _string_or_none(record.get("model_id")),
+        "protocol": _string_or_none(record.get("protocol")),
+        "endpoint": _string_or_none(record_endpoint(record)),
+        "served_by": _string_or_none(record_served_by(record)),
+        "model": _string_or_none(record_model(record)),
         "creator_mode": creator_mode,
         "external_agent": external_agent,
         "agent_harness": _agent_harness_from_creator(creator),

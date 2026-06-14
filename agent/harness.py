@@ -32,9 +32,11 @@ from agent.providers.base import ProviderClient
 from agent.providers.codex_cli import CodexCliLLM
 from agent.providers.dashscope import DashScopeLLM
 from agent.providers.deepseek import DeepSeekLLM
+from agent.providers.endpoints import resolve_target
 from agent.providers.factory import (
     ProviderConfig,
     ProviderConstructors,
+    create_client_for_target,
     create_provider_client,
     normalize_provider_name,
 )
@@ -202,6 +204,8 @@ class ArticraftAgent:
         openai_reasoning_summary: Optional[str] = "auto",
         max_cost_usd: float | None = None,
         runtime_limits: BatchRuntimeLimits | None = None,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
     ):
         self.file_path = file_path
         self.sdk_package = _normalize_sdk_package(sdk_package)
@@ -229,24 +233,40 @@ class ArticraftAgent:
             trace_writer=self.trace_writer,
             tool_call_name=self.message_codec.tool_call_name,
         )
-        self.llm: ProviderClient = create_provider_client(
-            ProviderConfig(
-                provider=provider_norm,
-                model_id=model_id,
-                thinking_level=thinking_level,
-                openai_transport=openai_transport,
-                openai_reasoning_summary=openai_reasoning_summary,
-            ),
-            constructors=ProviderConstructors(
-                anthropic=AnthropicLLM,
-                codex_cli=CodexCliLLM,
-                dashscope=DashScopeLLM,
-                deepseek=DeepSeekLLM,
-                gemini=GeminiLLM,
-                openai=OpenAILLM,
-                openrouter=OpenRouterLLM,
-            ),
+        self.llm: ProviderClient
+        constructors = ProviderConstructors(
+            anthropic=AnthropicLLM,
+            codex_cli=CodexCliLLM,
+            dashscope=DashScopeLLM,
+            deepseek=DeepSeekLLM,
+            gemini=GeminiLLM,
+            openai=OpenAILLM,
+            openrouter=OpenRouterLLM,
         )
+        if base_url:
+            # Ad-hoc OpenAI-compatible endpoint (e.g. a local vLLM/Ollama server). Route
+            # through the generic chat client; provider identity stays "openrouter" so the
+            # codec/pricing paths treat it as OpenAI-compatible chat completions.
+            self.llm = create_client_for_target(
+                resolve_target(
+                    model=model_id,
+                    base_url=base_url,
+                    api_key_env=api_key_env,
+                ),
+                thinking_level=thinking_level,
+                constructors=constructors,
+            )
+        else:
+            self.llm = create_provider_client(
+                ProviderConfig(
+                    provider=provider_norm,
+                    model_id=model_id,
+                    thinking_level=thinking_level,
+                    openai_transport=openai_transport,
+                    openai_reasoning_summary=openai_reasoning_summary,
+                ),
+                constructors=constructors,
+            )
 
         actual_model_id = self.llm.model_id
         self.max_turns = resolve_max_turns(model_id=actual_model_id, max_turns=max_turns)

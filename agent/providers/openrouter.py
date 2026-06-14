@@ -64,6 +64,17 @@ def openrouter_api_key_from_env(env: dict[str, str] | None = None) -> str | None
     return random.choice(keys) if keys else None
 
 
+def _api_key_from_named_env(api_key_env: str, env: dict[str, str] | None = None) -> str | None:
+    """Read an API key from an arbitrary env var, supporting comma/newline lists."""
+
+    values = os.environ if env is None else env
+    raw = values.get(api_key_env)
+    if not raw:
+        return None
+    keys = [token.strip() for token in raw.replace("\n", ",").split(",") if token.strip()]
+    return random.choice(keys) if keys else None
+
+
 class OpenRouterLLM:
     """OpenRouter Chat Completions client for tool-calling workflows."""
 
@@ -73,8 +84,15 @@ class OpenRouterLLM:
         *,
         thinking_level: str = "high",
         dry_run: bool = False,
+        base_url: str | None = None,
+        api_key_env: str | None = None,
     ):
         self.model_id = model_id
+        # When base_url/api_key_env are supplied this acts as the generic
+        # OpenAI-compatible chat client (e.g. a local vLLM/Ollama server); otherwise
+        # it defaults to OpenRouter for full backward compatibility.
+        self.base_url = (base_url or OPENROUTER_BASE_URL).rstrip("/")
+        self.api_key_env = api_key_env
         self.thinking_level = thinking_level
         self.reasoning = _reasoning_config_from_thinking_level(thinking_level)
         self.max_tokens = _env_int(
@@ -97,16 +115,23 @@ class OpenRouterLLM:
             self._client = None
             self._client_is_async = False
         else:
-            api_key = openrouter_api_key_from_env()
-            if not api_key:
-                raise ValueError(
-                    "OpenRouter credentials not found. "
-                    "Set OPENROUTER_API_KEY or OPENROUTER_API_KEYS."
-                )
+            if self.api_key_env:
+                api_key = _api_key_from_named_env(self.api_key_env)
+                # Local OpenAI-compatible servers often need no real key; the SDK
+                # still requires a non-empty string, so fall back to a placeholder.
+                if not api_key:
+                    api_key = "not-needed"
+            else:
+                api_key = openrouter_api_key_from_env()
+                if not api_key:
+                    raise ValueError(
+                        "OpenRouter credentials not found. "
+                        "Set OPENROUTER_API_KEY or OPENROUTER_API_KEYS."
+                    )
 
             client_kwargs: dict[str, Any] = {
                 "api_key": api_key,
-                "base_url": OPENROUTER_BASE_URL,
+                "base_url": self.base_url,
                 "max_retries": 0,
             }
             default_headers = _openrouter_default_headers()
@@ -146,7 +171,7 @@ class OpenRouterLLM:
             messages=messages,
             tools=tools,
         )
-        payload["base_url"] = OPENROUTER_BASE_URL
+        payload["base_url"] = self.base_url
         return payload
 
     def context_window_pressure(self, usage: dict[str, int]) -> ContextWindowPressure:
@@ -301,6 +326,11 @@ class OpenRouterLLM:
             }
         if usage:
             result["usage"] = usage
+        # Best-effort real serving backend. OpenRouter reports the downstream host that
+        # actually served the weights (Together, DeepInfra, ...) in a top-level field.
+        served_by = _get(response, "provider")
+        if isinstance(served_by, str) and served_by.strip():
+            result["served_by"] = served_by.strip()
         return result
 
 

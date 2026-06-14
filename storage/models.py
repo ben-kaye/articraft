@@ -4,6 +4,22 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+# Current on-disk schema versions. Bumped when the protocol/endpoint/served_by/model
+# vocabulary was introduced alongside the legacy provider/model_id fields.
+RECORD_SCHEMA_VERSION = 4
+PROVENANCE_SCHEMA_VERSION = 3
+
+# Map a legacy provider/endpoint name to a default served_by attribution.
+_LEGACY_PROVIDER_SERVED_BY: dict[str, str] = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "dashscope": "Alibaba",
+    "gemini": "Google",
+    "codex-cli": "OpenAI",
+    "openrouter": "OpenRouter",
+}
+
 CollectionName = Literal["dataset", "workbench"]
 PromptKind = Literal["single_prompt", "prompt_series"]
 RunMode = Literal["dataset_batch", "dataset_single", "workbench_batch", "workbench_single"]
@@ -92,6 +108,12 @@ class Record:
     rated_by: str | None = None
     secondary_rating: int | None = None
     secondary_rated_by: str | None = None
+    # protocol/endpoint/served_by/model supersede provider/model_id. provider/model_id
+    # are still written as a legacy mirror so older readers keep working.
+    protocol: str | None = None
+    endpoint: str | None = None
+    served_by: str | None = None
+    model: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -109,6 +131,10 @@ class Record:
             "category_slug": self.category_slug,
             "source": self.source.to_dict(),
             "sdk_package": self.sdk_package,
+            "protocol": self.protocol,
+            "endpoint": self.endpoint,
+            "served_by": self.served_by,
+            "model": self.model,
             "provider": self.provider,
             "model_id": self.model_id,
             "display": self.display.to_dict(),
@@ -134,9 +160,41 @@ class GenerationSettings:
     openai_reasoning_summary: str | None = None
     max_turns: int | None = None
     max_cost_usd: float | None = None
+    protocol: str | None = None
+    endpoint: str | None = None
+    served_by: str | None = None
+    model: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def record_model(data: dict[str, Any]) -> str | None:
+    """Read the model id from a raw record/generation dict, new key then legacy."""
+
+    value = data.get("model")
+    if value is None:
+        value = data.get("model_id")
+    return value
+
+
+def record_served_by(data: dict[str, Any]) -> str | None:
+    """Read served_by, falling back to a legacy provider->served_by mapping."""
+
+    value = data.get("served_by")
+    if value:
+        return value
+    legacy = (data.get("provider") or data.get("endpoint") or "").strip().lower()
+    return _LEGACY_PROVIDER_SERVED_BY.get(legacy)
+
+
+def record_endpoint(data: dict[str, Any]) -> str | None:
+    """Read the endpoint name, falling back to the legacy provider value."""
+
+    value = data.get("endpoint")
+    if value is None:
+        value = data.get("provider")
+    return value
 
 
 @dataclass(slots=True, frozen=True)

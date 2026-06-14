@@ -9,11 +9,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from articraft.values import PROVIDER_VALUE_SET, THINKING_LEVEL_VALUE_SET
+from articraft.values import (
+    PROTOCOL_VALUE_SET,
+    PROVIDER_VALUE_SET,
+    THINKING_LEVEL_VALUE_SET,
+)
 from storage.identifiers import RECORD_ID_RE as _RECORD_ID_RE
 from storage.identifiers import SLUG_RE as _SLUG_RE
 from storage.lfs import record_payload_status
 from storage.lfs_pointers import is_lfs_pointer_file
+from storage.models import record_endpoint, record_model
 from storage.records import WORKBENCH_RECORD_GITIGNORE_TEXT
 from storage.records_index import RECORDS_INDEX_SCHEMA_VERSION
 from storage.repo import StorageRepo
@@ -28,6 +33,7 @@ _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 _ALLOWED_COLLECTIONS = {"dataset", "workbench"}
 _ALLOWED_PROMPT_KINDS = {"single_prompt", "prompt_series"}
 _ALLOWED_PROVIDERS = PROVIDER_VALUE_SET
+_ALLOWED_PROTOCOLS = PROTOCOL_VALUE_SET
 _ALLOWED_THINKING_LEVELS = THINKING_LEVEL_VALUE_SET
 _ALLOWED_CREATOR_MODES = {"internal_agent", "external_agent"}
 _ALLOWED_EXTERNAL_AGENTS = {"codex", "claude-code", "cursor"}
@@ -513,7 +519,7 @@ class _DataFormatValidator:
                 record_path, "record_id must start with rec_ and contain only safe path characters"
             )
         schema_version = record.get("schema_version")
-        if schema_version != 3:
+        if schema_version not in (3, 4):
             self._add_error(
                 record_path, f"unsupported schema_version={record.get('schema_version')!r}"
             )
@@ -558,7 +564,8 @@ class _DataFormatValidator:
         for key in sorted(required):
             if key not in record:
                 self._add_error(record_path, f"missing required field {key!r}")
-        if record.get("schema_version") == 3:
+        schema_version = record.get("schema_version")
+        if isinstance(schema_version, int) and schema_version >= 3:
             active_revision_id = record.get("active_revision_id")
             if not isinstance(active_revision_id, str) or not REVISION_ID_RE.fullmatch(
                 active_revision_id
@@ -566,7 +573,7 @@ class _DataFormatValidator:
                 self._add_error(record_path, "active_revision_id must match rev_000001 style IDs")
             lineage = record.get("lineage")
             if not isinstance(lineage, dict):
-                self._add_error(record_path, "lineage must be an object for v3 records")
+                self._add_error(record_path, "lineage must be an object for v3+ records")
         for key in ("created_at", "updated_at"):
             if not _is_utc_timestamp(record.get(key)):
                 self._add_error(record_path, f"{key} must be a UTC ISO timestamp ending in Z")
@@ -578,18 +585,38 @@ class _DataFormatValidator:
             self._add_error(record_path, f"invalid prompt_kind={record.get('prompt_kind')!r}")
         creator = record.get("creator")
         is_external_record = isinstance(creator, dict) and creator.get("mode") == "external_agent"
-        provider = record.get("provider")
-        if provider is None:
-            if not is_external_record:
-                self._add_error(record_path, "provider must be set for non-external records")
-        elif provider not in _ALLOWED_PROVIDERS:
-            self._add_error(record_path, f"invalid provider={provider!r}")
-        model_id = record.get("model_id")
-        if model_id is None:
-            if not is_external_record:
-                self._add_error(record_path, "model_id must be set for non-external records")
-        elif not isinstance(model_id, str) or not model_id.strip():
-            self._add_error(record_path, "model_id must be null or a non-empty string")
+        is_v4_plus = isinstance(schema_version, int) and schema_version >= 4
+        if is_v4_plus:
+            # New vocabulary: protocol + model are authoritative. provider/model_id remain
+            # as a free-form legacy mirror, so they are no longer enum-validated here.
+            protocol = record.get("protocol")
+            if protocol is None:
+                if not is_external_record:
+                    self._add_error(record_path, "protocol must be set for non-external records")
+            elif protocol not in _ALLOWED_PROTOCOLS:
+                self._add_error(record_path, f"invalid protocol={protocol!r}")
+            model = record.get("model")
+            if model is None:
+                if not is_external_record:
+                    self._add_error(record_path, "model must be set for non-external records")
+            elif not isinstance(model, str) or not model.strip():
+                self._add_error(record_path, "model must be null or a non-empty string")
+            served_by = record.get("served_by")
+            if served_by is not None and (not isinstance(served_by, str) or not served_by.strip()):
+                self._add_error(record_path, "served_by must be null or a non-empty string")
+        else:
+            provider = record.get("provider")
+            if provider is None:
+                if not is_external_record:
+                    self._add_error(record_path, "provider must be set for non-external records")
+            elif provider not in _ALLOWED_PROVIDERS:
+                self._add_error(record_path, f"invalid provider={provider!r}")
+            model_id = record.get("model_id")
+            if model_id is None:
+                if not is_external_record:
+                    self._add_error(record_path, "model_id must be set for non-external records")
+            elif not isinstance(model_id, str) or not model_id.strip():
+                self._add_error(record_path, "model_id must be null or a non-empty string")
         category_slug = record.get("category_slug")
         if category_slug is not None:
             if not isinstance(category_slug, str) or not _SLUG_RE.fullmatch(category_slug):
@@ -732,7 +759,7 @@ class _DataFormatValidator:
         if not isinstance(provenance, dict):
             self._add_error(path, "provenance must be a JSON object")
             return
-        if provenance.get("schema_version") not in {1, 2}:
+        if provenance.get("schema_version") not in {1, 2, 3}:
             self._add_error(
                 path, f"unsupported schema_version={provenance.get('schema_version')!r}"
             )
@@ -742,10 +769,12 @@ class _DataFormatValidator:
         if not isinstance(generation, dict):
             self._add_error(path, "generation must be an object")
         else:
-            if generation.get("provider") != record.get("provider"):
-                self._add_error(path, "generation.provider must match record.json provider")
-            if generation.get("model_id") != record.get("model_id"):
-                self._add_error(path, "generation.model_id must match record.json model_id")
+            # Compare via alias-aware accessors so both legacy (provider/model_id) and new
+            # (endpoint/model) shapes match their record.json counterpart.
+            if record_endpoint(generation) != record_endpoint(record):
+                self._add_error(path, "generation endpoint/provider must match record.json")
+            if record_model(generation) != record_model(record):
+                self._add_error(path, "generation model must match record.json")
         sdk = provenance.get("sdk")
         if not isinstance(sdk, dict):
             self._add_error(path, "sdk must be an object")
@@ -777,7 +806,7 @@ class _DataFormatValidator:
     def _validate_revisions(
         self, record_dir: Path, record_path: Path, record: dict[str, Any]
     ) -> None:
-        if record.get("schema_version") != 3:
+        if record.get("schema_version") not in (3, 4):
             return
         revisions_dir = record_dir / "revisions"
         if not revisions_dir.is_dir():

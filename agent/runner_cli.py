@@ -15,7 +15,8 @@ from typing import Awaitable, Callable, Optional
 from agent.cost import max_cost_usd_from_env, parse_max_cost_usd
 from agent.payload_preview import build_provider_payload_preview
 from agent.prompts import normalize_sdk_package
-from agent.providers.factory import infer_provider_from_model_id, validate_provider_credentials
+from agent.providers.endpoints import ResolvedTarget, get_preset, resolve_target
+from agent.providers.factory import validate_provider_credentials
 from agent.run_context import _default_model_id
 from agent.single_run import run_from_input
 from agent.tools import build_initial_user_content as _build_initial_user_content
@@ -62,23 +63,25 @@ def _build_prompt_with_qc(prompt: str, qc_blurb_text: Optional[str]) -> str:
     )
 
 
-def _resolve_model_and_provider(
+def _resolve_run_target(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
-) -> tuple[str | None, str]:
-    model_id = args.model
-    provider = args.provider
-    if model_id is None and provider is None:
-        model_id = default_model_from_env()
-    if provider is None:
-        provider = infer_provider_from_model_id(model_id)
-        if provider is None:
-            parser.error(
-                f"Unable to infer provider for model '{model_id}'. "
-                "Pass --provider explicitly or use a known OpenAI, Gemini, Anthropic, "
-                "DashScope, OpenRouter, DeepSeek, or Codex CLI model ID."
-            )
-    return model_id, provider
+) -> ResolvedTarget:
+    model = args.model
+    # --endpoint is the new name; --provider is kept as a deprecated alias.
+    endpoint = args.endpoint or args.provider
+    if model is None and endpoint is None and args.base_url is None:
+        model = default_model_from_env()
+    try:
+        return resolve_target(
+            model=model,
+            endpoint=endpoint,
+            base_url=args.base_url,
+            api_key_env=args.api_key_env,
+            served_by=args.served_by,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def _resolve_thinking_level(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
@@ -109,10 +112,34 @@ def main(
         help="Optional reference image to augment --prompt.",
     )
     parser.add_argument(
+        "--endpoint",
+        default=None,
+        choices=PROVIDER_VALUES,
+        help="Endpoint preset (where to send requests). Replaces --provider.",
+    )
+    parser.add_argument(
         "--provider",
         default=None,
         choices=PROVIDER_VALUES,
-        help="LLM provider.",
+        help="Deprecated alias for --endpoint.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help=(
+            "Ad-hoc OpenAI-compatible endpoint base URL (e.g. a local vLLM/Ollama server "
+            "at http://localhost:11434/v1). Implies the openai-chat protocol."
+        ),
+    )
+    parser.add_argument(
+        "--api-key-env",
+        default=None,
+        help="Env var holding the API key for --base-url (optional for local servers).",
+    )
+    parser.add_argument(
+        "--served-by",
+        default=None,
+        help="Label for the entity actually serving the model (e.g. a local model name).",
     )
     parser.add_argument(
         "--repo-root",
@@ -201,7 +228,15 @@ def main(
     )
     args = parser.parse_args(argv)
     load_repo_env(args.repo_root)
-    model_id_arg, provider = _resolve_model_and_provider(args, parser)
+    target = _resolve_run_target(args, parser)
+    is_adhoc_endpoint = get_preset(target.endpoint) is None
+    # For ad-hoc endpoints the legacy paths need a valid provider identity; the real
+    # endpoint/served_by travel separately via base_url/served_by.
+    provider = "openrouter" if is_adhoc_endpoint else target.endpoint
+    model_id_arg = target.model or None
+    run_base_url = target.base_url if is_adhoc_endpoint else None
+    run_api_key_env = target.api_key_env if is_adhoc_endpoint else None
+    run_served_by = target.served_by
     thinking_level = _resolve_thinking_level(args, parser)
     if args.collection == "dataset":
         if not args.dataset_id:
@@ -286,11 +321,12 @@ def main(
             print(text)
         return 0
 
-    try:
-        validate_provider_credentials(provider)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    if not is_adhoc_endpoint:
+        try:
+            validate_provider_credentials(provider)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     return asyncio.run(
         run_from_input_func(
@@ -301,6 +337,9 @@ def main(
             image_path=image_path,
             provider=provider,
             model_id=model_id_arg,
+            base_url=run_base_url,
+            api_key_env=run_api_key_env,
+            served_by=run_served_by,
             openai_transport=args.openai_transport,
             thinking_level=thinking_level,
             max_turns=args.max_turns,

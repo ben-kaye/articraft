@@ -47,12 +47,13 @@ def _infer_provider(model_id: str) -> str:
 
 
 def _model_and_provider(args: argparse.Namespace) -> tuple[str, str]:
+    endpoint = getattr(args, "endpoint", None) or args.provider
     if args.model:
         model_id = str(args.model)
-        provider = str(args.provider or _infer_provider(model_id))
+        provider = str(endpoint or _infer_provider(model_id))
         return model_id, provider
-    if args.provider:
-        provider = str(args.provider)
+    if endpoint:
+        provider = str(endpoint)
         model_id = default_model_id(ProviderConfig(provider=provider))
         return model_id, provider
     model_id = str(default_model_from_env())
@@ -106,22 +107,29 @@ def _run_status(args: argparse.Namespace) -> int:
 
 
 def _run_generate(args: argparse.Namespace) -> int:
+    base_url = getattr(args, "base_url", None)
     try:
-        model_id, provider = _model_and_provider(args)
         thinking_level = _thinking_level_from_args(args)
+        # For an ad-hoc endpoint (local OpenAI-compatible server) forward the raw flags
+        # and let the runner resolve; otherwise resolve provider/model up front as before.
+        if not base_url:
+            model_id, provider = _model_and_provider(args)
     except ValueError as exc:
         print(str(exc))
         return 1
-    argv = [
-        "--repo-root",
-        str(args.repo_root),
-        "--prompt",
-        args.prompt,
-        "--provider",
-        provider,
-    ]
-    if model_id:
-        argv.extend(["--model", model_id])
+    argv = ["--repo-root", str(args.repo_root), "--prompt", args.prompt]
+    if base_url:
+        argv.extend(["--base-url", base_url])
+        if getattr(args, "api_key_env", None):
+            argv.extend(["--api-key-env", args.api_key_env])
+        if args.model:
+            argv.extend(["--model", args.model])
+    else:
+        argv.extend(["--provider", provider])
+        if model_id:
+            argv.extend(["--model", model_id])
+    if getattr(args, "served_by", None):
+        argv.extend(["--served-by", args.served_by])
     argv.extend(["--thinking", thinking_level])
     if args.image:
         argv.extend(["--image", args.image])
@@ -620,7 +628,21 @@ def _add_repo_root(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_generation_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--provider", choices=PROVIDER_VALUES)
+    parser.add_argument("--endpoint", choices=PROVIDER_VALUES, help="Endpoint preset.")
+    parser.add_argument(
+        "--provider", choices=PROVIDER_VALUES, help="Deprecated alias for --endpoint."
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="Ad-hoc OpenAI-compatible endpoint base URL (e.g. a local server).",
+    )
+    parser.add_argument(
+        "--api-key-env", default=None, help="Env var holding the API key for --base-url."
+    )
+    parser.add_argument(
+        "--served-by", default=None, help="Label for the entity actually serving the model."
+    )
     parser.add_argument("--model", default=None, help="Model ID to use.")
     parser.add_argument(
         "--thinking-level",

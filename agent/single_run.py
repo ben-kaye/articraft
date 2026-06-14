@@ -64,6 +64,9 @@ async def run_from_input(
     thinking_level: str,
     max_turns: int | None,
     system_prompt_path: str,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+    served_by: str | None = None,
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     on_compaction_event: Optional[Callable[[dict[str, Any], float], None]] = None,
@@ -96,6 +99,9 @@ async def run_from_input(
         thinking_level=thinking_level,
         max_turns=max_turns,
         system_prompt_path=system_prompt_path,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        served_by=served_by,
         display_enabled=display_enabled,
         on_turn_start=on_turn_start,
         on_compaction_event=on_compaction_event,
@@ -132,6 +138,9 @@ async def run_from_input_impl(
     thinking_level: str,
     max_turns: int | None,
     system_prompt_path: str,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+    served_by: str | None = None,
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     on_compaction_event: Optional[Callable[[dict[str, Any], float], None]] = None,
@@ -211,6 +220,9 @@ async def run_from_input_impl(
         thinking_level=thinking_level,
         max_turns=max_turns,
         system_prompt_path=system_prompt_path,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        served_by=served_by,
         display_enabled=display_enabled,
         on_turn_start=on_turn_start,
         on_compaction_event=on_compaction_event,
@@ -250,6 +262,9 @@ async def execute_single_run(
     thinking_level: str,
     max_turns: int | None,
     system_prompt_path: str,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+    served_by: str | None = None,
     display_enabled: Optional[bool] = None,
     on_turn_start: Optional[Callable[[int], None]] = None,
     on_compaction_event: Optional[Callable[[dict[str, Any], float], None]] = None,
@@ -287,6 +302,12 @@ async def execute_single_run(
     compile_report_func: CompileReportFunc = compile_urdf_report_maybe_timeout,
     write_success_record_func: WriteSuccessRecord = write_success_record,
 ) -> RunExecutionOutcome:
+    # For an ad-hoc endpoint (local OpenAI-compatible server) the codec/pricing path needs
+    # a valid provider identity ("openrouter" = OpenAI-compatible chat), while the record
+    # captures the real endpoint via record_provider/served_by.
+    record_provider = base_url if base_url else provider
+    if base_url:
+        provider = "openrouter"
     resolved_context = context or await asyncio.to_thread(
         _build_single_run_context,
         repo_root=resolved_repo_root,
@@ -437,6 +458,8 @@ async def execute_single_run(
             openai_reasoning_summary=openai_reasoning_summary,
             max_cost_usd=max_cost_usd,
             runtime_limits=runtime_limits,
+            base_url=base_url,
+            api_key_env=api_key_env,
         ) as agent:
             logger.info("Using system prompt: %s", agent.loaded_system_prompt_path)
             loaded_system_prompt_path = Path(agent.loaded_system_prompt_path)
@@ -538,8 +561,9 @@ async def execute_single_run(
             prompt_text=prompt_text,
             display_prompt=display_prompt or prompt_text,
             image_path=image_path,
-            provider=provider,
+            provider=record_provider,
             model_id=actual_model_id,
+            served_by=served_by,
             openai_transport=openai_transport,
             thinking_level=thinking_level,
             max_turns=resolved_max_turns,

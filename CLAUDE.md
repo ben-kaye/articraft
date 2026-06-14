@@ -177,7 +177,28 @@ Provider keys go in `.env`:
 
 Optional defaults include `ARTICRAFT_MODEL` for the default generation model, `ARTICRAFT_THINKING_LEVEL` for the default thinking level, `ARTICRAFT_MAX_COST_USD` for per-run budgets, and provider-specific knobs such as OpenAI transport/cache settings, Anthropic cache settings, and OpenRouter token/retry settings.
 
-`articraft generate` uses `ARTICRAFT_MODEL` and `ARTICRAFT_THINKING_LEVEL` from `.env` when present; otherwise it defaults to `gpt-5.5-2026-04-23` with `--thinking-level high`. Provider inference handles known OpenAI, Gemini, Claude, and OpenRouter-style model IDs; pass `--provider` explicitly when using an ambiguous model name.
+`articraft generate` uses `ARTICRAFT_MODEL` and `ARTICRAFT_THINKING_LEVEL` from `.env` when present; otherwise it defaults to `gpt-5.5-2026-04-23` with `--thinking-level high`. Endpoint inference handles known OpenAI, Gemini, Claude, and OpenRouter-style model IDs; pass `--endpoint` explicitly when using an ambiguous model name.
+
+### Model attribution: protocol / endpoint / served_by / model
+
+A generation target is described by four orthogonal fields (records `schema_version >= 4`):
+
+- `protocol` — the wire/API shape: `openai-chat`, `openai-responses`, `anthropic-messages`, `gemini`, `codex-cli`. Most legacy "providers" are the same `openai-chat` protocol.
+- `endpoint` — where requests go: a preset name (`openai`, `openrouter`, `deepseek`, `dashscope`, `anthropic`, `gemini`, `codex-cli`) or an ad-hoc `base_url`.
+- `served_by` — the entity actually serving the weights (`OpenAI`, `Anthropic`, `DeepSeek`, `Alibaba`, or OpenRouter's real downstream host). This is the meaningful attribution and replaces the old single `provider` field.
+- `model` — the requested model id.
+
+The legacy `provider`/`model_id` fields are still written as a mirror, and records with `schema_version <= 3` continue to validate via alias-aware reads (no migration of existing records).
+
+CLI flags (on `generate`/`draft`/`dataset run`): `--endpoint <preset>` (replaces `--provider`, which remains a deprecated alias), `--model <id>` (accepts an optional `preset:` prefix, e.g. `openrouter:tencent/hy3-preview:free`), `--served-by <label>`, and for any OpenAI-compatible server `--base-url <url>` (+ optional `--api-key-env <VAR>`).
+
+Run a local model with zero new code:
+
+```bash
+uv run articraft generate --base-url http://localhost:11434/v1 --model qwen3 --served-by "local-qwen" "prompt text"
+```
+
+Batch CSV columns stay named `provider` and `model_id` for backward compatibility.
 
 ## Paper Dataset Counts
 

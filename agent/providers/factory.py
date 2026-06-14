@@ -22,6 +22,7 @@ from agent.providers.deepseek import (
     DeepSeekLLM,
     deepseek_api_key_from_env,
 )
+from agent.providers.endpoints import ResolvedTarget
 from agent.providers.gemini import (
     DEFAULT_GEMINI_MODEL,
     GeminiLLM,
@@ -36,6 +37,7 @@ from agent.providers.openrouter import (
 from articraft.config import default_model_from_env, default_thinking_level_from_env
 from articraft.values import (
     PROVIDER_VALUE_SET,
+    Protocol,
     ProviderName,
 )
 from articraft.values import (
@@ -172,6 +174,64 @@ def create_provider_client(
             dry_run=dry_run,
         )
     raise ValueError(f"Unsupported provider: {config.provider}")
+
+
+def create_client_for_target(
+    target: ResolvedTarget,
+    *,
+    thinking_level: str | None = None,
+    dry_run: bool = False,
+    constructors: ProviderConstructors | None = None,
+    openai_transport: str = "http",
+    openai_reasoning_summary: str | None = "auto",
+    openai_prompt_cache_key: str | None = None,
+    openai_prompt_cache_retention: str | None = None,
+) -> ProviderClient:
+    """Create a provider client from a resolved protocol/endpoint target.
+
+    Switches on ``target.protocol`` rather than a flat provider enum. The
+    OpenAI-compatible chat path routes known presets to their tuned client classes and
+    any ad-hoc endpoint (e.g. a local server) to the generic OpenAI-compatible client.
+    """
+
+    cons = constructors or ProviderConstructors()
+    level = thinking_level if thinking_level is not None else default_thinking_level_from_env()
+    model_id = target.model or None
+
+    if target.protocol is Protocol.OPENAI_RESPONSES:
+        return cons.openai(
+            model_id=model_id or default_model_from_env(),
+            thinking_level=level,
+            reasoning_summary=openai_reasoning_summary,
+            transport=openai_transport,
+            prompt_cache_key=openai_prompt_cache_key,
+            prompt_cache_retention=openai_prompt_cache_retention,
+            dry_run=dry_run,
+        )
+    if target.protocol is Protocol.ANTHROPIC_MESSAGES:
+        return cons.anthropic(model_id=model_id, thinking_level=level, dry_run=dry_run)
+    if target.protocol is Protocol.GEMINI:
+        return cons.gemini(model_id=model_id, thinking_level=level, dry_run=dry_run)
+    if target.protocol is Protocol.CODEX_CLI:
+        if not model_id:
+            raise ValueError("Codex CLI protocol requires an explicit --model.")
+        return cons.codex_cli(model_id=model_id, thinking_level=level, dry_run=dry_run)
+    if target.protocol is Protocol.OPENAI_CHAT:
+        if target.endpoint == "deepseek":
+            return cons.deepseek(model_id=model_id, thinking_level=level, dry_run=dry_run)
+        if target.endpoint == "dashscope":
+            return cons.dashscope(model_id=model_id, thinking_level=level, dry_run=dry_run)
+        if target.endpoint == "openrouter":
+            return cons.openrouter(model_id=model_id, thinking_level=level, dry_run=dry_run)
+        # Ad-hoc OpenAI-compatible endpoint (e.g. a local server): use the generic client.
+        return cons.openrouter(
+            model_id=model_id,
+            thinking_level=level,
+            dry_run=dry_run,
+            base_url=target.base_url,
+            api_key_env=target.api_key_env,
+        )
+    raise ValueError(f"Unsupported protocol: {target.protocol}")
 
 
 def validate_provider_credentials(provider: str) -> None:

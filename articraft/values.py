@@ -3,7 +3,29 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class Protocol(StrEnum):
+    """Wire/API shape the runtime speaks to reach a model.
+
+    This is orthogonal to *where* the request goes (the endpoint) and *who* serves
+    the weights (served_by). Several historical "providers" share one protocol:
+    openai/openrouter/deepseek/dashscope are all OpenAI-compatible chat completions.
+    """
+
+    OPENAI_CHAT = "openai-chat"
+    OPENAI_RESPONSES = "openai-responses"
+    ANTHROPIC_MESSAGES = "anthropic-messages"
+    GEMINI = "gemini"
+    CODEX_CLI = "codex-cli"
+
+
 class ProviderName(StrEnum):
+    """Deprecated: legacy endpoint-preset identifiers retained for back-compat.
+
+    New code should think in terms of `Protocol` + an endpoint preset name. These
+    values still name endpoint presets (see `agent/providers/endpoints.py`) and remain
+    valid in records with `schema_version <= 3`.
+    """
+
     ANTHROPIC = "anthropic"
     CODEX_CLI = "codex-cli"
     DASHSCOPE = "dashscope"
@@ -20,6 +42,8 @@ class ThinkingLevel(StrEnum):
     XHIGH = "xhigh"
 
 
+PROTOCOL_VALUES = tuple(protocol.value for protocol in Protocol)
+PROTOCOL_VALUE_SET = frozenset(PROTOCOL_VALUES)
 PROVIDER_VALUES = tuple(provider.value for provider in ProviderName)
 PROVIDER_VALUE_SET = frozenset(PROVIDER_VALUES)
 THINKING_LEVEL_VALUES = tuple(level.value for level in ThinkingLevel)

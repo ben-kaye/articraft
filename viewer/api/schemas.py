@@ -58,6 +58,10 @@ class RecordSummaryResponse(BaseModel):
     sdk_package: str | None = None
     provider: str | None = None
     model_id: str | None = None
+    protocol: str | None = None
+    endpoint: str | None = None
+    served_by: str | None = None
+    model: str | None = None
     creator_mode: str | None = None
     external_agent: str | None = None
     agent_harness: str = "articraft"

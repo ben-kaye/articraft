@@ -97,7 +97,7 @@ def test_copy_edit_dataset_child_uses_lineage_without_parent_artifact_copies(
     assert parent_cost_path.read_text(encoding="utf-8") == '{"parent_only": true}\n'
 
     child_record = _read_json(repo.layout.record_metadata_path("rec_child_copy"))
-    assert child_record["schema_version"] == 3
+    assert child_record["schema_version"] == 4
     assert child_record["active_revision_id"] == "rev_000001"
     assert child_record["category_slug"] == "hinge"
     assert child_record["lineage"] == {

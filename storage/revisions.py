@@ -101,7 +101,10 @@ def active_artifact_path(
     fallback_name = fallback_names.get(artifact_key)
     if fallback_name is None:
         return None
-    if payload.get("schema_version") != 3:
+    # Pre-revision (v1/v2) records stored artifacts flat under the record dir; v3 onward
+    # (including v4) store them under the active revision dir.
+    version = payload.get("schema_version")
+    if not isinstance(version, int) or version < 3:
         return record_dir / fallback_name
     return repo.layout.record_revision_dir(record_id, revision_id) / fallback_name
 
