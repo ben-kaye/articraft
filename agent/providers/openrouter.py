@@ -35,6 +35,51 @@ DEFAULT_OPENROUTER_MAX_TOKENS = 262_144
 DEFAULT_OPENROUTER_OUTPUT_SAFETY_TOKENS = 1_024
 
 
+_CONTEXT_LENGTH_CACHE: dict[str, int] = {}
+
+
+def fetch_openrouter_context_length(
+    model_id: str,
+    *,
+    base_url: str = OPENROUTER_BASE_URL,
+    timeout: float = 5.0,
+) -> int | None:
+    """Look up a model's real context window from OpenRouter's public models API.
+
+    Returns the context length in tokens, or ``None`` if it can't be resolved
+    (network error, unknown model, unexpected payload). Results are cached per
+    process so repeated constructions don't re-hit the network.
+    """
+
+    cache_key = f"{base_url}::{model_id}"
+    if cache_key in _CONTEXT_LENGTH_CACHE:
+        return _CONTEXT_LENGTH_CACHE[cache_key]
+
+    try:
+        import httpx  # lazy import; only OpenRouter paths need it
+
+        resp = httpx.get(f"{base_url.rstrip('/')}/models", timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        logger.debug("Failed to fetch OpenRouter model context length", exc_info=True)
+        return None
+
+    for entry in payload.get("data") or []:
+        if entry.get("id") != model_id:
+            continue
+        # Prefer the routed `top_provider` limit (what requests are actually
+        # capped at) and fall back to the model-level maximum.
+        top = entry.get("top_provider") or {}
+        context_length = top.get("context_length") or entry.get("context_length")
+        if isinstance(context_length, int) and context_length > 0:
+            _CONTEXT_LENGTH_CACHE[cache_key] = context_length
+            return context_length
+        break
+
+    return None
+
+
 def openrouter_api_keys_from_env(env: dict[str, str] | None = None) -> list[str]:
     values = os.environ if env is None else env
 
@@ -99,13 +144,46 @@ class OpenRouterLLM:
             "OPENROUTER_MAX_TOKENS",
             _env_int("OPENROUTER_MAX_COMPLETION_TOKENS", DEFAULT_OPENROUTER_MAX_TOKENS),
         )
-        self.context_tokens = _env_int(
-            "OPENROUTER_CONTEXT_TOKENS",
-            DEFAULT_OPENROUTER_CONTEXT_TOKENS,
-        )
+        # Resolve the context window dynamically from OpenRouter's models API so
+        # the harness reflects the model's real limit instead of a hardcoded
+        # default. An explicit OPENROUTER_CONTEXT_TOKENS override always wins, and
+        # ad-hoc base_url servers (local vLLM/Ollama) are left on the default.
+        explicit_context = _env_int("OPENROUTER_CONTEXT_TOKENS", 0)
+        if explicit_context > 0:
+            self.context_tokens = explicit_context
+        else:
+            resolved_context: int | None = None
+            if base_url is None:
+                resolved_context = fetch_openrouter_context_length(self.model_id)
+            self.context_tokens = resolved_context or DEFAULT_OPENROUTER_CONTEXT_TOKENS
         self.output_safety_tokens = _env_int(
             "OPENROUTER_OUTPUT_SAFETY_TOKENS",
             DEFAULT_OPENROUTER_OUTPUT_SAFETY_TOKENS,
+        )
+        # Provider routing for cache stability. A manual OPENROUTER_PROVIDER_ORDER
+        # (comma-separated host names) pins every request. Otherwise, when
+        # OPENROUTER_STICKY_PROVIDER is enabled (default), the router is free to pick
+        # the fastest host on the first call and every later call is pinned to that
+        # same host so the prefix cache stays warm. allow_fallbacks defaults off so
+        # pinning is strict; set OPENROUTER_ALLOW_FALLBACKS=1 to relax it.
+        manual_order = os.environ.get("OPENROUTER_PROVIDER_ORDER")
+        self._provider_order: list[str] = (
+            [name.strip() for name in manual_order.split(",") if name.strip()]
+            if manual_order
+            else []
+        )
+        self._sticky_provider_enabled = (
+            os.environ.get("OPENROUTER_STICKY_PROVIDER", "1") not in {"0", "false", "off"}
+        )
+        self._allow_provider_fallbacks = (
+            os.environ.get("OPENROUTER_ALLOW_FALLBACKS", "0") not in {"0", "false", "off"}
+        )
+        self._sticky_provider: str | None = None
+        # OpenRouter groups request logs by `session_id`. Mint one stable id per
+        # client so every turn in a run lands in the same session. Only OpenRouter
+        # itself supports this; ad-hoc OpenAI-compatible base_urls are left alone.
+        self._session_id = (
+            _build_session_id(self.model_id) if base_url is None else None
         )
         self.request_timeout_seconds = _env_float("OPENROUTER_REQUEST_TIMEOUT_SECONDS", 900.0)
         self.max_attempts = max(1, int(_env_float("OPENROUTER_MAX_ATTEMPTS", 4)))
@@ -273,8 +351,26 @@ class OpenRouterLLM:
         payload: dict[str, Any] = {
             "model": self.model_id,
             "messages": chat_messages,
-            "extra_body": {"reasoning": copy.deepcopy(self.reasoning)},
+            # `usage.include` makes OpenRouter return the authoritative per-response
+            # charge in `usage.cost` (cache-discounted, real downstream provider),
+            # which drives the cost cap for models absent from the static pricing table.
+            "extra_body": {
+                "reasoning": copy.deepcopy(self.reasoning),
+                "usage": {"include": True},
+            },
         }
+        if self._session_id:
+            payload["extra_body"]["session_id"] = self._session_id
+        pinned_order = self._provider_order or (
+            [self._sticky_provider]
+            if self._sticky_provider_enabled and self._sticky_provider
+            else []
+        )
+        if pinned_order:
+            payload["extra_body"]["provider"] = {
+                "order": pinned_order,
+                "allow_fallbacks": self._allow_provider_fallbacks,
+            }
         converted_tools = _convert_tools(tools)
         if converted_tools:
             payload["tools"] = converted_tools
@@ -326,11 +422,34 @@ class OpenRouterLLM:
             }
         if usage:
             result["usage"] = usage
+        # Some OpenAI-compatible backends (e.g. DeepInfra) report an authoritative
+        # per-response price in usage.estimated_cost. We surface it as a separate
+        # top-level float so it bypasses the int-only usage filter and can drive the
+        # cost cap even for models absent from the static pricing table.
+        raw_usage = _get(response, "usage")
+        # OpenRouter reports the real charge in `usage.cost`; some OpenAI-compatible
+        # backends (e.g. DeepInfra-direct) use `usage.estimated_cost`. Prefer whichever
+        # is present so the cost cap works regardless of endpoint.
+        reported_cost = None
+        if raw_usage is not None:
+            reported_cost = _get(raw_usage, "cost")
+            if reported_cost is None:
+                reported_cost = _get(raw_usage, "estimated_cost")
+        if isinstance(reported_cost, (int, float)) and not isinstance(reported_cost, bool):
+            result["reported_cost_usd"] = float(reported_cost)
         # Best-effort real serving backend. OpenRouter reports the downstream host that
         # actually served the weights (Together, DeepInfra, ...) in a top-level field.
         served_by = _get(response, "provider")
         if isinstance(served_by, str) and served_by.strip():
             result["served_by"] = served_by.strip()
+            # Latch the first host the router chose so later turns pin to it and
+            # keep the prefix cache warm (sticky-provider routing).
+            if (
+                self._sticky_provider_enabled
+                and not self._provider_order
+                and self._sticky_provider is None
+            ):
+                self._sticky_provider = served_by.strip()
         return result
 
 
@@ -500,6 +619,20 @@ def _extract_usage(response: Any) -> dict[str, int] | None:
     if isinstance(reasoning_tokens, int):
         cleaned["reasoning_tokens"] = reasoning_tokens
     return cleaned or None
+
+
+def _build_session_id(model_id: str) -> str:
+    """Build a short, readable OpenRouter session id: `<model-stub>-<hex>`.
+
+    Keeps the stub compact (the model's last path segment, sans `:free`-style
+    variant suffixes, lowercased and slugified) so session ids stay short, then
+    appends a short random suffix to keep concurrent runs distinct.
+    """
+
+    stub = model_id.split("/")[-1].split(":")[0]
+    slug = "".join(c if c.isalnum() else "-" for c in stub.lower()).strip("-")
+    slug = "-".join(part for part in slug.split("-") if part)[:24] or "model"
+    return f"{slug}-{uuid.uuid4().hex[:8]}"
 
 
 def _reasoning_config_from_thinking_level(thinking_level: str) -> dict[str, Any]:

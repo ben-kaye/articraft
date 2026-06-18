@@ -271,6 +271,17 @@ class ArticraftAgent:
         actual_model_id = self.llm.model_id
         self.max_turns = resolve_max_turns(model_id=actual_model_id, max_turns=max_turns)
         self.cost_tracker: Optional[CostTracker] = None
+        # Cumulative provider-reported cost (usage.estimated_cost) for endpoints whose
+        # model is absent from the static pricing table, so the cost cap still applies.
+        self._reported_cost_usd: float = 0.0
+        # Most recent downstream host the endpoint reported actually serving the
+        # weights (e.g. OpenRouter routing to DeepInfra/DeepSeek). Surfaced so the
+        # record can persist the resolved provider when none was pinned up front.
+        self._observed_served_by: str | None = None
+        # Cumulative token usage, kept so a cost.json can be persisted even when no
+        # static-pricing cost_tracker exists (e.g. OpenRouter models); otherwise the
+        # viewer has no token/cost artifact to display.
+        self._usage_totals: dict[str, int] = {}
         self.max_cost_usd = max_cost_usd
         pricing = pricing_for_provider_model(provider_norm, actual_model_id)
         if pricing:
@@ -584,19 +595,66 @@ class ArticraftAgent:
         )
 
     def _persist_cost_tracking(self) -> None:
-        if not self.cost_tracker:
-            return
         try:
             cost_path = Path(self.file_path).parent / "cost.json"
-            self.cost_tracker.save_json(cost_path)
+            if self.cost_tracker:
+                self.cost_tracker.save_json(cost_path)
+            else:
+                payload = self._trackerless_cost_payload()
+                if payload is None:
+                    return
+                cost_path.parent.mkdir(parents=True, exist_ok=True)
+                cost_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             logger.info("Saved cost tracking to %s", cost_path)
         except Exception as exc:
             logger.warning("Failed to save cost tracking: %s", exc)
 
+    def _trackerless_cost_payload(self) -> dict[str, Any] | None:
+        """Build a cost.json payload from raw usage + provider-reported cost.
+
+        Used when no static-pricing cost_tracker exists (e.g. OpenRouter), so the
+        record still carries token/cost data for the viewer. Shape matches the
+        subset `_read_logged_cost_totals` consumes.
+        """
+
+        usage = self._usage_totals
+        if not usage:
+            return None
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        cached_tokens = usage.get("cached_tokens", 0)
+        candidates_tokens = usage.get("candidates_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + candidates_tokens)
+        tokens = {
+            "prompt_tokens": prompt_tokens,
+            "cached_tokens": cached_tokens,
+            "uncached_prompt_tokens": max(0, prompt_tokens - cached_tokens),
+            "candidates_tokens": candidates_tokens,
+            "total_tokens": total_tokens,
+        }
+        total = {
+            "tokens": tokens,
+            "costs_usd": {"total": round(self._reported_cost_usd, 8)},
+        }
+        return {
+            "model_id": self.llm.model_id,
+            "total": total,
+            "all_in_total": total,
+            "pricing": None,
+            "turns": [],
+            "maintenance_events": [],
+        }
+
+    @property
+    def observed_served_by(self) -> str | None:
+        """Downstream host the endpoint last reported serving the model, if any."""
+
+        return self._observed_served_by
+
     def _current_total_cost_usd(self) -> float:
-        if not self.cost_tracker:
-            return 0.0
-        return self.cost_tracker.all_in_total_breakdown().total_cost
+        tracked = (
+            self.cost_tracker.all_in_total_breakdown().total_cost if self.cost_tracker else 0.0
+        )
+        return tracked + self._reported_cost_usd
 
     def _record_maintenance_event(self, event: dict[str, Any]) -> float:
         billed_cost = 0.0
@@ -1273,6 +1331,20 @@ class ArticraftAgent:
             usage = self._extract_usage(response) or {}
             for key, value in usage.items():
                 usage_totals[key] = usage_totals.get(key, 0) + value
+                self._usage_totals[key] = self._usage_totals.get(key, 0) + value
+
+            reported_cost = (
+                response.get("reported_cost_usd") if isinstance(response, dict) else None
+            )
+            turn_reported_cost_usd = (
+                float(reported_cost) if isinstance(reported_cost, (int, float)) else 0.0
+            )
+            self._reported_cost_usd += turn_reported_cost_usd
+
+            if isinstance(response, dict):
+                observed_served_by = response.get("served_by")
+                if isinstance(observed_served_by, str) and observed_served_by.strip():
+                    self._observed_served_by = observed_served_by.strip()
 
             provider_diagnostics = self._extract_provider_diagnostics(response)
             if provider_diagnostics:
@@ -1297,6 +1369,9 @@ class ArticraftAgent:
                 if self.cost_tracker:
                     turn_cost = self.cost_tracker.add_turn(usage)
                     turn_cost_usd = turn_cost.total_cost
+                if turn_reported_cost_usd:
+                    # No static pricing: surface the provider-reported price instead.
+                    turn_cost_usd = turn_cost_usd or turn_reported_cost_usd
                 context_pressure = self._context_window_pressure(usage)
                 try:
                     self.display.add_llm_call(
@@ -1308,8 +1383,7 @@ class ArticraftAgent:
                 except TypeError:
                     self.display.add_llm_call(usage, turn_cost_usd, llm_duration)
                 if (
-                    self.cost_tracker is not None
-                    and self.max_cost_usd is not None
+                    self.max_cost_usd is not None
                     and self._current_total_cost_usd() > self.max_cost_usd
                 ):
                     total_cost = self._current_total_cost_usd()

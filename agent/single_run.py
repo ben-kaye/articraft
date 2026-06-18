@@ -465,6 +465,12 @@ async def execute_single_run(
             loaded_system_prompt_path = Path(agent.loaded_system_prompt_path)
             result = await agent.run(user_content)
             actual_model_id = agent.llm.model_id
+            # Persist the actual downstream host the endpoint resolved to (e.g.
+            # OpenRouter routing to DeepInfra/DeepSeek) when the caller didn't pin
+            # one explicitly via --served-by.
+            observed_served_by = getattr(agent, "observed_served_by", None)
+            if not served_by and observed_served_by:
+                served_by = observed_served_by
     except Exception as exc:
         logger.exception("Agent runtime failed")
         return await _persist_failure(
