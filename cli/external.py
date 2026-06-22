@@ -12,7 +12,7 @@ from typing import Any
 
 from agent.runner import create_workbench_draft_record
 from cli import compile_record as compile_record_cli
-from cli.common import add_data_root_argument, warn_if_post_commit_hook_missing
+from cli.common import add_data_root_argument
 from storage.categories import CategoryStore
 from storage.collections import CollectionStore
 from storage.dataset_workflow import promote_record_workflow
@@ -963,7 +963,6 @@ def main(argv: list[str] | None = None) -> int:
     repo.ensure_layout()
 
     if args.command == "init":
-        warn_if_post_commit_hook_missing(args.repo_root)
         provider = DEFAULT_PROVIDER_BY_AGENT[args.agent]
         try:
             record_dir = create_workbench_draft_record(
@@ -1029,7 +1028,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "fork":
-        warn_if_post_commit_hook_missing(args.repo_root)
         try:
             parent_record_id = _resolve_record_reference(repo, args.record)
             result = _create_external_fork_draft(

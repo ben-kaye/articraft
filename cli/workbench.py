@@ -14,7 +14,6 @@ from cli.common import (
     add_data_root_argument,
     provider_for_record_image,
     refresh_dataset_manifest_if_member,
-    warn_if_post_commit_hook_missing,
 )
 from storage.collections import CollectionStore
 from storage.models import WorkbenchCollection
@@ -217,7 +216,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "init-record":
-        warn_if_post_commit_hook_missing(args.repo_root)
         try:
             image_path = resolve_image_path(args.image, provider=args.provider)
         except Exception as exc:
@@ -277,7 +275,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rerun-record":
         repo.ensure_layout()
-        warn_if_post_commit_hook_missing(args.repo_root)
         try:
             record_id = _resolve_record_reference(repo, args.record)
             sdk_package = (
@@ -326,7 +323,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "fork-record":
         repo.ensure_layout()
-        warn_if_post_commit_hook_missing(args.repo_root)
         try:
             record_id = _resolve_record_reference(repo, args.record)
             image_provider = provider_for_record_image(

@@ -17,10 +17,6 @@ def add_data_root_argument(parser: ArgumentParser) -> None:
     )
 
 
-def warn_if_post_commit_hook_missing(repo_root: Path) -> None:
-    _ = repo_root
-
-
 def provider_for_record_image(
     repo: StorageRepo,
     record_id: str,

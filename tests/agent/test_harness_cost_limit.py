@@ -169,6 +169,9 @@ def test_harness_cost_limit_trips_and_persists_cost_json(tmp_path: Path) -> None
         pricing={"input_uncached": 2.5, "input_cached": 0.25, "output": 15.0},
     )
     agent.max_cost_usd = 0.01
+    agent._reported_cost_usd = 0.0
+    agent._usage_totals = {}
+    agent._observed_served_by = None
     agent._ensure_code_file = lambda: Path(agent.file_path).write_text(
         "# draft\n", encoding="utf-8"
     )
@@ -210,6 +213,9 @@ def test_harness_persists_compaction_maintenance_cost_and_trace(tmp_path: Path) 
         pricing={"input_uncached": 2.5, "input_cached": 0.25, "output": 15.0},
     )
     agent.max_cost_usd = 0.01
+    agent._reported_cost_usd = 0.0
+    agent._usage_totals = {}
+    agent._observed_served_by = None
     agent._ensure_code_file = lambda: Path(agent.file_path).write_text(
         "# draft\n", encoding="utf-8"
     )
@@ -267,6 +273,9 @@ def test_harness_reports_compaction_event_without_cost_tracker(tmp_path: Path) -
     agent.sdk_docs_context = ""
     agent.cost_tracker = None
     agent.max_cost_usd = None
+    agent._reported_cost_usd = 0.0
+    agent._usage_totals = {}
+    agent._observed_served_by = None
     agent._ensure_code_file = lambda: Path(agent.file_path).write_text(
         "# draft\n", encoding="utf-8"
     )
@@ -279,6 +288,68 @@ def test_harness_reports_compaction_event_without_cost_tracker(tmp_path: Path) -
     assert captured_callbacks[0][1] == 0.0
     assert display.compaction_events[0]["trigger"] == "hard_pressure"
     assert display.compaction_events[0]["billed_cost"] == 0.0
+
+
+class _ReportedCostLLM:
+    """OpenAI-compatible backend with no static pricing that reports usage.estimated_cost."""
+
+    model_id = "deepseek-ai/DeepSeek-V4-Flash"
+
+    async def generate_with_tools(
+        self, system_prompt: str, messages: list[dict], tools: list[dict]
+    ) -> dict:
+        return {
+            "content": "",
+            "tool_calls": [],
+            "usage": {
+                "prompt_tokens": 1000,
+                "candidates_tokens": 500,
+                "total_tokens": 1500,
+            },
+            "reported_cost_usd": 0.006,
+        }
+
+    async def close(self) -> None:
+        return None
+
+
+def test_harness_cost_limit_trips_on_provider_reported_cost(tmp_path: Path) -> None:
+    agent = ArticraftAgent.__new__(ArticraftAgent)
+    agent.file_path = str(tmp_path / "model.py")
+    agent.max_turns = 5
+    agent.sdk_package = "sdk"
+    agent.runtime_limits = None
+    agent._seen_tool_error_sigs = set()
+    agent._seen_find_example_paths = set()
+    agent._last_compile_failure_sig = None
+    agent._consecutive_compile_failure_count = 0
+    agent.checkpoint_urdf_path = None
+    agent.trace_writer = None
+    agent.provider = "openrouter"
+    agent.llm = _ReportedCostLLM()
+    agent.tool_registry = _DummyRegistry()
+    agent.on_turn_start = None
+    agent.display = _DummyDisplay()
+    agent.loaded_system_prompt_path = "designer_system_prompt_openai.txt"
+    agent.system_prompt = "system"
+    agent.sdk_docs_context = ""
+    # No pricing table entry for this model -> no CostTracker, only reported cost.
+    agent.cost_tracker = None
+    agent.max_cost_usd = 0.01
+    agent._reported_cost_usd = 0.0
+    agent._usage_totals = {}
+    agent._observed_served_by = None
+    agent._ensure_code_file = lambda: Path(agent.file_path).write_text(
+        "# draft\n", encoding="utf-8"
+    )
+
+    result = asyncio.run(agent.run("make a hinge"))
+
+    assert result.success is False
+    assert result.reason == TerminateReason.COST_LIMIT
+    # 0.006/turn crosses 0.01 on the second turn.
+    assert "after turn 2" in result.message
+    assert agent._reported_cost_usd > 0.01
 
 
 def test_cost_tracker_preserves_unbilled_maintenance_events() -> None:
