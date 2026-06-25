@@ -1,285 +1,318 @@
-"""
-Compatibility entrypoints for the agent runtime.
+"""Public entry point: run a generation, persist a record, expose a CLI.
 
-The implementation is split across focused modules:
-- agent.single_run owns lifecycle orchestration.
-- agent.record_persistence owns record/provenance/materialization writes.
-- agent.edit owns copy-edit workflows.
-- agent.rerun owns rerun reconstruction.
-- agent.payload_preview owns provider payload previews.
-- agent.runner_cli owns argument parsing.
+Covers single generation and fork/edit. Batch lives in batch_runner.py.
 """
 
 from __future__ import annotations
 
-import logging
+import argparse
+import os
+import shutil
+import uuid
 from pathlib import Path
-from typing import Any
 
-from agent.compiler import (
-    compile_urdf as _compile_urdf,
+from articraft.config import (
+    default_model_from_env,
+    default_thinking_level_from_env,
+    load_repo_env,
 )
-from agent.compiler import (
-    compile_urdf_report_maybe_timeout as _compile_urdf_report_maybe_timeout,
-)
-from agent.edit import edit_record as _edit_record_impl
-from agent.harness import ArticraftAgent
-from agent.models import CompileReport as AgentCompileReport
-from agent.payload_preview import (
-    build_provider_payload_preview as _build_provider_payload_preview_impl,
-)
-from agent.prompts import resolve_system_prompt_path
-from agent.record_persistence import (
-    _copy_if_exists,
-    _copytree_if_exists,
-    _draft_model_template,
-    _load_workbench_entry,
-    _normalize_collection_names,
-    _normalize_materialization_asset_ref,
-    _normalize_prompt_kind,
-    _referenced_materialization_assets,
-    _remove_tree_if_exists,
-    _replace_file_from_source,
-    _replace_selected_files_from_source,
-    _replace_tree_from_source,
-    _resolve_input_image_for_record,
-    write_success_record,
-)
-from agent.record_persistence import (
-    create_workbench_draft_record as _create_workbench_draft_record_impl,
-)
-from agent.rerun import rerun_record_in_place as _rerun_record_in_place_impl
-from agent.run_context import (
-    MAX_SINGLE_RUN_SLUG_LEN,
-    RunExecutionOutcome,
-    SingleRunContext,
-    _build_single_run_context,
-    _build_single_run_slug,
-    _default_model_id,
-    _detect_git_commit,
-    _detect_uv_lock_sha256,
-    _display_title,
-    _ensure_shared_system_prompt,
-    _first_string,
-    _infer_provider_from_model_id,
-    _optional_bool,
-    _optional_max_cost_usd,
-    _optional_string,
-    _platform_id,
-    _prompt_preview,
-    _read_logged_cost_totals,
-    _relative_to_repo,
-    _resolve_runtime_record_author,
-    _sha256_file,
-    _sha256_text,
-    _single_run_settings_summary,
-    _slugify,
-    _thinking_level_from_run_parameters,
-    _timestamp_token,
-    _utc_now,
-)
-from agent.runner_cli import (
-    _build_prompt_with_qc,
-    _load_qc_blurb_text,
-)
-from agent.runner_cli import (
-    main as _cli_main,
-)
-from agent.single_run import (
-    execute_single_run as _execute_single_run_impl,
-)
-from agent.single_run import (
-    run_from_input as _run_from_input_public_impl,
-)
-from agent.single_run import (
-    run_from_input_impl as _run_from_input_impl_impl,
-)
-from agent.tools import (
-    build_first_turn_messages as _build_first_turn_messages,
-)
-from agent.tools import (
-    build_initial_user_content as _build_initial_user_content,
-)
-from agent.tools import build_tool_registry
-from agent.tools import resolve_image_path as _resolve_image_path
+from storage import locks
+from storage.db import ExampleIndex, Index
+from storage.models import Cost, Lineage, Provenance, Record
+from storage.records import RecordStore, now_iso
+from storage.repo import Repo
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+from . import prompts, tools
+from .harness import AgentResult, ArticraftAgent
 
-__all__ = [
-    "ArticraftAgent",
-    "MAX_SINGLE_RUN_SLUG_LEN",
-    "RunExecutionOutcome",
-    "SingleRunContext",
-    "_build_first_turn_messages",
-    "_build_initial_user_content",
-    "_build_prompt_with_qc",
-    "_build_single_run_context",
-    "_build_single_run_slug",
-    "_copy_if_exists",
-    "_copytree_if_exists",
-    "_default_model_id",
-    "_detect_git_commit",
-    "_detect_uv_lock_sha256",
-    "_display_title",
-    "_draft_model_template",
-    "_ensure_shared_system_prompt",
-    "_execute_single_run",
-    "_first_string",
-    "_infer_provider_from_model_id",
-    "_load_qc_blurb_text",
-    "_load_workbench_entry",
-    "_normalize_collection_names",
-    "_normalize_materialization_asset_ref",
-    "_normalize_prompt_kind",
-    "_optional_bool",
-    "_optional_max_cost_usd",
-    "_optional_string",
-    "_platform_id",
-    "_prompt_preview",
-    "_read_logged_cost_totals",
-    "_referenced_materialization_assets",
-    "_relative_to_repo",
-    "_remove_tree_if_exists",
-    "_replace_file_from_source",
-    "_replace_selected_files_from_source",
-    "_replace_tree_from_source",
-    "_resolve_image_path",
-    "_resolve_input_image_for_record",
-    "_resolve_runtime_record_author",
-    "_run_from_input_impl",
-    "_sha256_file",
-    "_sha256_text",
-    "_single_run_settings_summary",
-    "_slugify",
-    "_thinking_level_from_run_parameters",
-    "_timestamp_token",
-    "_utc_now",
-    "_write_success_record",
-    "build_provider_payload_preview",
-    "build_tool_registry",
-    "compile_urdf",
-    "compile_urdf_report_maybe_timeout",
-    "create_workbench_draft_record",
-    "edit_record",
-    "main",
-    "rerun_record_in_place",
-    "resolve_system_prompt_path",
-    "run_from_input",
-]
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCAFFOLD = REPO_ROOT / "scaffold.py"
+EXAMPLES_DIR = REPO_ROOT / "sdk" / "_examples"
 
 
-def compile_urdf(
-    script_path: Path,
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _code_git(root: Path) -> str:
+    """Harness git HEAD as '<sha>' or '<sha>-dirty'; '' if not a git repo."""
+    import subprocess
+
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    dirty = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    return f"{sha}-dirty" if dirty else sha
+
+
+def _persist(
+    repo: Repo,
+    record_id: str,
     *,
-    sdk_package: str = "sdk",
-    rewrite_visual_glb: bool | None = None,
-) -> str:
-    """Compatibility export for legacy imports from agent.runner."""
-    return _compile_urdf(
-        script_path,
-        sdk_package=sdk_package,
-        rewrite_visual_glb=rewrite_visual_glb,
+    prompt: str,
+    result: AgentResult,
+    model: str,
+    thinking_level: str,
+    sdk_package: str,
+    lineage: Lineage,
+    created_at: str | None = None,
+) -> Record:
+    store = RecordStore(repo)
+    record = Record(
+        record_id=record_id,
+        created_at=created_at or now_iso(),
+        updated_at=now_iso(),
+        prompt=prompt,
+        title=prompt[:80],
+        model=model,
+        lineage=lineage,
+        cost=Cost(
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            total_usd=result.cost_usd,
+        ),
+        compile_ok=result.compile.passed,
+        code_git=_code_git(Path(__file__).resolve().parent.parent),
     )
+    provenance = Provenance(
+        model=model,
+        thinking_level=thinking_level,
+        sdk_package=sdk_package,
+        turn_count=result.turns,
+    )
+    record = store.write(
+        record,
+        prompt=prompt,
+        model_py=result.model_py,
+        provenance=provenance,
+        urdf_xml=result.urdf_xml,
+        trace=result.trace,
+    )
+    # Best-effort thumbnail (model.urdf + assets are now on disk in the record dir).
+    # Spins headless Chromium (~seconds); set ARTICRAFT_THUMBNAILS=0 for bulk runs.
+    if result.urdf_xml is not None and os.environ.get("ARTICRAFT_THUMBNAILS") != "0":
+        from viewer.thumbnail import render_thumbnail
+
+        render_thumbnail(record_id, root=repo.root)
+    Index(repo).rebuild()
+    return record
 
 
-def compile_urdf_report_maybe_timeout(
-    script_path: Path,
+def _make_find_examples():
+    """Curated sdk/_examples ranked by bm25. Records are not searched."""
+
+    def find(query: str, k: int = 3) -> str:
+        index = ExampleIndex(EXAMPLES_DIR)  # rebuilt per call: cheap, never stale
+        out: list[str] = []
+        for _kind, ref in index.search(query, limit=k):
+            rel = Path(ref).relative_to(REPO_ROOT)
+            out.append(
+                f"===== example {rel} =====\n{Path(ref).read_text(encoding='utf-8').strip()}"
+            )
+        return "\n\n".join(out) if out else f"No examples found for {query!r}."
+
+    return find
+
+
+def _run_agent(
+    workspace_dir: Path,
+    repo_root: Path,
+    prompt: str,
     *,
-    sdk_package: str = "sdk",
-    run_checks: bool = True,
-    ignore_geom_qc: bool = False,
-    target: str = "full",
-    rewrite_visual_glb: bool | None = None,
-) -> AgentCompileReport:
-    """Compatibility export for legacy imports from agent.runner."""
-    return _compile_urdf_report_maybe_timeout(
-        script_path,
+    model,
+    thinking_level,
+    sdk_package,
+    max_turns,
+    max_cost_usd,
+    image_path,
+    seed_from,
+    find_examples=None,
+    on_turn=None,
+) -> AgentResult:
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    model_path = workspace_dir / "model.py"
+    shutil.copy(seed_from or SCAFFOLD, model_path)
+    ws = tools.Workspace(
+        model_path=model_path,
+        repo_root=repo_root,
+        docs=prompts.doc_map(sdk_package),
+        find_examples=find_examples,
+    )
+    agent = ArticraftAgent(
+        ws,
+        model=model,
+        thinking_level=thinking_level,
         sdk_package=sdk_package,
-        run_checks=run_checks,
-        ignore_geom_qc=ignore_geom_qc,
-        target=target,
-        rewrite_visual_glb=rewrite_visual_glb,
+        max_turns=max_turns,
+        max_cost_usd=max_cost_usd,
     )
+    return agent.run(prompt, image_path=image_path, on_turn=on_turn)
 
 
-def _write_success_record(*args: Any, **kwargs: Any) -> Path:
-    """Compatibility wrapper for tests and legacy private imports."""
-    return write_success_record(*args, **kwargs)
+def run_from_input(
+    prompt: str,
+    *,
+    repo_root: Path | str,
+    model: str | None = None,
+    thinking_level: str | None = None,
+    sdk_package: str = "sdk",
+    max_turns: int = 40,
+    max_cost_usd: float | None = None,
+    image_path: Path | None = None,
+    fork_of: str | None = None,
+) -> Record:
+    repo_root = Path(repo_root)
+    load_repo_env(repo_root)
+    repo = Repo(repo_root)
+    model = model or default_model_from_env()
+    thinking_level = thinking_level or default_thinking_level_from_env()
 
+    RecordStore(repo).reap_stale()  # clean up runs orphaned by an earlier crash
 
-def build_provider_payload_preview(user_content: Any, **kwargs: Any) -> dict:
-    """Build a dry-run provider payload preview with runner-level compatibility hooks."""
-    return _build_provider_payload_preview_impl(
-        user_content,
-        **kwargs,
-        tool_registry_builder=build_tool_registry,
+    record_id = new_id("rec")
+    lineage = Lineage()
+    seed_from = None
+    if fork_of is not None:
+        parent = RecordStore(repo).load(fork_of)
+        lineage = Lineage(
+            origin_record_id=parent.lineage.origin_record_id or fork_of,
+            parent_record_id=fork_of,
+        )
+        seed_from = repo.layout.model_py(fork_of)
+
+    # Write an initial "running" record so the viewer can show the run in progress.
+    store = RecordStore(repo)
+    running = Record(
+        record_id=record_id,
+        created_at=now_iso(),
+        updated_at=now_iso(),
+        prompt=prompt,
+        title=prompt[:80],
+        model=model,
+        lineage=lineage,
+        status="running",
     )
-
-
-async def _execute_single_run(user_content: Any, **kwargs: Any) -> RunExecutionOutcome:
-    """Compatibility wrapper around agent.single_run.execute_single_run."""
-    return await _execute_single_run_impl(
-        user_content,
-        **kwargs,
-        agent_cls=ArticraftAgent,
-        compile_report_func=compile_urdf_report_maybe_timeout,
-        write_success_record_func=_write_success_record,
+    store.write(
+        running,
+        prompt=prompt,
+        model_py="",
+        provenance=Provenance(model=model, thinking_level=thinking_level, sdk_package=sdk_package),
+        trace=[],
     )
+    Index(repo).rebuild()
 
+    def on_turn(trace: list[dict], in_tok: int, out_tok: int, cache_tok: int, cost: float) -> None:
+        store.update_progress(
+            running,
+            status="running",
+            trace=trace,
+            cost=Cost(
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cache_tok,
+                total_usd=cost,
+            ),
+        )
 
-async def _run_from_input_impl(user_content: Any, **kwargs: Any) -> RunExecutionOutcome:
-    """Compatibility wrapper around agent.single_run.run_from_input_impl."""
-    return await _run_from_input_impl_impl(
-        user_content,
-        **kwargs,
-        execute_single_run_func=_execute_single_run,
-        resolve_record_author_func=_resolve_runtime_record_author,
-    )
+    # Lock held for the run's lifetime: removed on normal exit *and* on exception
+    # (the context manager's finally). A dirty crash leaves it, but the PID inside
+    # is dead, so the next run's reap_stale() flips this record to 'failed'.
+    with locks.hold(repo.layout.run_lock(record_id)):
+        try:
+            result = _run_agent(
+                repo.layout.record_dir(record_id),
+                repo_root,
+                prompt,
+                model=model,
+                thinking_level=thinking_level,
+                sdk_package=sdk_package,
+                max_turns=max_turns,
+                max_cost_usd=max_cost_usd,
+                image_path=image_path,
+                seed_from=seed_from,
+                find_examples=_make_find_examples(),
+                on_turn=on_turn,
+            )
+        except Exception:
+            # Reload to keep the latest cost/trace written by on_turn; just flip status.
+            store.update_progress(store.load(record_id), status="failed")
+            raise
 
-
-async def run_from_input(user_content: Any, **kwargs: Any) -> int:
-    """Run one generation request and return a process-style exit code."""
-    return await _run_from_input_public_impl(
-        user_content,
-        **kwargs,
-        execute_single_run_func=_execute_single_run,
-        resolve_record_author_func=_resolve_runtime_record_author,
-    )
-
-
-def create_workbench_draft_record(**kwargs: Any) -> Path:
-    """Create a draft workbench record without running generation."""
-    return _create_workbench_draft_record_impl(
-        **kwargs,
-        resolve_record_author_func=_resolve_runtime_record_author,
-    )
-
-
-async def edit_record(**kwargs: Any) -> RunExecutionOutcome:
-    """Edit an existing record as a copy."""
-    return await _edit_record_impl(
-        **kwargs,
-        execute_single_run_func=_execute_single_run,
-        resolve_record_author_func=_resolve_runtime_record_author,
-    )
-
-
-async def rerun_record_in_place(**kwargs: Any) -> int:
-    """Rerun an existing record using its stored provenance."""
-    return await _rerun_record_in_place_impl(
-        **kwargs,
-        execute_single_run_func=_execute_single_run,
-        resolve_record_author_func=_resolve_runtime_record_author,
-    )
+        return _persist(
+            repo,
+            record_id,
+            prompt=prompt,
+            result=result,
+            model=model,
+            thinking_level=thinking_level,
+            sdk_package=sdk_package,
+            lineage=lineage,
+            created_at=running.created_at,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
-    return _cli_main(
-        argv,
-        run_from_input_func=run_from_input,
-        build_provider_payload_preview_func=build_provider_payload_preview,
+    p = argparse.ArgumentParser(prog="articraft")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    g = sub.add_parser("generate", help="Generate a model from a prompt.")
+    g.add_argument("prompt")
+    f = sub.add_parser("fork", help="Fork/edit an existing record.")
+    f.add_argument("record_id")
+    f.add_argument("prompt")
+
+    b = sub.add_parser("batch", help="Generate from a CSV of prompts.")
+    b.add_argument("csv")
+    b.add_argument("--concurrency", type=int, default=4)
+    b.add_argument("--resume", default=None, help="resume an existing run id")
+
+    for s in (g, f, b):
+        s.add_argument("--repo-root", default=".")
+        s.add_argument("--model", default=None)
+        s.add_argument("--thinking", default=None)
+        s.add_argument("--max-turns", type=int, default=40)
+        s.add_argument("--max-cost", type=float, default=None)
+    for s in (g, f):
+        s.add_argument("--image", default=None)
+
+    args = p.parse_args(argv)
+    if args.cmd == "batch":
+        from .batch_runner import run_batch
+
+        run_batch(
+            args.csv,
+            repo_root=args.repo_root,
+            model=args.model,
+            thinking_level=args.thinking,
+            concurrency=args.concurrency,
+            max_turns=args.max_turns,
+            max_cost_usd=args.max_cost,
+            resume_run_id=args.resume,
+        )
+        return 0
+
+    record = run_from_input(
+        args.prompt,
+        repo_root=args.repo_root,
+        model=args.model,
+        thinking_level=args.thinking,
+        max_turns=args.max_turns,
+        max_cost_usd=args.max_cost,
+        image_path=Path(args.image) if args.image else None,
+        fork_of=getattr(args, "record_id", None),
     )
+    status = "OK" if record.compile_ok else "FAILED"
+    cost = f"${record.cost.total_usd:.4f}" if record.cost.total_usd else "unknown cost"
+    print(f"[{status}] {record.record_id}  {cost}  ({record.model})")
+    return 0 if record.compile_ok else 1
 
 
 if __name__ == "__main__":

@@ -1,37 +1,26 @@
+"""Repo = root + layout + tiny JSON helpers. Pydantic does the schema work."""
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from storage.layout import StorageLayout
-from storage.lfs_pointers import is_lfs_pointer_file
+from .layout import Layout
 
 
-@dataclass(slots=True)
-class StorageRepo:
-    root: Path
-    layout: StorageLayout = field(init=False)
+class Repo:
+    def __init__(self, root: Path | str):
+        self.layout = Layout(root)
 
-    def __post_init__(self) -> None:
-        self.root = self.root.resolve()
-        self.layout = StorageLayout(self.root)
+    @property
+    def root(self) -> Path:
+        return self.layout.root
 
-    def ensure_layout(self) -> None:
-        self.layout.ensure_base_dirs()
-
-    def read_json(self, path: Path, *, default: Any = None) -> Any:
-        if not path.exists():
-            return default
-        if is_lfs_pointer_file(path):
-            return default
+    @staticmethod
+    def read_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def write_json(self, path: Path, data: Any) -> None:
+    @staticmethod
+    def write_json(path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-    def write_text(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")

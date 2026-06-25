@@ -1,171 +1,179 @@
+"""Read/write records on disk. One directory per record, single revision."""
+
 from __future__ import annotations
 
-import logging
+import gzip
+import hashlib
+import json
 import shutil
-from dataclasses import dataclass
+import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
 
-from storage.identifiers import validate_record_id
-from storage.models import Provenance, Record
-from storage.repo import StorageRepo
-from storage.revisions import (
-    INITIAL_REVISION_ID,
-    active_inputs_dir,
-    active_provenance_path,
-    validate_revision_id,
-)
-
-logger = logging.getLogger(__name__)
-
-WORKBENCH_RECORD_GITIGNORE_TEXT = "# Articraft local workbench record. Do not commit.\n*\n"
+from . import locks
+from .models import Cost, Provenance, Record
+from .repo import Repo
 
 
-def write_workbench_record_gitignore_marker(record_dir: Path) -> None:
-    record_dir.mkdir(parents=True, exist_ok=True)
-    (record_dir / ".gitignore").write_text(
-        WORKBENCH_RECORD_GITIGNORE_TEXT,
-        encoding="utf-8",
-    )
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def remove_workbench_record_gitignore_marker(record_dir: Path) -> None:
-    marker = record_dir / ".gitignore"
-    if not marker.exists():
-        return
-    try:
-        marker_text = marker.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return
-    if marker_text == WORKBENCH_RECORD_GITIGNORE_TEXT:
-        marker.unlink()
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-@dataclass(slots=True)
+def _write_trace(path, trace: list[dict]) -> None:
+    # gzip: traces are repetitive JSON and dominate record size at batch scale. stdlib, ~10x.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(gzip.compress(json.dumps(trace).encode("utf-8")))
+
+
+def _read_trace(path) -> list[dict]:
+    if path.exists():
+        return json.loads(gzip.decompress(path.read_bytes()))
+    plain = path.with_suffix("")  # legacy uncompressed trace.json
+    if plain.suffix == ".json" and plain.exists():
+        return json.loads(plain.read_text(encoding="utf-8"))
+    return []
+
+
 class RecordStore:
-    repo: StorageRepo
+    def __init__(self, repo: Repo):
+        self.repo = repo
+        self.layout = repo.layout
 
-    @staticmethod
-    def _utc_now() -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-    def ensure_record_dirs(self, record_id: str) -> Path:
-        record_id = validate_record_id(record_id)
-        record_dir = self.repo.layout.record_dir(record_id)
-        record_dir.mkdir(parents=True, exist_ok=True)
-        self.repo.layout.record_collections_dir(record_id).mkdir(parents=True, exist_ok=True)
-        self.repo.layout.record_revision_inputs_dir(record_id, INITIAL_REVISION_ID).mkdir(
-            parents=True, exist_ok=True
-        )
-        return record_dir
-
-    def write_record(self, record: Record) -> Path:
-        record_id = validate_record_id(record.record_id)
-        self.ensure_record_dirs(record_id)
-        path = self.repo.layout.record_metadata_path(record_id)
-        payload = record.to_dict()
-        payload["record_id"] = record_id
-        self.repo.write_json(path, payload)
-        record_dir = self.repo.layout.record_dir(record_id)
-        if "workbench" in record.collections and "dataset" not in record.collections:
-            write_workbench_record_gitignore_marker(record_dir)
-        else:
-            remove_workbench_record_gitignore_marker(record_dir)
-        return path
-
-    def write_provenance(
+    def write(
         self,
-        record_id: str,
+        record: Record,
+        *,
+        prompt: str,
+        model_py: str,
         provenance: Provenance,
-        *,
-        revision_id: str | None = None,
-    ) -> Path:
-        record_id = validate_record_id(record_id)
-        if revision_id is None:
-            path = active_provenance_path(self.repo, record_id)
-        else:
-            path = self.repo.layout.record_revision_provenance_path(
-                record_id, validate_revision_id(revision_id)
-            )
-        self.repo.write_json(path, provenance.to_dict())
-        return path
-
-    def copy_input_image(
-        self,
-        record_id: str,
-        source: Path,
-        destination_name: str | None = None,
-        *,
-        missing_ok: bool = False,
-        revision_id: str | None = None,
-    ) -> Path | None:
-        record_id = validate_record_id(record_id)
-        inputs_dir = (
-            self.repo.layout.record_revision_inputs_dir(
-                record_id, validate_revision_id(revision_id)
-            )
-            if revision_id is not None
-            else active_inputs_dir(self.repo, record_id)
+        urdf_xml: str | None = None,
+        trace: list[dict] | None = None,
+    ) -> Record:
+        record = record.model_copy(
+            update={
+                "updated_at": now_iso(),
+                "prompt": prompt,
+                "prompt_sha256": sha256(prompt),
+                "model_py_sha256": sha256(model_py),
+                "has_urdf": urdf_xml is not None,
+            }
         )
-        inputs_dir.mkdir(parents=True, exist_ok=True)
-        destination = inputs_dir / (destination_name or source.name)
-        if source.resolve() == destination.resolve():
-            return destination
-        try:
-            shutil.copy2(source, destination)
-        except FileNotFoundError:
-            if not missing_ok:
-                raise
-            logger.warning("Skipping missing input image for record %s: %s", record_id, source)
-            return None
-        return destination
-
-    def load_record(self, record_id: str) -> dict | None:
-        record_id = validate_record_id(record_id)
-        return self.repo.read_json(self.repo.layout.record_metadata_path(record_id))
-
-    def _update_rating_field(
-        self,
-        record_id: str,
-        *,
-        rating_field: str,
-        rated_by_field: str,
-        rating: int | None,
-    ) -> dict | None:
-        record_id = validate_record_id(record_id)
-        record = self.load_record(record_id)
-        if not isinstance(record, dict):
-            return None
-        record[rating_field] = rating
-        # Commit-time attribution becomes stale after a local edit, so clear it until git sync restores it.
-        record[rated_by_field] = None
-        record["updated_at"] = self._utc_now()
-        self.repo.write_json(self.repo.layout.record_metadata_path(record_id), record)
+        self.layout.record_dir(record.record_id).mkdir(parents=True, exist_ok=True)
+        self.layout.prompt_txt(record.record_id).write_text(prompt, encoding="utf-8")
+        self.layout.model_py(record.record_id).write_text(model_py, encoding="utf-8")
+        self.repo.write_json(self.layout.provenance_json(record.record_id), provenance.model_dump())
+        if urdf_xml is not None:
+            self.layout.model_urdf(record.record_id).write_text(urdf_xml, encoding="utf-8")
+        if trace is not None:
+            _write_trace(self.layout.trace_json(record.record_id), trace)
+        self.repo.write_json(self.layout.record_json(record.record_id), record.model_dump())
         return record
 
-    def update_rating(self, record_id: str, rating: int) -> dict | None:
-        return self._update_rating_field(
-            record_id,
-            rating_field="rating",
-            rated_by_field="rated_by",
-            rating=rating,
-        )
+    def update_progress(
+        self,
+        record: Record,
+        *,
+        status: str,
+        trace: list[dict] | None = None,
+        cost: Cost | None = None,
+    ) -> Record:
+        """Cheap per-turn write: only trace.json + record.json (no prompt/model re-hash)."""
+        update: dict = {"updated_at": now_iso(), "status": status}
+        if cost is not None:
+            update["cost"] = cost
+        record = record.model_copy(update=update)
+        self.layout.record_dir(record.record_id).mkdir(parents=True, exist_ok=True)
+        if trace is not None:
+            _write_trace(self.layout.trace_json(record.record_id), trace)
+        self.repo.write_json(self.layout.record_json(record.record_id), record.model_dump())
+        return record
 
-    def update_secondary_rating(self, record_id: str, rating: int | None) -> dict | None:
-        return self._update_rating_field(
-            record_id,
-            rating_field="secondary_rating",
-            rated_by_field="secondary_rated_by",
-            rating=rating,
-        )
+    def load(self, record_id: str) -> Record:
+        return Record.model_validate(self.repo.read_json(self.layout.record_json(record_id)))
 
-    def delete_record(self, record_id: str) -> bool:
-        record_id = validate_record_id(record_id)
-        record_dir = self.repo.layout.record_dir(record_id)
-        if not record_dir.exists():
-            return False
-        shutil.rmtree(record_dir)
-        materialization_dir = self.repo.layout.record_materialization_dir(record_id)
-        if materialization_dir.exists():
-            shutil.rmtree(materialization_dir)
-        return True
+    def load_model_py(self, record_id: str) -> str:
+        return self.layout.model_py(record_id).read_text(encoding="utf-8")
+
+    def load_trace(self, record_id: str) -> list[dict]:
+        return _read_trace(self.layout.trace_json(record_id))
+
+    def _git(self, record_id: str, *args: str) -> str:
+        gitdir = self.layout.model_git(record_id)
+        work = self.layout.record_dir(record_id)
+        out = subprocess.run(
+            ["git", f"--git-dir={gitdir}", f"--work-tree={work}", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout
+
+    def model_history(self, record_id: str) -> list[tuple[str, str]]:
+        """Per-turn (sha, message) of model.py, oldest first. [] if no .modelgit."""
+        if not self.layout.model_git(record_id).exists():
+            return []
+        log = self._git(record_id, "log", "--reverse", "--format=%H %s").splitlines()
+        return [tuple(line.split(" ", 1)) for line in log if line]  # type: ignore[misc]
+
+    def model_diff(self, record_id: str, rev: str = "HEAD") -> str:
+        """Diff of model.py for one commit (a turn), or a sha range like '<sha>..HEAD'."""
+        if not self.layout.model_git(record_id).exists():
+            return ""
+        if ".." in rev:
+            return self._git(record_id, "diff", rev, "--", "model.py")
+        return self._git(record_id, "show", "--format=%s", rev, "--", "model.py")
+
+    def exists(self, record_id: str) -> bool:
+        return self.layout.record_json(record_id).exists()
+
+    def delete(self, record_id: str) -> None:
+        shutil.rmtree(self.layout.record_dir(record_id), ignore_errors=True)
+
+    def list_ids(self) -> list[str]:
+        d = self.layout.records_dir
+        if not d.exists():
+            return []
+        return sorted(p.name for p in d.iterdir() if (p / "record.json").exists())
+
+    def reap_stale(self) -> list[str]:
+        """Flip 'running' records with a dead lock to 'failed'. Returns reaped ids.
+
+        Call on startup to clean up after a dirty crash that left records hanging.
+        Only scans run.lock files (present solely for active/crashed runs), not every
+        record — O(active + crashed), not O(all records). A clean exit removes the lock.
+        """
+        reaped = []
+        for lock in self.layout.records_dir.glob("*/run.lock"):
+            if locks.is_active(lock):
+                continue  # run still alive
+            rid = lock.parent.name
+            r = self.load(rid)
+            if r.status == "running":
+                self.update_progress(r, status="failed")
+                reaped.append(rid)
+            lock.unlink(missing_ok=True)  # drop the dead lock so we don't rescan it
+        return reaped
+
+    def rate(self, record_id: str, rater: str, score: int) -> Record:
+        if not 1 <= score <= 5:
+            raise ValueError("score must be 1-5")
+        rec = self.load(record_id)
+        record = rec.model_copy(
+            update={"ratings": {**rec.ratings, rater: score}, "updated_at": now_iso()}
+        )
+        self.repo.write_json(self.layout.record_json(record_id), record.model_dump())
+        return record
+
+    def unrate(self, record_id: str, rater: str) -> Record:
+        rec = self.load(record_id)
+        record = rec.model_copy(
+            update={
+                "ratings": {k: v for k, v in rec.ratings.items() if k != rater},
+                "updated_at": now_iso(),
+            }
+        )
+        self.repo.write_json(self.layout.record_json(record_id), record.model_dump())
+        return record

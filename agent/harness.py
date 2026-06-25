@@ -1,1498 +1,260 @@
+"""The agentic loop: prompt the model, run its tool calls, iterate until it stops or limits hit."""
+
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
-import json
-import logging
-import os
-import time
+import mimetypes
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
 
-from rich.console import Console
-
-from agent.compiler import compile_urdf_report_maybe_timeout
-from agent.cost import CostTracker, pricing_for_provider_model
-from agent.defaults import resolve_max_turns
-from agent.feedback import compile_signal_bundle_from_exception
-from agent.harness_codec import MessageCodec
-from agent.harness_compile import CompileFeedbackLoop, log_compile_signals
-from agent.harness_guidance import GuidanceInjector
-from agent.models import AgentResult, TerminateReason
-from agent.prompts import (
-    load_sdk_docs_reference,
-    load_system_prompt_text,
-)
-from agent.prompts import (
-    normalize_sdk_package as _normalize_sdk_package,
-)
-from agent.providers.anthropic import AnthropicLLM
-from agent.providers.base import ProviderClient
-from agent.providers.codex_cli import CodexCliLLM
-from agent.providers.dashscope import DashScopeLLM
-from agent.providers.deepseek import DeepSeekLLM
-from agent.providers.factory import (
-    ProviderConfig,
-    ProviderConstructors,
-    create_provider_client,
-    normalize_provider_name,
-)
-from agent.providers.gemini import GeminiLLM
-from agent.providers.openai import OpenAILLM
-from agent.providers.openrouter import OpenRouterLLM
-from agent.runtime_limits import BatchRuntimeLimits, local_work_slot
-from agent.tools import (
-    build_first_turn_messages as _build_first_turn_messages,
-)
-from agent.tools import (
-    build_tool_registry,
-)
-from agent.tools.base import ToolResult
-from agent.tools.code_region import extract_editable_code
-from agent.traces import TraceWriter
-from agent.tui.single_run import SingleRunDisplay
-from agent.workspace_docs import build_virtual_workspace
-from articraft.values import ProviderName
-from sdk._profiles import get_sdk_profile
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-CONSOLE = Console()
-_FIND_EXAMPLES_SKIPPED_CONTENT = "{Skipped: full content already returned earlier in this run.}"
-MAX_CONSECUTIVE_NO_ACTION_TURNS = 3
+from . import gittrack, guidance, llm, tools
+from .compiler import CompileResult, compile_model
+from .prompts import RUNTIME_GUIDANCE, build_sdk_docs_context, build_system_prompt
 
 
-def _minimal_scaffold_text(
-    *,
-    sdk_package: str = "sdk",
-) -> str:
-    repo_root = Path(__file__).resolve().parents[1]
-    scaffold_path = repo_root / get_sdk_profile(sdk_package).scaffold_path
-    if not scaffold_path.exists():
-        raise FileNotFoundError(f"Missing scaffold source of truth: {scaffold_path}")
-    return scaffold_path.read_text(encoding="utf-8")
+@dataclass
+class AgentResult:
+    success: bool
+    model_py: str
+    urdf_xml: str | None
+    compile: CompileResult
+    turns: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cost_usd: float = 0.0
+    terminate_reason: str = "done"
+    trace: list[dict] = field(default_factory=list)
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _trace_call(name: str, args: dict, result: str) -> dict:
+    """Trace entry for one tool call, minus payloads recoverable from the per-turn model.py
+    snapshots in .modelgit. read_file's result and write_file's `content` arg are the bulk of
+    trace size and fully reconstructable, so we record their length instead of the body."""
+    call: dict = {"name": name, "args": args, "result": result}
+    if name == "read_file":
+        call["result"] = f"<{len(result)} chars; see model.py snapshot or SDK docs>"
+        call["viewed_ids"] = [args.get("path") or "model.py"]
+    elif name == "write_file":
+        content = args.get("content", "")
+        call["args"] = {**args, "content": f"<{len(content)} chars; see turn snapshot>"}
+    elif name == "find_examples":
+        # find returns each hit under a "===== example <ref> =====" header (runner._make_find_examples).
+        call["viewed_ids"] = re.findall(r"^===== example (.+?) =====$", result, re.MULTILINE)
+    return call
 
 
-def _short_cache_digest(text: str) -> str:
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _stable_tool_schema_payload(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _tool_identity(tool: dict[str, Any]) -> tuple[str, str]:
-        tool_type = str(tool.get("type") or "")
-        if tool_type == "function":
-            function = tool.get("function")
-            if isinstance(function, dict):
-                return tool_type, str(function.get("name") or "")
-        return tool_type, str(tool.get("name") or "")
-
-    normalized = [tool for tool in tools if isinstance(tool, dict)]
-    return sorted(normalized, key=_tool_identity)
-
-
-def _prompt_cache_key_strategy_from_env() -> str:
-    raw = os.environ.get("OPENAI_PROMPT_CACHE_KEY_STRATEGY")
-    if raw is None:
-        return "articraft-v1"
-    value = raw.strip().lower()
-    if not value:
-        return "articraft-v1"
-    if value in {"articraft-v1", "off"}:
-        return value
-    logger.warning(
-        "Unknown OPENAI_PROMPT_CACHE_KEY_STRATEGY=%r; falling back to articraft-v1",
-        raw,
-    )
-    return "articraft-v1"
-
-
-def _prompt_cache_retention_from_env(*, model_id: str) -> Optional[str]:
-    raw = os.environ.get("OPENAI_PROMPT_CACHE_RETENTION")
-    if raw is None:
-        normalized = model_id.strip().lower()
-        if (
-            normalized == "gpt-5"
-            or normalized.startswith("gpt-5.1")
-            or normalized.startswith("gpt-5-codex")
-            or normalized.startswith("gpt-5.1-codex")
-            or normalized.startswith("gpt-4.1")
-        ):
-            return "24h"
-        return None
-    value = raw.strip()
-    if not value or value.lower() in {"0", "false", "none", "off"}:
-        return None
-    return value
-
-
-def build_openai_prompt_cache_settings(
-    *,
-    model_id: str,
-    sdk_package: str,
-    system_prompt: str,
-    sdk_docs_context: str,
-    tools: list[dict[str, Any]],
-) -> tuple[Optional[str], Optional[str]]:
-    strategy = _prompt_cache_key_strategy_from_env()
-    retention = _prompt_cache_retention_from_env(model_id=model_id)
-
-    if strategy == "off":
-        logger.info(
-            "OpenAI prompt caching disabled (strategy=off, retention=%s)",
-            retention or "off",
-        )
-        return None, retention
-
-    normalized_sdk_package = _normalize_sdk_package(sdk_package)
-    prefix = (os.environ.get("OPENAI_PROMPT_CACHE_KEY_PREFIX") or "").strip()
-    key_payload = {
-        "provider": "openai",
-        "model_id": model_id.strip(),
-        "sdk_package": normalized_sdk_package,
-        "system_prompt_sha256": _sha256_text(system_prompt),
-        "sdk_docs_sha256": _sha256_text(sdk_docs_context),
-        "tool_schema_sha256": _sha256_text(_canonical_json(_stable_tool_schema_payload(tools))),
-    }
-    digest = _short_cache_digest(_canonical_json(key_payload))
-    visible_prefix = "".join(
-        ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in prefix
-    ).strip("-_")[:16]
-    key = f"ac1:{digest}"
-    if visible_prefix:
-        key = f"ac1:{visible_prefix}:{digest}"
-    if len(key) > 64:
-        key = f"ac1:{digest}"
-
-    logger.info(
-        "OpenAI prompt caching enabled (strategy=%s, retention=%s, prefix=%s)",
-        strategy,
-        retention or "off",
-        prefix or "<none>",
-    )
-    return key, retention
+def _image_content(image_path: Path) -> dict:
+    mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
+    b64 = base64.b64encode(image_path.read_bytes()).decode()
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
 
 
 class ArticraftAgent:
     def __init__(
         self,
-        file_path: str,
-        provider: str = "openai",
-        model_id: Optional[str] = None,
-        openai_transport: str = "http",
-        thinking_level: str = "high",
-        max_turns: int | None = None,
-        system_prompt_path: str = "designer_system_prompt.txt",
-        trace_dir: Optional[str] = None,
-        display_enabled: Optional[bool] = None,
-        on_turn_start: Optional[Callable[[int], None]] = None,
-        on_compaction_event: Optional[Callable[[dict[str, Any], float], None]] = None,
-        on_maintenance_event: Optional[Callable[[dict[str, Any], float], None]] = None,
-        checkpoint_urdf_path: Optional[Path] = None,
+        workspace: tools.Workspace,
+        *,
+        model: str,
+        thinking_level: str = "medium",
         sdk_package: str = "sdk",
-        openai_reasoning_summary: Optional[str] = "auto",
+        max_turns: int = 40,
         max_cost_usd: float | None = None,
-        runtime_limits: BatchRuntimeLimits | None = None,
+        max_stall_turns: int = 3,
     ):
-        self.file_path = file_path
-        self.sdk_package = _normalize_sdk_package(sdk_package)
-        self.runtime_limits = runtime_limits
-        self._seen_find_example_paths: set[str] = set()
-        self.checkpoint_urdf_path = (
-            Path(checkpoint_urdf_path).resolve() if checkpoint_urdf_path else None
-        )
-        self.trace_writer: Optional[TraceWriter] = (
-            TraceWriter(Path(trace_dir)) if trace_dir else None
-        )
-
-        provider_norm = normalize_provider_name(provider)
-        self.provider = provider_norm
-        self.message_codec = MessageCodec(provider=self.provider)
-        self.compile_feedback = CompileFeedbackLoop(
-            file_path=self.file_path,
-            sdk_package=self.sdk_package,
-            runtime_limits=self.runtime_limits,
-            checkpoint_urdf_path=self.checkpoint_urdf_path,
-        )
-        self.guidance_injector = GuidanceInjector(
-            file_path=self.file_path,
-            provider=self.provider,
-            trace_writer=self.trace_writer,
-            tool_call_name=self.message_codec.tool_call_name,
-        )
-        self.llm: ProviderClient = create_provider_client(
-            ProviderConfig(
-                provider=provider_norm,
-                model_id=model_id,
-                thinking_level=thinking_level,
-                openai_transport=openai_transport,
-                openai_reasoning_summary=openai_reasoning_summary,
-            ),
-            constructors=ProviderConstructors(
-                anthropic=AnthropicLLM,
-                codex_cli=CodexCliLLM,
-                dashscope=DashScopeLLM,
-                deepseek=DeepSeekLLM,
-                gemini=GeminiLLM,
-                openai=OpenAILLM,
-                openrouter=OpenRouterLLM,
-            ),
-        )
-
-        actual_model_id = self.llm.model_id
-        self.max_turns = resolve_max_turns(model_id=actual_model_id, max_turns=max_turns)
-        self.cost_tracker: Optional[CostTracker] = None
+        self.ws = workspace
+        self.model = model
+        self.thinking_level = thinking_level
+        self.sdk_package = sdk_package
+        self.max_turns = max_turns
         self.max_cost_usd = max_cost_usd
-        pricing = pricing_for_provider_model(provider_norm, actual_model_id)
-        if pricing:
-            self.cost_tracker = CostTracker(model_id=actual_model_id, pricing=pricing)
+        self.max_stall_turns = max_stall_turns
 
-        self.tool_registry = build_tool_registry(
-            provider_norm,
-            sdk_package=self.sdk_package,
-            runtime_limits=self.runtime_limits,
-        )
-        self.on_turn_start = on_turn_start
-        self.on_compaction_event = on_compaction_event
-        self.on_maintenance_event = on_maintenance_event
-
-        if display_enabled is None:
-            display_enabled = os.environ.get("URDF_TUI_ENABLED", "1") != "0"
-        self.display = SingleRunDisplay(
-            console=CONSOLE,
-            model_id=actual_model_id,
-            thinking_level=thinking_level,
-            max_turns=self.max_turns,
-            enabled=display_enabled,
-        )
-
-        (
-            self.loaded_system_prompt_path,
-            base_system_prompt,
-        ) = self._build_system_prompt(system_prompt_path)
-        self.system_prompt = base_system_prompt
-        repo_root = Path(__file__).resolve().parents[1]
-        self.virtual_workspace = build_virtual_workspace(
-            repo_root,
-            model_file_path=Path(self.file_path),
-            sdk_package=self.sdk_package,
-        )
-        self.sdk_docs_context = load_sdk_docs_reference(
-            repo_root,
-            sdk_package=self.sdk_package,
-        )
-        if self.provider == ProviderName.OPENAI.value:
-            prompt_cache_key, prompt_cache_retention = build_openai_prompt_cache_settings(
-                model_id=actual_model_id,
-                sdk_package=self.sdk_package,
-                system_prompt=self.system_prompt,
-                sdk_docs_context=self.sdk_docs_context,
-                tools=self.tool_registry.get_tool_schemas(),
-            )
-            self.llm.prompt_cache_key = prompt_cache_key
-            self.llm.prompt_cache_retention = prompt_cache_retention
-
-    def _ensure_message_codec(self) -> MessageCodec:
-        codec = getattr(self, "message_codec", None)
-        if isinstance(codec, MessageCodec):
-            return codec
-        codec = MessageCodec(provider=str(getattr(self, "provider", "")))
-        self.message_codec = codec
-        return codec
-
-    def _ensure_compile_feedback(self) -> CompileFeedbackLoop:
-        loop = getattr(self, "compile_feedback", None)
-        if isinstance(loop, CompileFeedbackLoop):
-            return loop
-
-        checkpoint_urdf_path = getattr(self, "checkpoint_urdf_path", None)
-        if checkpoint_urdf_path is not None:
-            checkpoint_urdf_path = Path(checkpoint_urdf_path)
-        loop = CompileFeedbackLoop(
-            file_path=str(getattr(self, "file_path", "")),
-            sdk_package=str(getattr(self, "sdk_package", "sdk")),
-            runtime_limits=getattr(self, "runtime_limits", None),
-            checkpoint_urdf_path=checkpoint_urdf_path,
-        )
-        loop._last_checkpoint_urdf_sig = getattr(self, "_last_checkpoint_urdf_sig", None)
-        loop._current_edit_revision = getattr(self, "_current_edit_revision", 0)
-        loop._last_successful_compile_revision = getattr(
-            self,
-            "_last_successful_compile_revision",
-            None,
-        )
-        loop._last_successful_compile_report = getattr(
-            self,
-            "_last_successful_compile_report",
-            None,
-        )
-        loop._compile_attempt_count = getattr(self, "_compile_attempt_count", 0)
-        loop._last_compile_failure_sig = getattr(self, "_last_compile_failure_sig", None)
-        loop._consecutive_compile_failure_count = getattr(
-            self,
-            "_consecutive_compile_failure_count",
-            0,
-        )
-        self.compile_feedback = loop
-        return loop
-
-    def _sync_compile_feedback_legacy_attrs(self, loop: CompileFeedbackLoop | None = None) -> None:
-        loop = loop or self._ensure_compile_feedback()
-        self._last_checkpoint_urdf_sig = loop._last_checkpoint_urdf_sig
-        self._current_edit_revision = loop._current_edit_revision
-        self._last_successful_compile_revision = loop._last_successful_compile_revision
-        self._last_successful_compile_report = loop._last_successful_compile_report
-        self._compile_attempt_count = loop._compile_attempt_count
-        self._last_compile_failure_sig = loop._last_compile_failure_sig
-        self._consecutive_compile_failure_count = loop._consecutive_compile_failure_count
-
-    def _ensure_guidance_injector(self) -> GuidanceInjector:
-        injector = getattr(self, "guidance_injector", None)
-        if isinstance(injector, GuidanceInjector):
-            return injector
-
-        injector = GuidanceInjector(
-            file_path=str(getattr(self, "file_path", "")),
-            provider=str(getattr(self, "provider", "")),
-            trace_writer=getattr(self, "trace_writer", None),
-            tool_call_name=self._tool_call_name,
-        )
-        injector._seen_tool_error_sigs = getattr(self, "_seen_tool_error_sigs", set())
-        injector._seen_exact_geometry_contract_sigs = getattr(
-            self,
-            "_seen_exact_geometry_contract_sigs",
-            set(),
-        )
-        injector._seen_baseline_qc_guidance_sigs = getattr(
-            self,
-            "_seen_baseline_qc_guidance_sigs",
-            set(),
-        )
-        injector._seen_compile_repair_guidance_sigs = getattr(
-            self,
-            "_seen_compile_repair_guidance_sigs",
-            set(),
-        )
-        injector._seen_api_error_guidance_sigs = getattr(
-            self,
-            "_seen_api_error_guidance_sigs",
-            set(),
-        )
-        self.guidance_injector = injector
-        return injector
-
-    def _reset_run_compile_state(self) -> None:
-        loop = self._ensure_compile_feedback()
-        loop.reset()
-        self._sync_compile_feedback_legacy_attrs(loop)
-        self._ensure_guidance_injector().reset()
-
-    def _latest_code_is_fresh(self) -> bool:
-        return self._ensure_compile_feedback().latest_code_is_fresh()
-
-    def _mark_code_mutated(self, tool_name: str) -> None:
-        loop = self._ensure_compile_feedback()
-        loop.mark_code_mutated(tool_name)
-        self._sync_compile_feedback_legacy_attrs(loop)
-
-    def _append_compile_required_reminder(self, conversation: list[dict]) -> None:
-        self._ensure_compile_feedback().append_compile_required_reminder(
-            conversation,
-            trace_writer=self.trace_writer,
-        )
-
-    def _append_final_response_required_reminder(self, conversation: list[dict]) -> None:
-        msg = {
-            "role": "user",
-            "content": (
-                "<final_response_required>\n"
-                "The latest code has already compiled successfully.\n"
-                "Return a visible final response, or call a tool if further work is needed.\n"
-                "</final_response_required>"
-            ),
-        }
-        conversation.append(msg)
-        if self.trace_writer:
-            self.trace_writer.write_message(msg)
-
-    def _scan_current_code_contracts(self):
-        return self._ensure_guidance_injector()._scan_current_code_contracts()
-
-    def _maybe_inject_exact_geometry_contract_guidance(
+    def run(
         self,
-        conversation: list[dict],
+        prompt: str,
         *,
-        scan,
-    ) -> bool:
-        return self._ensure_guidance_injector()._maybe_inject_exact_geometry_contract_guidance(
-            conversation,
-            scan=scan,
-        )
+        image_path: Path | None = None,
+        on_turn: Callable[[list[dict], int, int, int, float], None] | None = None,
+    ) -> AgentResult:
+        # First-turn message stream mirrors articraft's openai build_first_turn_messages: the SDK docs ride
+        # in their own user message, and the runtime guidance is prepended to the user's prompt.
+        user_content: str | list[dict]
+        if image_path is None:
+            user_content = f"{RUNTIME_GUIDANCE}\n\n{prompt}"
+        else:
+            user_content = [
+                {"type": "text", "text": RUNTIME_GUIDANCE},
+                {"type": "text", "text": prompt},
+                _image_content(image_path),
+            ]
+        messages: list[dict] = [
+            {"role": "system", "content": build_system_prompt(self.sdk_package)},
+            {"role": "user", "content": build_sdk_docs_context(self.sdk_package)},
+            {"role": "user", "content": user_content},
+        ]
 
-    def _maybe_inject_baseline_qc_guidance(
-        self,
-        conversation: list[dict],
-        *,
-        scan,
-    ) -> bool:
-        return self._ensure_guidance_injector()._maybe_inject_baseline_qc_guidance(
-            conversation,
-            scan=scan,
-        )
+        in_tok = out_tok = cache_tok = 0
+        cost = 0.0
+        reason = "done"
+        turn_no = 0
+        trace: list[dict] = []
+        stall = 0  # consecutive compile-only turns that left model.py unchanged
+        seen_guidance: set[str] = set()  # proactive nudges already fired (fire once each)
+        compile_nudged = False  # G1 compile-required reminder fired (once per run)
 
-    def _maybe_inject_code_contract_guidance(
-        self,
-        conversation: list[dict],
-        *,
-        tool_calls: list[dict],
-        tool_results: list[ToolResult],
-    ) -> None:
-        self._ensure_guidance_injector().maybe_inject_code_contract_guidance(
-            conversation,
-            tool_calls=tool_calls,
-            tool_results=tool_results,
-        )
-
-    def _maybe_inject_compile_repair_guidance(
-        self,
-        conversation: list[dict],
-        *,
-        tool_calls: list[dict],
-        tool_results: list[ToolResult],
-    ) -> None:
-        self._ensure_guidance_injector().maybe_inject_compile_repair_guidance(
-            conversation,
-            tool_calls=tool_calls,
-            tool_results=tool_results,
-        )
-
-    def _maybe_inject_api_error_guidance(
-        self,
-        conversation: list[dict],
-        *,
-        tool_calls: list[dict],
-        tool_results: list[ToolResult],
-    ) -> None:
-        self._ensure_guidance_injector().maybe_inject_api_error_guidance(
-            conversation,
-            tool_calls=tool_calls,
-            tool_results=tool_results,
-        )
-
-    def _maybe_inject_edit_code_guidance(
-        self,
-        conversation: list[dict],
-        *,
-        tool_calls: list[dict],
-        tool_results: list[ToolResult],
-    ) -> None:
-        self._ensure_guidance_injector().maybe_inject_edit_code_guidance(
-            conversation,
-            tool_calls=tool_calls,
-            tool_results=tool_results,
-        )
-
-    def _append_compile_failure_signals(self, conversation: list[dict], *, bundle) -> str:
-        loop = self._ensure_compile_feedback()
-        content = loop._render_compile_tool_output(bundle)
-        self._sync_compile_feedback_legacy_attrs(loop)
-        msg = {"role": "user", "content": content}
-        conversation.append(msg)
-        if self.trace_writer:
-            self.trace_writer.write_message(msg)
-        return content
-
-    async def _compile_urdf_report_async(self):
-        async with local_work_slot(getattr(self, "runtime_limits", None)):
-            return await asyncio.to_thread(
-                compile_urdf_report_maybe_timeout,
-                Path(self.file_path),
-                sdk_package=getattr(self, "sdk_package", "sdk"),
-                rewrite_visual_glb=False,
-            )
-
-    async def _persist_compile_success_checkpoint_async(self, urdf_xml: str) -> None:
-        await self._ensure_compile_feedback()._persist_compile_success_checkpoint_async(urdf_xml)
-
-    async def _persist_compile_failure_checkpoint_async(self, exc: BaseException) -> bool:
-        return await self._ensure_compile_feedback()._persist_compile_failure_checkpoint_async(exc)
-
-    async def _execute_compile_model(self, *, tool_call_id: str) -> ToolResult:
-        loop = self._ensure_compile_feedback()
-        cached_report = loop.last_successful_report
-        if loop.latest_code_is_fresh() and cached_report is not None:
-            result = ToolResult(
-                output=loop._render_reused_compile_tool_output(cached_report.signal_bundle),
-                compilation={"status": "success", "error": None},
-                tool_call_id=tool_call_id,
-            )
-            self._sync_compile_feedback_legacy_attrs(loop)
-            return result
-
-        loop._compile_attempt_count += 1
-
-        try:
-            report = await self._compile_urdf_report_async()
-            await self._persist_compile_success_checkpoint_async(report.urdf_xml)
-            loop._last_successful_compile_report = report
-            loop._last_successful_compile_revision = loop._current_edit_revision
-            result = ToolResult(
-                output=loop._render_compile_tool_output(report.signal_bundle),
-                compilation={"status": "success", "error": None},
-                tool_call_id=tool_call_id,
-            )
-            self._sync_compile_feedback_legacy_attrs(loop)
-            return result
-        except TimeoutError as exc:
-            bundle = compile_signal_bundle_from_exception(exc)
-            log_compile_signals(bundle)
-            result = ToolResult(
-                output=loop._render_compile_tool_output(bundle),
-                compilation={"status": "error", "error": bundle.summary},
-                tool_call_id=tool_call_id,
-            )
-            self._sync_compile_feedback_legacy_attrs(loop)
-            return result
-        except Exception as exc:
-            await self._persist_compile_failure_checkpoint_async(exc)
-            bundle = compile_signal_bundle_from_exception(exc)
-            log_compile_signals(bundle)
-            result = ToolResult(
-                output=loop._render_compile_tool_output(bundle),
-                compilation={"status": "error", "error": bundle.summary},
-                tool_call_id=tool_call_id,
-            )
-            self._sync_compile_feedback_legacy_attrs(loop)
-            return result
-
-    def _build_system_prompt(self, prompt_path: str) -> tuple[Path, str]:
-        return load_system_prompt_text(
-            prompt_path,
-            provider=self.provider,
-            sdk_package=self.sdk_package,
-        )
-
-    def _persist_cost_tracking(self) -> None:
-        if not self.cost_tracker:
-            return
-        try:
-            cost_path = Path(self.file_path).parent / "cost.json"
-            self.cost_tracker.save_json(cost_path)
-            logger.info("Saved cost tracking to %s", cost_path)
-        except Exception as exc:
-            logger.warning("Failed to save cost tracking: %s", exc)
-
-    def _current_total_cost_usd(self) -> float:
-        if not self.cost_tracker:
-            return 0.0
-        return self.cost_tracker.all_in_total_breakdown().total_cost
-
-    def _record_maintenance_event(self, event: dict[str, Any]) -> float:
-        billed_cost = 0.0
-        if self.cost_tracker:
-            billed_cost = self.cost_tracker.add_maintenance_event(event).total_cost
-
-        kind = event.get("kind") or event.get("type")
-        if kind == "compaction":
-            return billed_cost
-
-        add_maintenance_event = getattr(self.display, "add_maintenance_event", None)
-        if callable(add_maintenance_event):
-            usage = event.get("usage")
-            usage_total_tokens = (
-                usage.get("total_tokens")
-                if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int)
+        def model_sha() -> str | None:
+            return (
+                hashlib.sha256(self.ws.model_path.read_bytes()).hexdigest()
+                if self.ws.model_path.exists()
                 else None
             )
-            try:
-                add_maintenance_event(
-                    event,
-                    billed_cost=billed_cost,
-                    usage_total_tokens=usage_total_tokens,
-                )
-            except TypeError:
-                add_maintenance_event(event)
 
-        on_maintenance_event = getattr(self, "on_maintenance_event", None)
-        if on_maintenance_event:
-            try:
-                on_maintenance_event(event, billed_cost)
-            except Exception:
-                logger.exception("on_maintenance_event callback failed")
-
-        return billed_cost
-
-    def _extract_tool_calls(self, message: dict) -> list[dict]:
-        return self._ensure_message_codec().extract_tool_calls(message)
-
-    def _extract_text(self, message: dict) -> str:
-        return self._ensure_message_codec().extract_text(message)
-
-    def _extract_usage(self, message: dict) -> Optional[dict[str, int]]:
-        return self._ensure_message_codec().extract_usage(message)
-
-    def _context_window_pressure(self, usage: dict[str, int]) -> dict[str, Any] | None:
-        context_window_pressure = getattr(self.llm, "context_window_pressure", None)
-        if not callable(context_window_pressure):
-            return None
-        try:
-            pressure = context_window_pressure(usage)
-        except Exception:
-            logger.exception("Failed to compute context-window pressure")
-            return None
-        to_dict = getattr(pressure, "to_dict", None)
-        if callable(to_dict):
-            payload = to_dict()
-            return payload if isinstance(payload, dict) else None
-        return pressure if isinstance(pressure, dict) else None
-
-    def _extract_thinking(self, message: dict) -> Optional[str]:
-        return self._ensure_message_codec().extract_thinking(message)
-
-    def _build_assistant_message(self, message: dict) -> dict:
-        return self._ensure_message_codec().build_assistant_message(message)
-
-    def _extract_provider_diagnostics(self, message: dict) -> dict[str, Any] | None:
-        if not isinstance(message, dict):
-            return None
-        diagnostics = message.get("provider_diagnostics")
-        return diagnostics if isinstance(diagnostics, dict) and diagnostics else None
-
-    def _trace_provider_diagnostics(self, diagnostics: dict[str, Any]) -> None:
-        if not self.trace_writer:
-            return
-        payload: dict[str, Any] = {
-            "provider": self.provider,
-            "diagnostics": diagnostics,
-        }
-        model_id = getattr(self.llm, "model_id", None)
-        if isinstance(model_id, str) and model_id:
-            payload["model_id"] = model_id
-        self.trace_writer.write_event("llm_response", payload)
-
-    def _format_provider_diagnostic_summary(self, diagnostics: dict[str, Any] | None) -> str:
-        if not isinstance(diagnostics, dict):
-            return ""
-        parts: list[str] = []
-        status = diagnostics.get("status")
-        if isinstance(status, str) and status:
-            parts.append(f"status={status}")
-        incomplete_details = diagnostics.get("incomplete_details")
-        reason = incomplete_details.get("reason") if isinstance(incomplete_details, dict) else None
-        if isinstance(reason, str) and reason:
-            parts.append(f"reason={reason}")
-        return " ".join(parts)
-
-    def _tool_call_name(self, tool_call: dict) -> str:
-        return self._ensure_message_codec().tool_call_name(tool_call)
-
-    def _tool_call_display_args(self, tool_call: dict) -> dict:
-        return self._ensure_message_codec().tool_call_display_args(tool_call)
-
-    def _tool_calls_are_parallelizable(self, tool_calls: list[dict]) -> bool:
-        return self._ensure_message_codec().tool_calls_are_parallelizable(tool_calls)
-
-    def _ensure_code_file(self) -> None:
-        path = Path(self.file_path)
-        if path.exists():
-            existing = path.read_text(encoding="utf-8")
-            if existing.strip():
-                return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            _minimal_scaffold_text(sdk_package=self.sdk_package),
-            encoding="utf-8",
-        )
-
-    def _seed_find_examples_cache_from_conversation(self, conversation: list[dict]) -> None:
-        self._seen_find_example_paths = set()
-        for message in conversation:
-            if not isinstance(message, dict):
-                continue
-            if message.get("role") != "tool" or message.get("name") != "find_examples":
-                continue
-            content = message.get("content")
-            if isinstance(content, str):
-                try:
-                    payload = json.loads(content)
-                except json.JSONDecodeError:
-                    continue
-            elif isinstance(content, dict):
-                payload = content
+        prev_sha = model_sha()
+        gittrack.snapshot(self.ws.model_path, "seed")
+        # Responses-API models keep reasoning server-side: send only new messages each turn and
+        # chain by response id, instead of re-sending the whole history (the completion path).
+        responses_mode = llm.uses_responses(self.model)
+        prev_response_id: str | None = None
+        sent = 0
+        for turn_no in range(1, self.max_turns + 1):
+            # Responses applies `instructions` per-call, so always resend the system prompt
+            # (messages[0]); only the conversation delta is new each turn (OpenAI caches the rest).
+            if responses_mode:
+                payload = messages[sent:] if sent == 0 else [messages[0], *messages[sent:]]
             else:
-                continue
-            result = payload.get("result") if isinstance(payload, dict) else None
-            if not isinstance(result, list):
-                continue
-            for item in result:
-                cache_key = self._find_examples_cache_key(item)
-                if cache_key is not None:
-                    self._seen_find_example_paths.add(cache_key)
-
-    def _compress_find_examples_output(self, output: Any) -> Any:
-        if not isinstance(output, list):
-            return output
-
-        compressed: list[Any] = []
-        for item in output:
-            cache_key = self._find_examples_cache_key(item)
-            if cache_key is None:
-                compressed.append(item)
-                continue
-
-            entry = dict(item)
-            if cache_key in self._seen_find_example_paths:
-                entry["content"] = _FIND_EXAMPLES_SKIPPED_CONTENT
-                entry["content_skipped"] = True
-            else:
-                self._seen_find_example_paths.add(cache_key)
-            compressed.append(entry)
-        return compressed
-
-    def _find_examples_cache_key(self, item: Any) -> str | None:
-        if not isinstance(item, dict):
-            return None
-        example_id = item.get("example_id")
-        if isinstance(example_id, str) and example_id:
-            return example_id
-        path = item.get("path")
-        if isinstance(path, str) and path:
-            return path
-        return None
-
-    async def _execute_tool(self, tool_call: dict) -> tuple[ToolResult, dict]:
-        tool_id = tool_call["id"]
-        call_type = str(tool_call.get("type", "function"))
-        func_name = self._tool_call_name(tool_call)
-        thought_signature = tool_call.get("thought_signature")
-        if thought_signature is None:
-            thought_signature = (
-                tool_call.get("extra_content", {}).get("google", {}).get("thought_signature")
-            )
-
-        if call_type == "custom":
-            custom = tool_call.get("custom") if isinstance(tool_call, dict) else None
-            if not isinstance(custom, dict):
-                result = ToolResult(
-                    error="Invalid custom tool payload",
-                    tool_call_id=tool_id,
-                )
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": func_name,
-                    "tool_type": "custom",
-                    "content": json.dumps(
-                        {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                    ),
-                }
-                if thought_signature:
-                    tool_message["thought_signature"] = thought_signature
-                return result, tool_message
-            func_args = {"input": str(custom.get("input") or "")}
-        else:
-            function = tool_call.get("function") if isinstance(tool_call, dict) else None
-            func_args_str = ""
-            if isinstance(function, dict):
-                func_args_str = str(function.get("arguments") or "")
+                payload = messages
+            sent = len(messages)
             try:
-                func_args = json.loads(func_args_str)
-            except json.JSONDecodeError as exc:
-                result = ToolResult(
-                    error=f"Invalid JSON in tool arguments: {str(exc)}",
-                    tool_call_id=tool_id,
+                turn = llm.call(
+                    payload,
+                    model=self.model,
+                    tools=tools.schemas(self.ws, self.model),
+                    thinking_level=self.thinking_level,
+                    previous_response_id=prev_response_id,
                 )
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": func_name,
-                    "content": json.dumps(result.to_dict()),
-                }
-                if thought_signature:
-                    tool_message["thought_signature"] = thought_signature
-                return result, tool_message
+                prev_response_id = turn.response_id or prev_response_id
+            except llm.ImageInputUnsupported:
+                raise  # config error, not a transient failure — surface it, don't bury in a trace
+            except Exception as exc:  # noqa: BLE001 — terminate the run cleanly, don't crash the batch
+                reason = "error"
+                trace.append({"turn": turn_no, "error": f"{type(exc).__name__}: {exc}"})
+                if on_turn is not None:
+                    on_turn(trace, in_tok, out_tok, cache_tok, cost)
+                break
+            in_tok += turn.input_tokens
+            out_tok += turn.output_tokens
+            cache_tok += turn.cache_read_tokens
+            cost += turn.cost_usd
+            messages.append(turn.message)
 
-        if not isinstance(func_args, dict):
-            result = ToolResult(
-                error="Tool arguments must be a JSON object",
-                tool_call_id=tool_id,
-            )
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "name": func_name,
-                "content": json.dumps(
-                    {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                ),
+            entry = {
+                "turn": turn_no,
+                "text": turn.text,
+                "reasoning": turn.reasoning,
+                "provider": turn.provider,
+                "input_tokens": turn.input_tokens,
+                "output_tokens": turn.output_tokens,
+                "cache_read_tokens": turn.cache_read_tokens,
+                "cost_usd": turn.cost_usd,
+                "tool_calls": [],
             }
-            if thought_signature:
-                tool_message["thought_signature"] = thought_signature
-            return result, tool_message
+            trace.append(entry)
 
-        if func_name == "compile_model":
-            unexpected = sorted(func_args.keys())
-            if unexpected:
-                result = ToolResult(
-                    error=(
-                        f"Invalid parameters for {func_name}. Unexpected parameters: {unexpected}"
-                    ),
-                    tool_call_id=tool_id,
-                )
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": func_name,
-                    "tool_type": call_type if call_type == "custom" else "function",
-                    "content": json.dumps(
-                        {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                    ),
-                }
-                if thought_signature:
-                    tool_message["thought_signature"] = thought_signature
-                return result, tool_message
-            result = await self._execute_compile_model(tool_call_id=tool_id)
-            tool_message = {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "name": func_name,
-                "tool_type": call_type if call_type == "custom" else "function",
-                "content": json.dumps(
-                    {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                ),
-            }
-            if thought_signature:
-                tool_message["thought_signature"] = thought_signature
-            return result, tool_message
-
-        if func_name == "replace":
-            old_string_key = "old_string"
-            try:
-                editable = extract_editable_code(Path(self.file_path).read_text(encoding="utf-8"))
-            except Exception:
-                editable = None
-            if (
-                func_args.get(old_string_key) == ""
-                and editable is not None
-                and editable.strip() != ""
-            ):
-                result = ToolResult(
-                    error=(
-                        "old_string cannot be empty unless the editable code section is empty. "
-                        'Call `read_file(path="model.py")` to copy exact current editable text and retry.'
-                    ),
-                    tool_call_id=tool_id,
-                )
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": func_name,
-                    "content": json.dumps(
-                        {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                    ),
-                }
-                if thought_signature:
-                    tool_message["thought_signature"] = thought_signature
-                return result, tool_message
-            if (
-                editable is not None
-                and editable.strip() == ""
-                and func_args.get(old_string_key) != ""
-            ):
-                result = ToolResult(
-                    error=(
-                        "Editable code section is empty. Initialize it with "
-                        "`write_file(content=...)` or with "
-                        f"{func_name} using "
-                        'old_string="" and new_string containing the initial '
-                        "build_object_model() and run_tests() implementation."
-                    ),
-                    tool_call_id=tool_id,
-                )
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": func_name,
-                    "content": json.dumps(
-                        {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-                    ),
-                }
-                if thought_signature:
-                    tool_message["thought_signature"] = thought_signature
-                return result, tool_message
-
-        try:
-            invocation = await self.tool_registry.build_invocation(
-                func_name,
-                func_args,
-            )
-
-            if not invocation:
-                result = ToolResult(
-                    error=f"Tool {func_name} not found",
-                    tool_call_id=tool_id,
-                )
-            else:
-                bind_file_path = getattr(invocation, "bind_file_path", None)
-                if callable(bind_file_path):
-                    bind_file_path(self.file_path)
-                bind_virtual_workspace = getattr(invocation, "bind_virtual_workspace", None)
-                if callable(bind_virtual_workspace):
-                    bind_virtual_workspace(self.virtual_workspace)
-                result = await invocation.execute()
-                result.tool_call_id = tool_id
-                if result.is_success() and func_name == "find_examples":
-                    result.output = self._compress_find_examples_output(result.output)
-                if result.is_success():
-                    self._mark_code_mutated(func_name)
-        except Exception as exc:
-            from pydantic import ValidationError
-
-            if isinstance(exc, ValidationError):
-                errors = exc.errors()
-                missing = [err["loc"][0] for err in errors if err["type"] == "missing"]
-                invalid = [
-                    f"{err['loc'][0]}: {err['msg']}" for err in errors if err["type"] != "missing"
-                ]
-
-                parts = [f"Invalid parameters for {func_name}."]
-                if missing:
-                    parts.append(f"Missing required: {missing}")
-                if invalid:
-                    parts.append(f"Invalid values: {invalid}")
-                parts.append(f"Provided: {list(func_args.keys())}")
-                error_msg = " ".join(parts)
-            else:
-                error_msg = f"Tool execution error: {str(exc)}"
-
-            result = ToolResult(error=error_msg, tool_call_id=tool_id)
-
-        tool_message = {
-            "role": "tool",
-            "tool_call_id": tool_id,
-            "name": func_name,
-            "tool_type": call_type if call_type == "custom" else "function",
-            "content": json.dumps(
-                {k: v for k, v in result.to_dict().items() if k != "tool_call_id"}
-            ),
-        }
-        if thought_signature:
-            tool_message["thought_signature"] = thought_signature
-        return result, tool_message
-
-    async def _execute_tool_calls_batch(
-        self,
-        tool_calls: list[dict],
-    ) -> list[tuple[dict, ToolResult, dict, float]]:
-        if self._tool_calls_are_parallelizable(tool_calls):
-            tool_names = [self._tool_call_name(tool_call) for tool_call in tool_calls]
-            logger.info(
-                "Executing %s Gemini tool calls in parallel: %s",
-                len(tool_calls),
-                ", ".join(tool_names),
-            )
-
-            async def _run_single(tool_call: dict) -> tuple[ToolResult, dict, float]:
-                func_name = self._tool_call_name(tool_call)
-                tool_start = time.monotonic()
-                result, tool_message = await self._execute_tool(tool_call)
-                tool_duration = time.monotonic() - tool_start
-                logger.info("Tool %s finished in %.2fs", func_name, tool_duration)
-                return result, tool_message, tool_duration
-
-            batched_results = await asyncio.gather(
-                *(_run_single(tool_call) for tool_call in tool_calls)
-            )
-            return [
-                (tool_call, result, tool_message, tool_duration)
-                for tool_call, (result, tool_message, tool_duration) in zip(
-                    tool_calls, batched_results, strict=False
-                )
-            ]
-
-        executed: list[tuple[dict, ToolResult, dict, float]] = []
-        for tool_call in tool_calls:
-            func_name = self._tool_call_name(tool_call)
-            logger.info("Executing tool: %s", func_name)
-            tool_start = time.monotonic()
-            result, tool_message = await self._execute_tool(tool_call)
-            tool_duration = time.monotonic() - tool_start
-            logger.info("Tool %s finished in %.2fs", func_name, tool_duration)
-            executed.append((tool_call, result, tool_message, tool_duration))
-        return executed
-
-    def _is_code_valid(self, tool_results: list[ToolResult]) -> bool:
-        for result in reversed(tool_results):
-            if result.compilation:
-                return result.compilation.get("status") == "success"
-        return False
-
-    def _compile_warnings_snapshot(self) -> list[str]:
-        return self._ensure_compile_feedback().compile_warnings_snapshot()
-
-    async def _read_final_code(self) -> str | None:
-        try:
-            import aiofiles
-
-            async with aiofiles.open(self.file_path, "r", encoding="utf-8") as file:
-                return await file.read()
-        except Exception:
-            return None
-
-    def _termination_message(self, text_response: str, tool_calls: list[dict]) -> str | None:
-        if text_response.strip() and not tool_calls:
-            return "Agent completed with response"
-        return None
-
-    async def _build_code_valid_result(
-        self,
-        *,
-        message: str,
-        conversation: list[dict],
-        turn_count: int,
-        tool_call_count: int,
-        usage: dict[str, int],
-    ) -> AgentResult:
-        final_code = await self._read_final_code()
-        self._persist_cost_tracking()
-        compile_feedback = self._ensure_compile_feedback()
-        report = compile_feedback.last_successful_report
-        return AgentResult(
-            success=True,
-            reason=TerminateReason.CODE_VALID,
-            message=message,
-            conversation=conversation,
-            final_code=final_code,
-            urdf_xml=report.urdf_xml if report else None,
-            compile_warnings=self._compile_warnings_snapshot(),
-            turn_count=turn_count,
-            tool_call_count=tool_call_count,
-            compile_attempt_count=compile_feedback.compile_attempt_count,
-            usage=usage or None,
-        )
-
-    async def _handle_finish_attempt(
-        self,
-        conversation: list[dict],
-        *,
-        message: str,
-        turn_count: int,
-        tool_call_count: int,
-        usage: dict[str, int],
-        display_turn_override: int | None = None,
-    ) -> AgentResult | None:
-        if not self._latest_code_is_fresh():
-            self._append_compile_required_reminder(conversation)
-        else:
-            if display_turn_override is not None:
-                self.display.current_turn = display_turn_override
-            self.display.end_turn(success=True)
-            return await self._build_code_valid_result(
-                message=message,
-                conversation=conversation,
-                turn_count=turn_count,
-                tool_call_count=tool_call_count,
-                usage=usage,
-            )
-
-        if display_turn_override is not None:
-            self.display.current_turn = display_turn_override
-        self.display.end_turn(success=True)
-        return None
-
-    async def run(
-        self,
-        user_message: Any,
-        *,
-        initial_conversation: Optional[list[dict]] = None,
-    ) -> AgentResult:
-        self._ensure_code_file()
-        self._reset_run_compile_state()
-        self.display.start()
-        conversation = initial_conversation or []
-        self._seed_find_examples_cache_from_conversation(conversation)
-        if not conversation:
-            conversation.extend(
-                _build_first_turn_messages(
-                    user_message,
-                    sdk_docs_context=self.sdk_docs_context,
-                    provider=self.provider,
-                )
-            )
-            if self.trace_writer:
-                for message in conversation:
-                    self.trace_writer.write_message(message)
-        else:
-            user_entry = {"role": "user", "content": user_message}
-            conversation.append(user_entry)
-            if self.trace_writer:
-                self.trace_writer.write_message(user_entry)
-
-        usage_totals: dict[str, int] = {}
-        completed_turns = 0
-        llm_calls = 0
-        tool_call_count = 0
-        consecutive_no_action_turns = 0
-        last_provider_diagnostics: dict[str, Any] | None = None
-
-        while completed_turns < self.max_turns:
-            turn = completed_turns + 1
-            llm_calls += 1
-            logger.info(
-                "Starting turn %s/%s (llm_call=%s)",
-                turn,
-                self.max_turns,
-                llm_calls,
-            )
-            self.display.start_turn(turn)
-            if self.on_turn_start:
-                try:
-                    self.on_turn_start(turn)
-                except Exception:
-                    logger.exception("on_turn_start callback failed for turn %s", turn)
-
-            llm_start = time.monotonic()
-            self.display.start_llm_wait()
-            logger.info("Calling LLM (%s)...", type(self.llm).__name__)
-            try:
-                prepare_next_request = getattr(self.llm, "prepare_next_request", None)
-                if callable(prepare_next_request):
-                    prepare_result = await prepare_next_request(
-                        system_prompt=self.system_prompt,
-                        messages=conversation,
-                        tools=self.tool_registry.get_tool_schemas(),
-                        completed_turns=completed_turns,
-                        consecutive_compile_failure_count=(
-                            self._ensure_compile_feedback().consecutive_compile_failure_count
-                        ),
-                        last_compile_failure_sig=(
-                            self._ensure_compile_feedback().last_compile_failure_sig
-                        ),
+            if not turn.tool_calls:
+                # G1: if the model tries to conclude on edits it never compiled, nudge it to compile
+                # first (articraft's compile_required reminder). Once per run — the final authoritative
+                # compile still fixes the success label regardless, so this only shapes trace-ending
+                # state, and re-nudging a model that ignores it would just loop to max_turns.
+                stale = self.ws.model_path.exists() and model_sha() != self.ws.last_compile_sha
+                if stale and not compile_nudged:
+                    compile_nudged = True
+                    nudge = (
+                        "<compile_required>\n"
+                        "model.py has edits that were never compiled. Run `compile_model` to verify "
+                        "them before concluding.\n"
+                        "</compile_required>"
                     )
-                    for trace_event in getattr(prepare_result, "trace_events", []):
-                        if self.trace_writer:
-                            event_type = getattr(trace_event, "event_type", None)
-                            payload = getattr(trace_event, "payload", None)
-                            if isinstance(event_type, str) and isinstance(payload, dict):
-                                self.trace_writer.write_event(event_type, payload)
-                    for maintenance_event in getattr(prepare_result, "maintenance_events", []):
-                        if isinstance(maintenance_event, dict):
-                            self._record_maintenance_event(maintenance_event)
-                    compaction_event = getattr(prepare_result, "compaction_event", None)
-                    if compaction_event is not None:
-                        compaction_payload = compaction_event.to_dict()
-                        maintenance_cost_usd = self._record_maintenance_event(compaction_payload)
-                        usage = compaction_payload.get("usage")
-                        usage_total_tokens = (
-                            usage.get("total_tokens")
-                            if isinstance(usage, dict)
-                            and isinstance(usage.get("total_tokens"), int)
-                            else None
-                        )
-                        add_compaction_event = getattr(self.display, "add_compaction_event", None)
-                        if callable(add_compaction_event):
-                            add_compaction_event(
-                                trigger=compaction_event.trigger,
-                                estimated_saved_next_input_tokens=(
-                                    compaction_event.estimated_saved_next_input_tokens
-                                ),
-                                billed_cost=maintenance_cost_usd,
-                                previous_response_id_cleared=(
-                                    compaction_event.previous_response_id_cleared
-                                ),
-                                usage_total_tokens=usage_total_tokens,
-                                estimate_error=compaction_event.estimate_error,
-                            )
-                        on_compaction_event = getattr(self, "on_compaction_event", None)
-                        if on_compaction_event:
-                            try:
-                                on_compaction_event(
-                                    compaction_payload,
-                                    maintenance_cost_usd,
-                                )
-                            except Exception:
-                                logger.exception("on_compaction_event callback failed")
-                    if (
-                        self.max_cost_usd is not None
-                        and self._current_total_cost_usd() > self.max_cost_usd
-                    ):
-                        total_cost = self._current_total_cost_usd()
-                        self._persist_cost_tracking()
-                        self.display.end_turn(success=False)
-                        return AgentResult(
-                            success=False,
-                            reason=TerminateReason.COST_LIMIT,
-                            message=(
-                                f"Cost limit exceeded before turn {turn}: "
-                                f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
-                            ),
-                            conversation=conversation,
-                            compile_warnings=self._compile_warnings_snapshot(),
-                            turn_count=completed_turns,
-                            tool_call_count=tool_call_count,
-                            compile_attempt_count=(
-                                self._ensure_compile_feedback().compile_attempt_count
-                            ),
-                            usage=usage_totals or None,
-                        )
-                response = await self.llm.generate_with_tools(
-                    system_prompt=self.system_prompt,
-                    messages=conversation,
-                    tools=self.tool_registry.get_tool_schemas(),
-                )
-            except Exception as exc:
-                logger.exception("LLM error on turn %s: %s", turn, exc)
-                self.display.end_turn(success=False, error=str(exc))
-                return AgentResult(
-                    success=False,
-                    reason=TerminateReason.ERROR,
-                    message=f"LLM error: {str(exc)}",
-                    conversation=conversation,
-                    compile_warnings=self._compile_warnings_snapshot(),
-                    turn_count=completed_turns,
-                    tool_call_count=tool_call_count,
-                    compile_attempt_count=self._ensure_compile_feedback().compile_attempt_count,
-                )
-            finally:
-                self.display.stop_llm_wait()
-                logger.info("LLM call finished in %.2fs", time.monotonic() - llm_start)
-
-            text = self._extract_text(response)
-            tool_calls = self._extract_tool_calls(response)
-            thinking = self._extract_thinking(response)
-            usage = self._extract_usage(response) or {}
-            for key, value in usage.items():
-                usage_totals[key] = usage_totals.get(key, 0) + value
-
-            provider_diagnostics = self._extract_provider_diagnostics(response)
-            if provider_diagnostics:
-                last_provider_diagnostics = provider_diagnostics
-                self._trace_provider_diagnostics(provider_diagnostics)
-
-            assistant_message = self._build_assistant_message(response)
-            has_assistant_payload = any(
-                key in assistant_message
-                for key in ("content", "tool_calls", "thought_summary", "extra_content")
-            )
-            if has_assistant_payload:
-                conversation.append(assistant_message)
-                if self.trace_writer:
-                    self.trace_writer.write_message(assistant_message)
-            else:
-                logger.warning("Skipping empty assistant message")
-
-            if usage:
-                llm_duration = time.monotonic() - llm_start
-                turn_cost_usd = 0.0
-                if self.cost_tracker:
-                    turn_cost = self.cost_tracker.add_turn(usage)
-                    turn_cost_usd = turn_cost.total_cost
-                context_pressure = self._context_window_pressure(usage)
-                try:
-                    self.display.add_llm_call(
-                        usage,
-                        turn_cost_usd,
-                        llm_duration,
-                        context_pressure=context_pressure,
-                    )
-                except TypeError:
-                    self.display.add_llm_call(usage, turn_cost_usd, llm_duration)
-                if (
-                    self.cost_tracker is not None
-                    and self.max_cost_usd is not None
-                    and self._current_total_cost_usd() > self.max_cost_usd
-                ):
-                    total_cost = self._current_total_cost_usd()
-                    self._persist_cost_tracking()
-                    self.display.end_turn(success=False)
-                    return AgentResult(
-                        success=False,
-                        reason=TerminateReason.COST_LIMIT,
-                        message=(
-                            f"Cost limit exceeded after turn {completed_turns + 1}: "
-                            f"cumulative ${total_cost:.6f} exceeded limit ${self.max_cost_usd:.6f}"
-                        ),
-                        conversation=conversation,
-                        compile_warnings=self._compile_warnings_snapshot(),
-                        turn_count=completed_turns + 1,
-                        tool_call_count=tool_call_count,
-                        compile_attempt_count=(
-                            self._ensure_compile_feedback().compile_attempt_count
-                        ),
-                        usage=usage_totals or None,
-                    )
-
-            logger.info(
-                "Turn %s: %s tool calls, text_length=%s",
-                turn,
-                len(tool_calls),
-                len(text),
-            )
-            if isinstance(thinking, str) and thinking.strip():
-                self.display.add_thinking_summary(thinking)
-
-            is_no_action_response = not tool_calls and not text.strip()
-            if is_no_action_response:
-                completed_turns += 1
-                consecutive_no_action_turns += 1
-                if consecutive_no_action_turns >= MAX_CONSECUTIVE_NO_ACTION_TURNS:
-                    message = (
-                        "LLM produced "
-                        f"{consecutive_no_action_turns} consecutive no-action responses "
-                        "(no visible text and no tool calls). Aborting early to avoid "
-                        "burning turns."
-                    )
-                    diagnostic_summary = self._format_provider_diagnostic_summary(
-                        last_provider_diagnostics
-                    )
-                    if diagnostic_summary:
-                        message = f"{message} Last provider response: {diagnostic_summary}."
-                    logger.warning(message)
-                    self._persist_cost_tracking()
-                    self.display.end_turn(success=False, error=message)
-                    return AgentResult(
-                        success=False,
-                        reason=TerminateReason.ERROR,
-                        message=message,
-                        conversation=conversation,
-                        compile_warnings=self._compile_warnings_snapshot(),
-                        turn_count=completed_turns,
-                        tool_call_count=tool_call_count,
-                        compile_attempt_count=(
-                            self._ensure_compile_feedback().compile_attempt_count
-                        ),
-                        usage=usage_totals or None,
-                    )
-                if self._latest_code_is_fresh():
-                    logger.info(
-                        "No-action response after fresh compile; requesting visible final response."
-                    )
-                    self._append_final_response_required_reminder(conversation)
-                else:
-                    logger.info("No-action response before fresh compile; requesting compile.")
-                    self._append_compile_required_reminder(conversation)
-                self.display.end_turn(success=True)
-                continue
-
-            consecutive_no_action_turns = 0
-            completed_turns += 1
-
-            termination_message = self._termination_message(text, tool_calls)
-            if termination_message is not None:
-                finish_result = await self._handle_finish_attempt(
-                    conversation,
-                    message=termination_message,
-                    turn_count=completed_turns,
-                    tool_call_count=tool_call_count,
-                    usage=usage_totals,
-                )
-                if finish_result is not None:
-                    return finish_result
-                continue
-
-            turn_tool_results: list[ToolResult] = []
-            tool_call_count += len(tool_calls)
-            for (
-                tool_call,
-                result,
-                tool_message,
-                tool_duration,
-            ) in await self._execute_tool_calls_batch(tool_calls):
-                func_name = self._tool_call_name(tool_call)
-                func_args = self._tool_call_display_args(tool_call)
-                turn_tool_results.append(result)
-                conversation.append(tool_message)
-                if self.trace_writer:
-                    self.trace_writer.write_message(tool_message)
-
-                self.display.add_tool_call(
-                    tool_name=func_name,
-                    args=func_args,
-                    success=result.is_success(),
-                    duration=tool_duration,
-                    result=result.output if result.is_success() else None,
-                    compilation=result.compilation,
-                    error=result.error if not result.is_success() else None,
-                )
-
-                if result.is_success():
-                    logger.info("Tool %s succeeded", func_name)
-                else:
-                    logger.warning("Tool %s failed: %s", func_name, result.error)
-
-            self._maybe_inject_edit_code_guidance(
-                conversation,
-                tool_calls=tool_calls,
-                tool_results=turn_tool_results,
-            )
-            self._maybe_inject_compile_repair_guidance(
-                conversation,
-                tool_calls=tool_calls,
-                tool_results=turn_tool_results,
-            )
-            self._maybe_inject_api_error_guidance(
-                conversation,
-                tool_calls=tool_calls,
-                tool_results=turn_tool_results,
-            )
-            self._maybe_inject_code_contract_guidance(
-                conversation,
-                tool_calls=tool_calls,
-                tool_results=turn_tool_results,
-            )
-
-            if self._is_code_valid(turn_tool_results):
-                logger.info("Code validation passed")
-
-            self.display.end_turn(success=True)
-
-        final_code = await self._read_final_code()
-
-        self._persist_cost_tracking()
-
-        max_turn_message = "Agent hit max turns limit"
-        if not self._latest_code_is_fresh():
-            max_turn_message = (
-                "Agent hit max turns limit before `compile_model` succeeded on the latest revision"
-            )
-
-        return AgentResult(
-            success=False,
-            reason=TerminateReason.MAX_TURNS,
-            message=max_turn_message,
-            conversation=conversation,
-            final_code=final_code,
-            compile_warnings=self._compile_warnings_snapshot(),
-            turn_count=completed_turns,
-            tool_call_count=tool_call_count,
-            compile_attempt_count=self._ensure_compile_feedback().compile_attempt_count,
-            usage=usage_totals or None,
-        )
-
-    async def close(self) -> None:
-        close_events = await self.llm.close()
-        if isinstance(close_events, list):
-            for event in close_events:
-                if not isinstance(event, dict):
+                    messages.append({"role": "user", "content": nudge})
+                    entry["guidance"] = [*entry.get("guidance", []), nudge]
+                    if on_turn is not None:
+                        on_turn(trace, in_tok, out_tok, cache_tok, cost)
                     continue
-                if self.trace_writer:
-                    event_type = str(event.get("type") or event.get("kind") or "maintenance")
-                    self.trace_writer.write_event(event_type, event)
-                self._record_maintenance_event(event)
-        self.display.stop()
-        if self.trace_writer:
-            self.trace_writer.close()
+                reason = "model_stopped"
+                if on_turn is not None:
+                    on_turn(trace, in_tok, out_tok, cache_tok, cost)
+                break
 
-    async def __aenter__(self) -> ArticraftAgent:
-        return self
+            for tc in turn.tool_calls:
+                result = tools.dispatch(tc.name, self.ws, tc.args)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                call = _trace_call(tc.name, tc.args, result)
+                if tc.name == "compile_model" and self.ws.last_compile is not None:
+                    c = self.ws.last_compile
+                    call["compile"] = {
+                        "ok": c.ok,
+                        "passed": c.passed,
+                        "failures": c.failures,
+                        "warnings": c.warnings,
+                    }
+                entry["tool_calls"].append(call)
 
-    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        await self.close()
+            gittrack.snapshot(self.ws.model_path, f"turn {turn_no}")
+
+            # Proactive pre-compile nudges: after a mutating turn, scan model.py for stale
+            # exact-geometry contracts or baseline QC re-implemented in run_tests(), and push the
+            # finding now instead of waiting for compile to surface it a turn later. Fires once each.
+            if {tc.name for tc in turn.tool_calls} & {"str_replace", "apply_patch", "write_file"} and self.ws.model_path.exists():
+                nudges = guidance.guidance_messages(
+                    self.ws.model_path.read_text(encoding="utf-8"), seen_guidance
+                )
+                if nudges:
+                    messages.append({"role": "user", "content": "\n\n".join(nudges)})
+                    entry["guidance"] = nudges
+
+            if on_turn is not None:
+                on_turn(trace, in_tok, out_tok, cache_tok, cost)
+
+            if self.max_cost_usd is not None and cost >= self.max_cost_usd:
+                reason = "cost_limit"
+                break
+
+            cur_sha = model_sha()
+            # Only spinning on compile (no edit) counts as a stall. Reading docs or
+            # other non-edit exploration is allowed and leaves the counter untouched.
+            names = {tc.name for tc in turn.tool_calls}
+            if cur_sha != prev_sha:
+                stall = 0
+            elif names == {"compile_model"}:
+                stall += 1
+            prev_sha = cur_sha
+            if stall >= self.max_stall_turns:
+                reason = "stall"
+                break
+        else:
+            reason = "max_turns"
+
+        # Final authoritative compile.
+        compiled = (
+            compile_model(self.ws.model_path, repo_root=self.ws.repo_root)
+            if self.ws.model_path.exists()
+            else CompileResult(ok=False, passed=False, error="no model.py produced")
+        )
+        return AgentResult(
+            success=compiled.passed,
+            model_py=self.ws.model_path.read_text(encoding="utf-8")
+            if self.ws.model_path.exists()
+            else "",
+            urdf_xml=compiled.urdf_xml,
+            compile=compiled,
+            turns=turn_no,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_read_tokens=cache_tok,
+            cost_usd=cost,
+            terminate_reason=reason,
+            trace=trace,
+        )
